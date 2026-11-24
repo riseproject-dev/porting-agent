@@ -65,8 +65,8 @@ RECORDED_KINDS = {
                           "interrupted jobs."),
     "record_fields_migrated": ("Recorded this contribution in the strict record schema: missing "
                                "fields are added with the values the pipeline read for them, and "
-                               "the retired `blocked_reason` and the fence of the CI run a rerun "
-                               "answered are removed. Its state, revision, and "
+                               "the retired `blocked_reason`, `next_poll_at`, and the fence of the "
+                               "CI run a rerun answered are removed. Its state, revision, and "
                                "evidence are unchanged."),
     "record_names_migrated": ("Recorded this contribution under the current names of the "
                               "planning phase and its plan. Its state, revision, and evidence are "

@@ -1122,6 +1122,11 @@ class TestCleanHeadCi(unittest.TestCase):
                 repository={"id": 1, "full_name": f}, head_sha=h, runs=[], jobs_by_run={},
                 artifacts_by_run={})):
             self.assertEqual(world.kinds(world.tick(at(3))), [])
+            # Pending CI on the clean head changes no record, tick after tick.
+            before = copy.deepcopy(world.record)
+            world.tick(at(4))
+            world.tick(at(5))
+            self.assertEqual(world.record, before)
         world.gh.branches["riscv64"] = "e" * 40
         kept = world.record["last_ci_evidence_id"]
         out = world.tick(at(4))
@@ -1185,7 +1190,7 @@ class TestCleanHeadCi(unittest.TestCase):
         self.assertEqual(world.state, "handoff.waiting_ci")
         self.assertEqual(engine.head_reruns(world.record)["interrupted"], 1)
         self.assertEqual(world.record["clean_head_ci_since"], at(2).isoformat())
-        self.assertIsNone(world.record["next_poll_at"])
+        self.assertNotIn("next_poll_at", world.record)
         # The reviewed series has the tree of the candidate head: its CI,
         # on `riscv64-dev`, is CI on the clean head.
         op = self.rerun_of(world)

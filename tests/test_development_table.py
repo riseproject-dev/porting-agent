@@ -855,10 +855,8 @@ class TestObservation(unittest.TestCase):
                 mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot):
             observed = observe_ci.observe(object(), contributions={"c": rec}, operations={},
                                           contracts={}, policy=POLICY, now=NOW)
-        after = [r for kind, r in observed.staged if kind == "contributions"]
-        self.assertEqual(engine.state_key(after[-1]), "development.waiting_ci")
-        self.assertIsNotNone(after[-1]["next_poll_at"])
-        self.assertEqual([kind for kind, _ in observed.staged], ["contributions"])
+        self.assertEqual(observed.staged, [])
+        self.assertEqual(observed.report[0]["ci"]["state"], "access_wait")
 
     def test_a_head_that_moved_while_work_is_due_waits_for_its_ci(self):
         """A push while Work is due takes `record_head_change` from
@@ -879,7 +877,7 @@ class TestObservation(unittest.TestCase):
                          ("development.waiting_ci", rec["revision"] + 1, SHA_B, None))
         self.assertEqual(after["budget"]["reruns"],
                          {"head_sha": SHA_B, "flaky": 0, "interrupted": 0})
-        self.assertIsNotNone(after["next_poll_at"])
+        self.assertNotIn("next_poll_at", after)
         # A failure on the new head is recorded in the same tick, and the
         # repair is requested for the new head.
         failed = tick(rec, head=SHA_B, verdict="failed")

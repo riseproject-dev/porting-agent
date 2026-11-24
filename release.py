@@ -168,8 +168,6 @@ def select_release(releases: dict[str, list[dict]], *, minimum: str | None) -> l
 #   release whose tag contains the merge commit covers every row;
 # * `record_release_incomplete` otherwise.
 
-# How often release evidence is read in `release_wait.idle`.
-RELEASE_POLL_MINUTES = 60
 # The pending actions of `require_release_intervention`.
 CONTRACT_MISSING = "release_contract_missing"
 DISTRIBUTION_MISSING = "release_distribution_missing"

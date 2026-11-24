@@ -276,6 +276,9 @@ class TestLiveRecord(unittest.TestCase):
         if not path.exists():
             self.skipTest("no live record in this checkout")
         rec = json.loads(path.read_text())
+        if "next_poll_at" in rec:
+            self.assertEqual(engine.with_defaults(copy.deepcopy(rec))[2], ["next_poll_at"])
+        rec.pop("next_poll_at", None)  # retired; the field migration removes it
         added, removed = engine.with_defaults(copy.deepcopy(rec))[1:]
         self.assertLessEqual(set(added), {"held_patch", "review_comments"})
         self.assertEqual(removed, [])

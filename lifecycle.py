@@ -220,7 +220,6 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
                    "spent_estimate_usd_cents": 0},
         "pending_human_action": None,
         "follows": follows,
-        "next_poll_at": None,
         "created_at": now,
         "updated_at": now,
     }

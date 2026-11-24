@@ -212,6 +212,14 @@ class TestObservation(unittest.TestCase):
                 self.assertEqual(engine.state_key(after), state)
                 self.assertFalse(after["paused"])
 
+    def test_pending_ci_changes_no_contribution_on_consecutive_ticks(self):
+        rec = record(last_ci_evidence_id=None)
+        for _ in range(2):
+            out = tick(rec, verdict="pending")
+            self.assertEqual(staged(out, "contributions"), [])
+            rec = final(out, rec)
+        self.assertEqual(engine.state_key(rec), "upstream_review.waiting_ci")
+
     def test_the_rows_record_what_the_table_says(self):
         rec = record()
         merged = final(tick(rec, pr=pull(merged=True, state="closed")), rec)
@@ -804,21 +812,22 @@ class TestRelease(unittest.TestCase):
         self.assertEqual(final(out, rec)["pending_human_action"]["kind"],
                          release.DISTRIBUTION_MISSING)
 
-    def test_incomplete_coverage_is_recorded_once_and_polled(self):
+    def test_incomplete_coverage_is_recorded_once_and_read_every_run(self):
         rec = released_wait(contract="contract-1")
         pypi = self.pypi("proj-1.1.0-cp312-cp312-manylinux_2_39_x86_64.whl")
         out = tick(rec, contracts=[self.CONTRACT], pypi=pypi, contains={"1.1.0": True})
         self.assertEqual(kinds(out), ["record_release_incomplete"])
+        self.assertEqual(staged(out, "contributions"), [])
         after = final(out, rec)
         self.assertEqual(engine.state_key(after), "release_wait.idle")
-        self.assertIsNotNone(after["next_poll_at"])
         key = staged(out, "events")[0]["details"]["observation_key"]
-        # Not read again before the poll time; recorded once per observation.
+        # Read on every run; recorded once per observation.
         self.assertEqual(kinds(tick(after, contracts=[self.CONTRACT], pypi=pypi,
-                                    contains={"1.1.0": True})), [])
-        later = tick(after, contracts=[self.CONTRACT], pypi=pypi, contains={"1.1.0": True},
-                     now=T + timedelta(hours=2), audited={rec["contribution_id"]: {key}})
-        self.assertEqual(kinds(later), [])
+                                    contains={"1.1.0": True},
+                                    audited={rec["contribution_id"]: {key}})), [])
+        again = tick(after, contracts=[self.CONTRACT], pypi=pypi, contains={"1.1.0": True},
+                     audited={rec["contribution_id"]: {key}})
+        self.assertEqual(staged(again, "contributions"), [])
 
     def test_a_release_without_the_merge_is_incomplete(self):
         rec = released_wait(contract="contract-1")

@@ -48,7 +48,6 @@
     "budget",
     "pending_human_action",
     "follows",
-    "next_poll_at",
     "created_at",
     "updated_at",
     "proposal_artifact",
@@ -1045,13 +1044,6 @@
           "type": "null"
         }
       ]
-    },
-    "next_poll_at": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "format": "date-time"
     },
     "created_at": {
       "type": "string",

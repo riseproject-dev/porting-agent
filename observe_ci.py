@@ -67,7 +67,6 @@ Returns staged records for the state publisher. Never writes remotely.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from typing import Any
 
 import ci_evidence
@@ -125,11 +124,6 @@ def contract_for(record: dict, contracts: dict[str, dict]) -> dict:
             "required_runner_label": data.get("required_runner_label")}
 
 
-def _next_ci_observation(now: str, policy: dict) -> str:
-    minutes = (policy.get("recovery_minutes") or [5])[0]
-    return (datetime.fromisoformat(now) + timedelta(minutes=minutes)).isoformat()
-
-
 def human_wait_without_observation(record: dict) -> bool:
     """Whether ``record`` waits for a human (``engine.waits_for_human``) in a
     state that has no observation row. Observation changes nothing there."""
@@ -182,7 +176,7 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
     clean = handoff.ci_head(rec, evidence.get(rec.get("submission_review_id") or "") or {})
     entry["ci_head"] = clean
     fork = rec["fork"]["name"]
-    verdict, ev, _next_poll_at, snap = _ci_snapshot(
+    verdict, ev, snap = _ci_snapshot(
         api, rec, clean, contracts=contracts, policy=policy, now=now, repository=fork,
         classify_interrupted=True, debug_present=False)
     entry["ci"] = {"repository": fork, "state": verdict.state, "problems": verdict.problems[:10]}
@@ -193,7 +187,7 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
         return
     if verdict.state == "not_executed" and verdict.interrupted_jobs and ev is not None:
         if _rerun_interrupted(obs, entry, rec, clean, ev, snap, operations, policy=policy,
-                              now=now, poll=False):
+                              now=now):
             obs.staged.append(("evidence", ev))
             entry["evidence"] = ev["evidence_id"]
             return
@@ -452,18 +446,18 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
 
 
 def _ci(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: dict, now: str,
-        repository: str) -> tuple[ci_evidence.CiVerdict, dict | None, str | None]:
-    """CI on the exact ``head``: the verdict, the evidence record of its
-    newest run (for a verdict that names one), and the next poll time while
-    CI is incomplete. Jobs are not classified for a lost runner."""
+        repository: str) -> tuple[ci_evidence.CiVerdict, dict | None]:
+    """CI on the exact ``head``: the verdict and the evidence record of its
+    newest run (for a verdict that names one). Jobs are not classified for
+    a lost runner. Every run reads CI; no poll time is recorded."""
     return _ci_snapshot(api, record, head, contracts=contracts, policy=policy, now=now,
-                        repository=repository)[:3]
+                        repository=repository)[:2]
 
 
 def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: dict,
                  now: str, repository: str, classify_interrupted: bool = False,
                  debug_present: bool | None = None
-                 ) -> tuple[ci_evidence.CiVerdict, dict | None, str | None, collect.CiSnapshot]:
+                 ) -> tuple[ci_evidence.CiVerdict, dict | None, collect.CiSnapshot]:
     """``_ci`` and the snapshot it read; with ``classify_interrupted`` a job
     that lost its runner did not execute (``collect.classify_runner_loss``).
     ``debug_present`` overrides what the evidence records about debug
@@ -477,9 +471,6 @@ def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, 
                                         expected_wheels=ctr["expected_wheels"],
                                         required_runner_label=ctr["required_runner_label"])
     latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == head])
-    next_poll_at = (_next_ci_observation(now, policy)
-                    if verdict.state in {"pending", "missing", "not_executed", "access_wait"}
-                    else None)
     ev = None
     if verdict.state in ("passed", "failed", "missing", "not_executed") and latest:
         run = max(latest, key=lambda r: r["id"])
@@ -492,7 +483,7 @@ def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, 
             debug_present=(bool(record.get("debug_commits")) and record.get("upstream_pr") is None
                            if debug_present is None else debug_present),
             limitations=[] if verdict.state == "passed" else ["see problems"])
-    return verdict, ev, next_poll_at, snap
+    return verdict, ev, snap
 
 
 def landed_comment(obs: Observation, entry: dict, record: dict,
@@ -528,16 +519,6 @@ def _deferred(entry: dict, refused: engine.Refused | engine.Refusals, key: str =
     """Report a row the observation does not take now (``engine.Skip``):
     it reads again on the next tick."""
     entry[key] = refused.detail
-
-
-def _poll(obs: Observation, record: dict, next_poll_at: str | None) -> dict:
-    """Record when CI is read again (bookkeeping; no state change)."""
-    if record.get("next_poll_at") == next_poll_at:
-        return record
-    changed = dict(record, next_poll_at=next_poll_at)
-    schemas.validate("contribution", changed)
-    obs.staged.append(("contributions", changed))
-    return changed
 
 
 def _feedback(api: collect.Api, record: dict, head: str, *, policy: dict, now: str,
@@ -755,7 +736,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
             cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)
     else:
         review = None
-    verdict, ev, next_poll_at, snap = _ci_snapshot(
+    verdict, ev, snap = _ci_snapshot(
         api, cur, head, contracts=contracts, policy=policy, now=now,
         repository=cur["fork"]["name"], classify_interrupted=True)
     entry["ci"] = {"repository": cur["fork"]["name"], "state": verdict.state,
@@ -773,7 +754,6 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         # A confirmed rerun recorded a newer attempt than this snapshot
         # shows: CI is read again and nothing is decided from the older one.
         entry["note"] = "CI on the head is behind a confirmed rerun; CI is read again"
-        _poll(obs, cur, _next_ci_observation(now, policy))
         return
     if ev is not None:
         obs.staged.append(("evidence", ev))
@@ -792,7 +772,6 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                 cur = _stage(obs, out)
             case engine.Skip(refused):
                 _deferred(entry, refused)
-                _poll(obs, cur, _next_ci_observation(now, policy))
                 return
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
@@ -803,7 +782,6 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
             # bound to an earlier head and would not be read again.
             cur = _record_review(obs, entry, cur, review, policy=policy, now=now,
                                  facts=frozenset({"actionable_review"})) or cur
-        _poll(obs, cur, None)
         entry["activity"] = "fix_needed"
         return
     if verdict.state == "passed" and ev is not None:
@@ -821,7 +799,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                     details={"evidence_id": ev["evidence_id"], "head": head,
                              "feedback": pending[:8]}), ("observe_ci", "_observe_development")):
                 case engine.Applied() as out:
-                    _poll(obs, _stage(obs, out), None)
+                    _stage(obs, out)
                     entry.update(activity="fix_needed", feedback_due=pending[:8])
                     return
                 case engine.Skip(refused):
@@ -845,12 +823,11 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                         ("observe_ci", "_observe_development")):
                     case engine.Applied() as out:
                         obs.staged.append(("evidence", sev))
-                        _poll(obs, _stage(obs, out), None)
+                        _stage(obs, out)
                         entry.update(activity="fix_needed", series_requirements_unmet=unmet)
                         return
                     case engine.Skip(refused):
                         _deferred(entry, refused, "handoff_deferred")
-                        _poll(obs, cur, next_poll_at)
                         return
                     case engine.Bug(refused):
                         raise engine.TransitionRefused(refused,
@@ -868,7 +845,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                                 "head": head, "revision": cur["revision"]}},
                     details=details), ("observe_ci", "_observe_development")):
                 case engine.Applied() as out:
-                    cur = _poll(obs, out.record, None)
+                    cur = out.record
                     obs.staged.append(("events", out.event))
                     obs.staged.append(("contributions", cur))
                     entry["handoff_ready"] = True
@@ -879,7 +856,6 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                     raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
     if verdict.state == "access_wait":
         entry["note"] = "a CI run waits for approval; CI is read again"
-    _poll(obs, cur, next_poll_at)
 
 
 def _series_requirements(api: collect.Api, record: dict, head: str, ci: dict,
@@ -939,7 +915,7 @@ def _series_requirements(api: collect.Api, record: dict, head: str, ci: dict,
 
 def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: dict,
                        snap: collect.CiSnapshot, operations: dict, *, policy: dict,
-                       now: str, poll: bool = True) -> bool:
+                       now: str) -> bool:
     """A required job on the exact head was cancelled or lost its runner,
     and no job failed on its own: ``rerun_interrupted_ci`` records a
     ``ci_rerun`` operation (the intent, before the effect) that the
@@ -947,22 +923,14 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
     ``exhaust_interrupted_reruns`` waits for a human once that budget is
     spent. An open operation, a pause, or no completed run that holds an
     interrupted job keeps the state and reads CI again. Returns whether a
-    row was taken. With ``poll`` the next CI observation is recorded
-    (``next_poll_at``, which development records and handoff does not)."""
-    later = _next_ci_observation(now, policy)
-
-    def again(record: dict, at: str | None) -> dict:
-        return _poll(obs, record, at) if poll else record
-
+    row was taken."""
     if recovery.open_operations(cur["contribution_id"], operations,
                                 cur.get("active_operation_id")):
         entry["note"] = (f"interrupted CI waits for the open operation "
                          f"{cur.get('active_operation_id') or 'of the contribution'}")
-        again(cur, later)
         return False
     if cur.get("paused"):
         entry["note"] = "interrupted CI is not rerun while the contribution is paused"
-        again(cur, later)
         return False
     facts = {"ci_interrupted_on_head"}
     cause = ev["evidence_id"]
@@ -982,7 +950,6 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
         # No completed run on the head holds an interrupted job: nothing to
         # rerun yet, so the row is not taken.
         entry["note"] = "no completed run on the head holds an interrupted job; CI is read again"
-        again(cur, later)
         return False
     match engine.dispatch(rerun, ("observe_ci", "_rerun_interrupted")):
         case engine.Applied() as out:
@@ -991,12 +958,10 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
             cur = _stage(obs, engine.applied(engine.try_apply_transition(
                 cur, "exhaust_interrupted_reruns", policy=policy, now=now, cause_id=cause,
                 facts=facts, details=details), ("observe_ci", "_rerun_interrupted")))
-            again(cur, None)
             entry["waiting_for_human"] = "ci_interrupted"
             return True
         case engine.Skip(refused):
             _deferred(entry, refused)
-            again(cur, later)
             return False
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("observe_ci", "_rerun_interrupted"))
@@ -1004,7 +969,6 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
                                active_operation_id=op["operation_id"])
     operations[op["operation_id"]] = op
     obs.staged.append(("operations", op))
-    cur = again(cur, later)
     obs.staged.append(("contributions", cur))
     entry.update(ci_rerun=op["operation_id"], activity="waiting_ci")
     return True
@@ -1050,7 +1014,7 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
         # The gate's own row: the comment is recorded and the gate, the
         # candidate head, and the CI evidence are kept.
         cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)
-    verdict, ev, _next = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
+    verdict, ev = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
                              repository=cur["fork"]["name"])
     entry["ci"] = {"repository": cur["fork"]["name"], "state": verdict.state,
                    "problems": verdict.problems[:10]}
@@ -1201,7 +1165,7 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
             entry["activity"] = "fix_needed"
             return
     repository = cur["upstream"]["full_name"]
-    verdict, ev, next_poll_at = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
+    verdict, ev = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
                                     repository=repository)
     entry["ci"] = {"repository": repository, "state": verdict.state,
                    "problems": verdict.problems[:10]}
@@ -1219,7 +1183,6 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
             # new job ids, is recorded anew. Upstream CI is never rerun by
             # the pipeline.
             entry["note"] = f"{ev['evidence_id']} is already recorded for this head"
-            _poll(obs, cur, None)
             return
         match engine.dispatch(engine.try_apply_transition(
                 cur, "record_upstream_ci_failure", policy=policy, now=now,
@@ -1229,17 +1192,15 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
                 details={"evidence_id": ev["evidence_id"]}),
                 ("observe_ci", "_observe_upstream_review")):
             case engine.Applied() as out:
-                _poll(obs, _stage(obs, out), None)
+                _stage(obs, out)
                 entry["activity"] = "fix_needed"
             case engine.Skip(refused):
                 _deferred(entry, refused)
-                _poll(obs, cur, next_poll_at)
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("observe_ci", "_observe_upstream_review"))
         return
     if verdict.state == "access_wait":
         entry["note"] = "a CI run waits for approval; CI is read again"
-    _poll(obs, cur, next_poll_at)
 
 
 def _observe_upstream_pr_state(api: collect.Api, entry: dict, rec: dict) -> None:
@@ -1279,14 +1240,10 @@ RELEASE_ROWS = ("record_release_incomplete", "require_release_intervention", "ve
 def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict, *,
                      contracts: dict, policy: dict, now: str, audited: dict[str, set[str]],
                      pypi) -> None:
-    """Observe ``release_wait.idle``, at most every
-    ``release.RELEASE_POLL_MINUTES`` minutes: the official release evidence
+    """Observe ``release_wait.idle`` on every run: the official release evidence
     decides ``verify_release``, ``require_release_intervention``, or
     ``record_release_incomplete``, which is recorded once per distinct
     observation (``release.decide``)."""
-    if rec.get("next_poll_at") and rec["next_poll_at"] > now:
-        entry["note"] = f"release evidence is read again at {rec['next_poll_at']}"
-        return
     contract = release.acceptance_contract(contracts.get(rec.get("target_contract_id") or ""))
     found = {name: pypi(name) for name in (contract.distributions if contract else ())}
     merge = rec["merge"]
@@ -1306,8 +1263,6 @@ def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict,
                 facts=decision.facts, details=decision.details), ("observe_ci", "_observe_release"))
             obs.staged.append(("events", out.event))
             audited.setdefault(cid, set()).add(decision.key)
-        _poll(obs, rec, (datetime.fromisoformat(now)
-                         + timedelta(minutes=release.RELEASE_POLL_MINUTES)).isoformat())
         return
     values = dict(decision.values)
     if decision.verb == "verify_release":
@@ -1328,7 +1283,7 @@ def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict,
             rec, decision.verb, policy=policy, now=now, cause_id=cause, facts=decision.facts,
             values=values, details=decision.details), ("observe_ci", "_observe_release")):
         case engine.Applied() as out:
-            _poll(obs, _stage(obs, out), None)
+            _stage(obs, out)
         case engine.Skip(refused):
             # Paused: the release is read again after the resume.
             _deferred(entry, refused)

@@ -1602,7 +1602,6 @@ def reset_generation(record: dict) -> dict:
         "handoff_request": None, "handoff_approval": None,
         "last_ci_evidence_id": None, "merge": None, "retirement": None,
         "release_acceptance": None, "pending_human_action": None,
-        "next_poll_at": None,
     })
     rec["budget"] = {"policy_id": record["budget"]["policy_id"], "attempts_used": 0,
                      "no_progress_streak": 0, "clusters": {}, "planning_attempts": 0,
@@ -2019,7 +2018,6 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "submission_review_id": None, "handoff_request": None, "handoff_approval": None,
     "last_ci_evidence_id": None, "merge": None, "retirement": None,
     "release_acceptance": None, "pending_human_action": None, "follows": None,
-    "next_poll_at": None,
 }
 # The fields of the record the strict schema does not require: an absent
 # one reads as unknown, so no record is migrated for it. `paused_at_commit`
@@ -2040,6 +2038,10 @@ WORK_DEFAULTS: dict[str, Any] = {
     "feedback_evidence_ids": [],
 }
 RETIRED_FIELDS = ("blocked_reason",)
+# Fields removed whatever their value: `next_poll_at` was written by CI
+# observation (nothing read it for CI) and by release observation (which now
+# reads PyPI on every run).
+RETIRED_ANY_FIELDS = ("next_poll_at",)
 # A field of `budget.reruns` that is removed whatever its value.
 RETIRED_RERUN_FIELD = "answered_ci_evidence_id"
 
@@ -2047,7 +2049,7 @@ RETIRED_RERUN_FIELD = "answered_ci_evidence_id"
 def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     """``record`` with every field the strict schema requires and it lacks
     added at the value the pipeline reads for an absent one, the null
-    retired fields and `budget.reruns.answered_ci_evidence_id` removed, with
+    retired fields, `next_poll_at`, and `budget.reruns.answered_ci_evidence_id` removed, with
     the names added and removed. Raises
     ``TransitionError`` for a retired field that is set."""
     new = copy.deepcopy(record)
@@ -2057,6 +2059,10 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
         if name in new:
             if new[name] is not None:
                 raise TransitionError(f"{name} is {new[name]!r}: only a null {name} is removed")
+            del new[name]
+            removed.append(name)
+    for name in RETIRED_ANY_FIELDS:
+        if name in new:
             del new[name]
             removed.append(name)
     for name, value in RECORD_DEFAULTS.items():

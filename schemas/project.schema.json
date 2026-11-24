@@ -184,14 +184,9 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "next_poll_at",
             "last_seen_version"
           ],
           "properties": {
-            "next_poll_at": {
-              "type": "string",
-              "format": "date-time"
-            },
             "last_seen_version": {
               "type": [
                 "string",

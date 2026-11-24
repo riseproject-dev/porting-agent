@@ -216,12 +216,32 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         records = [item for kind, item in observation.staged if kind == "contributions"]
         return records[-1] if records else original
 
+    def test_pending_ci_stages_nothing_on_consecutive_ticks(self):
+        rec = self.record()
+        first = self.observe(rec, self.snapshot(pending=True))
+        self.assertEqual(first.staged, [])
+        second = self.observe(self.final(first, rec), self.snapshot(pending=True))
+        self.assertEqual(second.staged, [])
+
+    def test_a_record_with_the_retired_poll_time_is_accepted_and_written_back_without_it(self):
+        import schemas
+        import state
+        rec = self.record()
+        legacy = dict(rec, next_poll_at="2026-11-18T12:05:00+00:00")
+        self.assertTrue(state.needs_field_migration(legacy))
+        self.assertEqual(state.migrated_view("contributions", legacy), rec)
+        self.assertEqual(schemas.errors("contribution", state.migrated_view("contributions", legacy)), [])
+        new, event = state.migrate_record_fields(legacy, now=NOW)
+        self.assertNotIn("next_poll_at", new)
+        self.assertEqual(event["details"]["removed"], ["next_poll_at"])
+        self.assertFalse(state.needs_field_migration(new))
+
     def test_run_45008094063_partial_snapshot_waits_without_requesting_repair(self):
         rec = self.record()
         observation = self.observe(rec, self.snapshot(pending=True))
         final = self.final(observation, rec)
         self.assertEqual(final["activity"], "waiting_ci")
-        self.assertIsNotNone(final["next_poll_at"])
+        self.assertEqual(observation.staged, [])
         self.assertIsNone(final["last_ci_evidence_id"])
         selected = controller.tick(
             contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
@@ -337,7 +357,6 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
     def test_live_green_pr_ci_without_uploaded_artifacts_enters_handoff(self):
         """Exact live shape: revision 5, no target contract, PR CI that never uploads."""
         rec = self.record()
-        rec["next_poll_at"] = "2026-11-18T12:01:00+00:00"
         self.assertIsNone(rec["target_contract_id"])
         snapshot = self.snapshot(pending=False)
         self.assertEqual(snapshot.artifacts_by_run, {})
@@ -354,7 +373,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                          {"command_id": f"observation-{evidence_id}", "head": self.HEAD, "revision": 5})
         self.assertEqual(final["pending_human_action"]["kind"], "submit_upstream")
         self.assertIsNone(final["pending_human_action"]["counter"])
-        self.assertIsNone(final["next_poll_at"])
+        self.assertNotIn("next_poll_at", final)
         staged_evidence = [item for kind, item in observation.staged if kind == "evidence"]
         self.assertEqual([item["evidence_id"] for item in staged_evidence], [evidence_id])
         self.assertEqual(staged_evidence[0]["ci"]["head_sha"], self.HEAD)

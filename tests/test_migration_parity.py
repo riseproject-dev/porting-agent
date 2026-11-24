@@ -325,6 +325,9 @@ class TestRerunFenceMigration(unittest.TestCase):
             self.skipTest("no live record in this checkout")
         import schemas
         rec = json.loads(path.read_text())
+        if "next_poll_at" in rec:
+            self.assertTrue(state.needs_field_migration(rec))
+        rec.pop("next_poll_at", None)  # retired; the field migration removes it
         self.assertNotIn("answered_ci_evidence_id", rec["budget"]["reruns"])
         if "held_patch" in rec:
             schemas.validate("contribution", rec)

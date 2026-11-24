@@ -1558,6 +1558,10 @@ class TestLiveRecords(unittest.TestCase):
                 continue
             with self.subTest(record=name):
                 rec = json.loads(path.read_text())
+                # The retired poll time is removed by the same migration.
+                if "next_poll_at" in rec:
+                    self.assertTrue(state.needs_field_migration(rec))
+                rec.pop("next_poll_at", None)
                 if "held_patch" in rec:
                     self.assertFalse(state.needs_field_migration(rec))
                     continue

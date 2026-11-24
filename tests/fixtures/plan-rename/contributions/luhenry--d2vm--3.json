@@ -32,7 +32,6 @@
   "handoff_request": null,
   "last_ci_evidence_id": null,
   "merge": null,
-  "next_poll_at": null,
   "owners": {
     "backup": null,
     "handoff_reviewer": null,

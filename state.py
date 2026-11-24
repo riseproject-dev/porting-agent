@@ -586,10 +586,10 @@ def migrated_view(kind: str, record: Any) -> Any:
 # `budget`, `pending_human_action.counter`, and the fields of the Work
 # identity in `active_work`; the stop flag is `paused` alone. A record
 # written before it lacks fields the table added later and may still carry
-# `blocked_reason`, always null. ``migrate_record_fields`` adds each missing
-# field with the value the pipeline reads for an absent one
-# (``engine.with_defaults``), and removes the null `blocked_reason`; it
-# changes nothing else. Any other difference from
+# `blocked_reason`, always null, or the retired `next_poll_at`.
+# ``migrate_record_fields`` adds each missing field with the value the
+# pipeline reads for an absent one (``engine.with_defaults``), and removes
+# the null `blocked_reason` and `next_poll_at`; it changes nothing else. Any other difference from
 # the strict schema, and a state that is not a state of the table, fail
 # closed.
 
@@ -610,7 +610,8 @@ def needs_field_migration(record: Any) -> bool:
 
 def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
     """The record with its missing fields added at their defaults, the null
-    ``blocked_reason`` and ``budget.reruns.answered_ci_evidence_id`` (the
+    ``blocked_reason``, ``next_poll_at`` (whatever its value), and
+    ``budget.reruns.answered_ci_evidence_id`` (the
     fence of the CI run a ``request_ci_rerun`` answered before the trusted
     rerun) removed, and its event. Raises ``StateError`` for any other
     shape."""
