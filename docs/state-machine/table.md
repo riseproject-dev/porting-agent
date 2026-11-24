@@ -96,6 +96,7 @@ An effect normally clears a whole field. These entries clear a part of one.
 A rule is a transition that applies in many states. It is written once and expanded into one row per state; the rows appear under each state below, marked *(rule)*.
 
 ### `park_contribution`
+{: #rule-park_contribution }
 
 Applies in every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`.
 
@@ -106,6 +107,7 @@ Applies in every non-terminal state except `parked.idle`, `handoff.waiting_upstr
 Expanded into: `queued.idle`, `planning.idle`, `planning.agent_running`, `planning.waiting_human`, `provisioning.idle`, `provisioning.waiting_human`, `development.agent_running`, `development.review_pending`, `development.reviewing`, `development.publishing`, `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.review_due`, `handoff.agent_running`, `handoff.review_pending`, `handoff.reviewing`, `handoff.building_upstream_branch`, `handoff.waiting_ci`, `handoff.preparing_submission`, `handoff.waiting_human`, `upstream_review.waiting_human`.
 
 ### `resume_stale`
+{: #rule-resume_stale }
 
 Applies in every `provisioning.*` and `development.*` state.
 
@@ -116,6 +118,7 @@ Applies in every `provisioning.*` and `development.*` state.
 Expanded into: `provisioning.idle`, `provisioning.waiting_human`, `development.agent_running`, `development.review_pending`, `development.reviewing`, `development.publishing`, `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`.
 
 ### `record_reminder`
+{: #rule-record_reminder }
 
 Applies in every state of kind `gate`, `human_wait`, or `locked`.
 
@@ -126,6 +129,7 @@ Applies in every state of kind `gate`, `human_wait`, or `locked`.
 Expanded into: `planning.waiting_human`, `provisioning.waiting_human`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.waiting_human`, `handoff.waiting_upstream_pr`, `upstream_review.waiting_human`, `release_wait.waiting_human`.
 
 ### `record_source_unavailable`
+{: #rule-record_source_unavailable }
 
 Applies in every state in which the controller needs the upstream base branch: `queued.idle`, `planning.idle`, `provisioning.idle`, `development.fix_needed`, `development.review_pending`, `handoff.review_due`, `handoff.review_pending`, and `upstream_review.fix_needed`.
 
@@ -136,6 +140,7 @@ Applies in every state in which the controller needs the upstream base branch: `
 Expanded into: `queued.idle`, `planning.idle`, `provisioning.idle`, `development.review_pending`, `development.fix_needed`, `handoff.review_due`, `handoff.review_pending`, `upstream_review.fix_needed`.
 
 ### `record_late_effect`
+{: #rule-record_late_effect }
 
 Applies in every state.
 
@@ -150,6 +155,7 @@ Expanded into: `queued.idle`, `planning.idle`, `planning.agent_running`, `planni
 A flag is stored beside the state. It is set and cleared from every non-terminal state and keeps phase and activity, except where noted.
 
 ### `paused`
+{: #flag-paused }
 
 Stored in `paused`. A stop of new Work and writer admission, with its reason and who set it (a human or the controller) in `paused_reason` and `paused_by`. `pause` accepts an optional reason; a pause set by the controller always records one: `pause_on_identity_change` names it in the table, and `pause_on_processing_error` records the error. Setting it clears the requested Work and the pending publication, and records `paused_at`; nothing held is published after the stop, and no publish retry is launched while paused. Phase, activity, evidence, and pending feedback are kept. The one exception: setting it in an `agent_running` state leads to the state in which the Work is due again, `planning.idle`, `development.fix_needed`, `handoff.review_due` (also from `handoff.reviewing`), or `upstream_review.fix_needed`; setting it while a development patch is held for its review or its publication (`development.review_pending`, `development.reviewing`, `development.publishing`) discards the held patch and leads to `development.fix_needed`. In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` keeps the plan, candidate head, clean head, `handoff_request`, and the posted package. `verify_upstream_pr` binds to the exact head only, so the revision bump does not invalidate the posted package; `submit_upstream` and `retract_submission` also name the exact revision, so after the bump they name the new revision with the same head, as the tracking-issue entries offer them. A row that ends the contribution (`closed.idle`, `released.idle`) clears the flag.
 
@@ -188,6 +194,7 @@ While set:
 For each state, the verbs available from it. A verb leads from a state to one target only. *Same state* means the transition keeps phase and activity.
 
 ### `queued.idle`
+{: #state-queued-idle }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -202,6 +209,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `planning.idle`
+{: #state-planning-idle }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -217,6 +225,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `planning.agent_running`
+{: #state-planning-agent_running }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -234,6 +243,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `planning.waiting_human`
+{: #state-planning-waiting_human }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -247,6 +257,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `provisioning.idle`
+{: #state-provisioning-idle }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -263,6 +274,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `provisioning.waiting_human`
+{: #state-provisioning-waiting_human }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -276,6 +288,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `development.agent_running`
+{: #state-development-agent_running }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -295,6 +308,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `development.review_pending`
+{: #state-development-review_pending }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -311,6 +325,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `development.reviewing`
+{: #state-development-reviewing }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -326,6 +341,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `development.publishing`
+{: #state-development-publishing }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -340,6 +356,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `development.waiting_ci`
+{: #state-development-waiting_ci }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -362,6 +379,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `development.fix_needed`
+{: #state-development-fix_needed }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -383,6 +401,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `development.waiting_human`
+{: #state-development-waiting_human }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -401,6 +420,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.awaiting_submission`
+{: #state-handoff-awaiting_submission }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -415,6 +435,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.review_due`
+{: #state-handoff-review_due }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -429,6 +450,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.agent_running`
+{: #state-handoff-agent_running }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -442,6 +464,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.review_pending`
+{: #state-handoff-review_pending }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -457,6 +480,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.reviewing`
+{: #state-handoff-reviewing }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -470,6 +494,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.building_upstream_branch`
+{: #state-handoff-building_upstream_branch }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -483,6 +508,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.waiting_ci`
+{: #state-handoff-waiting_ci }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -495,6 +521,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.preparing_submission`
+{: #state-handoff-preparing_submission }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -506,6 +533,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.waiting_human`
+{: #state-handoff-waiting_human }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -523,6 +551,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `handoff.waiting_upstream_pr`
+{: #state-handoff-waiting_upstream_pr }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -534,6 +563,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `upstream_review.waiting_ci`
+{: #state-upstream_review-waiting_ci }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -547,6 +577,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `upstream_review.fix_needed`
+{: #state-upstream_review-fix_needed }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -562,6 +593,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `upstream_review.agent_running`
+{: #state-upstream_review-agent_running }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -577,6 +609,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `upstream_review.waiting_human`
+{: #state-upstream_review-waiting_human }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -592,6 +625,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `release_wait.idle`
+{: #state-release_wait-idle }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -601,6 +635,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `release_wait.waiting_human`
+{: #state-release_wait-waiting_human }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -609,6 +644,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `released.idle`
+{: #state-released-idle }
 
 Terminal: no transition leaves this state.
 
@@ -617,6 +653,7 @@ Terminal: no transition leaves this state.
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `parked.idle`
+{: #state-parked-idle }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -625,6 +662,7 @@ Terminal: no transition leaves this state.
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. A late `published` Result of a patch published after successive failed reviews, or a late Result whose branch operation is confirmed at the commit such a patch was pinned to, still makes the comment of that review due on the development PR, beside the rule (`review_comments`). | none | - |
 
 ### `closed.idle`
+{: #state-closed-idle }
 
 Terminal: no transition leaves this state.
 
@@ -671,6 +709,7 @@ An operation starts in `planned` (`record_intent`).
 | `not_launched` | no | 0 | A human established with evidence that the effect was never launched. |
 
 ### Operation `planned`
+{: #operation-planned }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -680,6 +719,7 @@ An operation starts in `planned` (`record_intent`).
 | `resolve_not_launched` | command (`/upstreaming resolve-operation`) | `not_launched` | the command names this operation; a resolution evidence record states the disposition; disposition not-launched | sets `resolution` | - |
 
 ### Operation `applying`
+{: #operation-applying }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -690,6 +730,7 @@ An operation starts in `planned` (`record_intent`).
 | `resolve_not_launched` | command (`/upstreaming resolve-operation`) | `not_launched` | the command names this operation; a resolution evidence record states the disposition; disposition not-launched | sets `resolution` | - |
 
 ### Operation `uncertain`
+{: #operation-uncertain }
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -700,13 +741,16 @@ An operation starts in `planned` (`record_intent`).
 | `resolve_not_launched` | command (`/upstreaming resolve-operation`) | `not_launched` | the command names this operation; a resolution evidence record states the disposition; disposition not-launched | sets `resolution` | - |
 
 ### Operation `confirmed`
+{: #operation-confirmed }
 
 End state: no transition leaves it.
 
 ### Operation `failed`
+{: #operation-failed }
 
 End state: no transition leaves it.
 
 ### Operation `not_launched`
+{: #operation-not_launched }
 
 End state: no transition leaves it.

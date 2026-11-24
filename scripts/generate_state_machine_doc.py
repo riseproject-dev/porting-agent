@@ -348,14 +348,14 @@ def render_table(policy: dict) -> str:
               "*(rule)*.", ""]
     for verb, rule in lc.RULES.items():
         to = "same state" if rule.target == lc.SELF else f"`{rule.target}`"
-        lines += [f"### `{verb}`", "", f"Applies in {rule.applies}.", ""]
+        lines += [f"### `{verb}`", f"{{: #rule-{verb} }}", "", f"Applies in {rule.applies}.", ""]
         lines += TRANSITION_HEADER + [transition_row(verb, to, rule.transition), "",
                                       f"Expanded into: {code(lc.rule_states(verb))}.", ""]
     lines += ["## Flags", "",
               "A flag is stored beside the state. It is set and cleared from every non-terminal "
               "state and keeps phase and activity, except where noted.", ""]
     for name, f in lc.FLAGS.items():
-        lines += [f"### `{name}`", "", f"Stored in `{f.field}`. {f.description}", "",
+        lines += [f"### `{name}`", f"{{: #flag-{name} }}", "", f"Stored in `{f.field}`. {f.description}", "",
                   "| Verb | Sets or clears | Trigger | Guard | Effects |",
                   "|:-----|:---------------|:--------|:------|:--------|"]
         for what, verbs_ in (("sets", f.set_by), ("clears", f.cleared_by)):
@@ -375,7 +375,7 @@ def render_table(policy: dict) -> str:
               "For each state, the verbs available from it. A verb leads from a state to one "
               "target only. *Same state* means the transition keeps phase and activity.", ""]
     for key, state in lc.LIFECYCLE.items():
-        lines += [f"### `{key}`", ""]
+        lines += [f"### `{key}`", f"{{: #state-{key.replace('.', '-')} }}", ""]
         if state.kind == "terminal":
             lines += ["Terminal: no transition leaves this state.", ""]
         lines += TRANSITION_HEADER
@@ -418,7 +418,7 @@ def render_table(policy: dict) -> str:
                      f"{cell(s.description)} |")
     lines.append("")
     for key, s in lc.OPERATIONS.items():
-        lines += [f"### Operation `{key}`", ""]
+        lines += [f"### Operation `{key}`", f"{{: #operation-{key} }}", ""]
         if not s.transitions:
             lines += ["End state: no transition leaves it.", ""]
             continue
