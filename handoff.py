@@ -22,6 +22,14 @@ table run one remote operation each, through the trusted workflow
   resolves to the clean head; a moved branch returns the contribution to
   development (``return_for_repair``).
 
+Each job checks out the head of ``main``; before it mints its token it
+checks that the checkout is still the head and still runs the operation,
+each effect validates the operation again, and immediately before each
+write it checks at the head of ``main`` that the state of the operation did
+not change since the checkout (``unchanged_on_main``). A change committed
+after that last read is not seen: an effect that passed it may finish, and
+the reconciler reads every effect back.
+
 Each attempt is its own operation of the same intent (the approval), with
 its attempt index and its count in the budget of the state in ``reason_ids``
 (``attempt:<n>``, ``count:<k>``). The receipt of a failed attempt fires the
@@ -141,8 +149,9 @@ class HandoffBlocked(HandoffError):
 
 
 class HandoffRefused(RuntimeError):
-    """The final check before the effect refused the operation: nothing was
-    attempted and no attempt is charged."""
+    """The check before the token or the final check immediately before a
+    write refused the operation: that write was not attempted and no attempt
+    is charged."""
 
 
 # --------------------------------------------------------------------------
@@ -875,6 +884,16 @@ def readback(api: collect.Api, record: dict, op: dict, receipt: dict,
 
 # --------------------------------------------------------------------------
 # The trusted workflow: validation before any effect, the effects, receipts
+#
+# Three checks guard every write. Before a job mints its token, the checkout
+# is the head of main and still runs the operation (``current_state`` and
+# ``load_request``, ``python -m handoff check``). Each effect loads the
+# operation again from that checkout (``load_request``). Immediately before
+# each write (the push of `riscv64`, the CI dispatch, the post of the
+# package, the rerun request) the head of main is read again and what the
+# operation is authorized by and built from must be unchanged there
+# (``unchanged_on_main``); a refusal is a ``refused`` receipt that is not
+# folded.
 
 
 def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dict]:
@@ -1070,7 +1089,8 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
                           push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess]
                           | None = None,
                           dispatch: Callable[[str, dict], Any] | None = None,
-                          prepared: bool = False) -> dict:
+                          prepared: bool = False,
+                          final_check: Callable[[dict, dict], Any]) -> dict:
     """``upstream_branch``: create `riscv64` at the head of the reviewed
     series or replace it under an exact-head lease, never while an upstream
     PR is open from it; read it back.
@@ -1082,7 +1102,12 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
     minted (``prepared``, with that step's ``workdir``), or here first.
     Then only the digest, head, and tree are verified again, and the token
     only pushes: it never fetches. `riscv64-dev` is only read. A branch that
-    already resolves to the reviewed head is read back without a write."""
+    already resolves to the reviewed head is read back without a write.
+
+    ``final_check(record, op)`` runs immediately before each write (the
+    push of `riscv64`, and the CI dispatch when one is really made); in the
+    workflow it is ``unchanged_on_main``. It has no default, so no caller
+    can skip it by omission."""
     import fork_publish
 
     record, op = load_request(root, operation_id, policy)
@@ -1121,6 +1146,8 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
             runner = push or (lambda w, a, auth: _git(w, "push", "--porcelain",
                                                       fork_publish._url(fork), *a, check=False,
                                                       env=auth))
+            # The final check of the state, the read closest to the push.
+            final_check(record, op)
             pushed = runner(work, args, fork_publish._auth_env(token))
             if pushed.returncode:
                 err = pushed.stderr.decode()[-300:] + (pushed.stdout.decode()
@@ -1136,9 +1163,13 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
         if review.get("clean_tree") != review.get("candidate_tree"):
             # The clean head has another tree than the candidate head: CI must
             # run on it, and `riscv64` has no pull request to trigger it.
+            # The dispatch is the job's second write: the final check runs
+            # again immediately before it, and only when one is really made.
+            guarded = None if dispatch is None else \
+                (lambda path, body: (final_check(record, op), dispatch(path, body))[1])
             ci = dispatch_clean_head_ci(read_api, fork=fork, head=built["head"],
                                         workflow_path=_candidate_workflow(root, record),
-                                        dispatch=dispatch)
+                                        dispatch=guarded)
         return {"result": "applied", "clean_head": built["head"], "replaced": observed,
                 "written": observed != built["head"], **ci}
     finally:
@@ -1241,6 +1272,8 @@ def dispatch_clean_head_ci(read_api: collect.Api, *, fork: str, head: str,
     try:
         dispatch(f"/repos/{fork}/actions/workflows/{name}/dispatches",
                  {"ref": f"refs/heads/{UPSTREAM_REF}"})
+    except HandoffRefused:  # the final check refused: nothing was written, nothing is charged
+        raise
     except Exception as error:  # every failure of the write is a failed attempt
         raise HandoffError(f"the CI dispatch failed: {isolation.clean_text(error, 200)}") from None
     for attempt in range(readbacks):
@@ -1329,10 +1362,12 @@ def is_package_of(body: str, record: dict, package: dict) -> bool:
 
 
 def post_package(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
-                 issue_api) -> dict:
+                 issue_api, final_check: Callable[[dict, dict], Any]) -> dict:
     """``submission_comment``: post, or discover by its marker, the one
     App-authored package comment, and read it back. ``issue_api`` is a
-    ``status_ledger.Api`` with the control App's issue token."""
+    ``status_ledger.Api`` with the control App's issue token.
+    ``final_check(record, op)`` runs immediately before the post (in the
+    workflow ``unchanged_on_main``); it has no default."""
     import status_ledger
 
     record, op = load_request(root, operation_id, policy)
@@ -1358,6 +1393,8 @@ def post_package(root: Path, operation_id: str, *, policy: dict, read_api: colle
         if observed != record["clean_head_sha"]:
             raise HandoffMoved(f"the branch {UPSTREAM_REF} resolves to {observed}, not the clean "
                                "head; the package is not posted")
+        # The final check of the state, immediately before the post.
+        final_check(record, op)
         comment = issue_api.request("POST", f"/repos/{CONTROL_REPO}/issues/{number}/comments",
                                     {"body": package["comment"]})
     observed = issue_api.request("GET", f"/repos/{CONTROL_REPO}/issues/comments/{comment['id']}")
@@ -1441,23 +1478,123 @@ def _operation_meta(root: Path, operation_id: str) -> dict:
     return meta
 
 
-def current_state(root: Path, api) -> str:
-    """The commit of the checked-out state, which must be the head of ``main``
-    now: a queued or re-run job never acts on state that ``main`` has left.
-    Raises ``HandoffRefused``."""
+def _checked_out(root: Path) -> str:
+    """The commit of the checked-out state."""
     import publisher
 
-    checked_out = subprocess.run(["git", *publisher.SAFE_GIT_CONFIG, "-C", str(root), "rev-parse",
-                                  "HEAD"], capture_output=True, text=True,
-                                 env=publisher.safe_env()).stdout.strip()
+    return subprocess.run(["git", *publisher.SAFE_GIT_CONFIG, "-C", str(root), "rev-parse",
+                           "HEAD"], capture_output=True, text=True,
+                          env=publisher.safe_env()).stdout.strip()
+
+
+def _main_head(api) -> str:
+    """The head of ``main`` now. Raises ``HandoffRefused`` when it cannot be
+    read."""
     try:
         head = ((api.get(f"/repos/{CONTROL_REPO}/git/ref/heads/main") or {}).get("object") or {}).get("sha")
     except Exception as error:  # a read failure refuses; nothing was attempted
         raise HandoffRefused(f"the head of main cannot be read: {isolation.clean_text(error, 200)}") from None
+    return str(head or "")
+
+
+def current_state(root: Path, api) -> str:
+    """The commit of the checked-out state, which must be the head of ``main``
+    now: a queued or re-run job never acts on state that ``main`` has left.
+    Raises ``HandoffRefused``."""
+    checked_out = _checked_out(root)
+    head = _main_head(api)
     if not _SHA.match(checked_out or "") or checked_out != head:
         raise HandoffRefused(f"the checked-out state {checked_out[:12] or 'unknown'} is not the head "
                              f"of main {str(head)[:12]}")
     return checked_out
+
+
+# The compare API lists at most 300 files: a comparison that lists as many
+# may not list them all, so the final check refuses it.
+MAX_CHANGED_FILES = 300
+
+
+def authorizing_paths(record: dict, op: dict) -> frozenset[str]:
+    """The files of this repository that authorize the operation and that
+    it is built from: the policy, the operation, the record, and the plan,
+    CI, rewrite, and review evidence the record names (every file
+    ``load_request``, ``package_inputs``, ``_candidate_workflow``, and
+    ``ci_rerun.load_request`` read from the checkout)."""
+    paths = {"policy.json", f".state/operations/{safe_id(op['operation_id'])}.json",
+             f".state/contributions/{contribution_file_id(op['contribution_id'])}.json"}
+    for name in ("plan_evidence_id", "last_ci_evidence_id", "submission_rewrite_id",
+                 "submission_review_id"):
+        if record.get(name):
+            paths.add(f".state/evidence/{safe_id(record[name])}.json")
+    return frozenset(paths)
+
+
+def _intent(op: dict) -> dict:
+    """The operation without its launch bookkeeping (``updated_at`` and the
+    launch count), the only fields ``recovery.charge_launch`` and
+    ``recovery.restart_launches`` change."""
+    out = {k: v for k, v in op.items() if k != "updated_at"}
+    out["external_ids"] = {k: v for k, v in (op.get("external_ids") or {}).items()
+                           if k != recovery.LAUNCH_COUNTER}
+    return out
+
+
+def _operation_at(api, operation_id: str, ref: str) -> dict:
+    """The operation as committed at ``ref`` of this repository."""
+    import base64
+
+    data = api.get(f"/repos/{CONTROL_REPO}/contents/.state/operations/{safe_id(operation_id)}.json"
+                   f"?ref={ref}")
+    if not isinstance(data, dict) or data.get("encoding", "base64") != "base64":
+        raise ValueError("the operation at the head of main is malformed")
+    op = json.loads(base64.b64decode(str(data.get("content") or "")).decode("utf-8"))
+    schemas.validate("operation", op)
+    return op
+
+
+def unchanged_on_main(root: Path, record: dict, op: dict, api) -> str:
+    """The final check immediately before a write: what the operation is
+    authorized by and built from is unchanged at the head of ``main`` now.
+
+    The same commit as the checkout passes. Otherwise ``main`` must contain
+    the checkout, and none of ``authorizing_paths`` may have changed between
+    the two commits, read from their comparison; the operation may differ
+    only in its launch bookkeeping (a relaunch). An unrelated commit (another
+    contribution, an event, code) does not refuse. Anything else, an
+    unreadable head or a malformed or truncated comparison included, raises
+    ``HandoffRefused`` (fail closed). Returns the head it read. Only
+    repository-relative paths of this repository are rendered."""
+    checked = _checked_out(root)
+    head = _main_head(api)
+    if not _SHA.match(checked or "") or not _SHA.match(head):
+        raise HandoffRefused("the checked-out state or the head of main cannot be read")
+    if checked == head:
+        return head
+    try:
+        cmp = collect.compare_commits(api, CONTROL_REPO, checked, head)
+        if cmp.get("status") != "ahead" or cmp.get("behind_by") != 0:
+            raise HandoffRefused("main no longer contains the checked-out state")
+        files = cmp.get("files")
+        if not isinstance(files, list) or len(files) >= MAX_CHANGED_FILES \
+                or not all(isinstance(f, dict) and isinstance(f.get("filename"), str)
+                           and f["filename"] for f in files):
+            raise HandoffRefused("the changes on main cannot be read in full")
+        names = {f["filename"] for f in files} \
+            | {f["previous_filename"] for f in files if isinstance(f.get("previous_filename"), str)}
+        authorizing = authorizing_paths(record, op)
+        changed = names & authorizing
+        op_path = f".state/operations/{safe_id(op['operation_id'])}.json"
+        if op_path in changed and _intent(_operation_at(api, op["operation_id"], head)) == _intent(op):
+            changed.discard(op_path)
+    except HandoffRefused:
+        raise
+    except Exception as error:  # every failure of the check refuses; nothing is written
+        raise HandoffRefused("the changes on main cannot be read: "
+                             f"{isolation.clean_text(error, 200)}") from None
+    if changed:
+        raise HandoffRefused("the state of the operation changed on main after the checkout: "
+                             + isolation.clean_text(sorted(changed)[0], 200))
+    return head
 
 
 def _rerun_target(root: Path, operation_id: str, policy: dict) -> dict | None:
@@ -1569,6 +1706,11 @@ def main(argv: list[str] | None = None) -> int:
         result = receipt(meta, error=HandoffError("a step of the handoff job failed"))
     else:
         read_api = collect.Api(token=os.environ.get("GH_TOKEN") or None)
+
+        def final_check(record: dict, op: dict) -> str:
+            # Immediately before each write: the state of the operation is
+            # unchanged at the head of main.
+            return unchanged_on_main(root, record, op, read_api)
         try:
             if args.action == "branch":
                 # The fork token only pushes; the CI token, minted only when
@@ -1577,13 +1719,14 @@ def main(argv: list[str] | None = None) -> int:
                     root, args.operation_id, policy=policy, read_api=read_api,
                     token=os.environ.get("UPSTREAMING_FORK_TOKEN") or None,
                     dispatch=_dispatcher(os.environ.get("UPSTREAMING_CI_TOKEN") or None),
-                    workdir=args.workdir, prepared=True,
+                    workdir=args.workdir, prepared=True, final_check=final_check,
                     series=reviewed_series(root, args.operation_id, args.series,
                                            args.artifact_meta))
             else:
                 import status_ledger
                 result = post_package(root, args.operation_id, policy=policy, read_api=read_api,
-                                      issue_api=status_ledger.Api(os.environ["UPSTREAMING_ISSUE_TOKEN"]))
+                                      issue_api=status_ledger.Api(os.environ["UPSTREAMING_ISSUE_TOKEN"]),
+                                      final_check=final_check)
             result = receipt(meta, result)
         except Exception as error:  # every failure is reported by a receipt
             result = receipt(meta, error=error)

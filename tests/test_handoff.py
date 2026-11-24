@@ -310,10 +310,13 @@ class World:
             path.write_text(canonical_json(value))
         return directory
 
-    def run_workflow(self, op_id: str | None = None) -> dict:
+    def run_workflow(self, op_id: str | None = None, final_check=None) -> dict:
         """The receipt the trusted workflow uploads for the operation. The
         build of `riscv64` is the effect `TestUpstreamBranchWithGit` runs
-        against a local fork; here it is simulated after the same checks."""
+        against a local fork; here it is simulated after the same checks.
+        ``final_check`` stands for the check at the head of main immediately
+        before the write (by default it passes)."""
+        final_check = final_check or (lambda record, op: None)
         op = self.operations[op_id or self.record["active_operation_id"]]
         meta = {"operation_id": op["operation_id"], "kind": op["kind"],
                 "contribution_id": CID, "run_id": "777"}
@@ -321,12 +324,13 @@ class World:
             root = self.root(Path(directory))
             try:
                 if op["kind"] == "upstream_branch":
-                    handoff.load_request(root, op["operation_id"], self.policy)
+                    record, loaded = handoff.load_request(root, op["operation_id"], self.policy)
                     head = op["proposed"]["commit"]
                     observed = self.gh.branches["riscv64"]
                     if observed != head:
                         if self.gh.upstream:
                             raise handoff.HandoffBlocked("an upstream PR is open from riscv64")
+                        final_check(record, loaded)
                         self.gh.calls.append(("PUSH", f"riscv64:{observed or ''}->{head}"))
                         self.gh.branches["riscv64"] = head
                     result = {"result": "applied", "clean_head": head, "replaced": observed,
@@ -335,13 +339,14 @@ class World:
                     with mock.patch("collect.compare_commits", self.gh.compare_commits), \
                             mock.patch("collect.branch_head", self.gh.branch_head):
                         result = handoff.post_package(root, op["operation_id"], policy=self.policy,
-                                                      read_api=self.gh, issue_api=self.gh)
+                                                      read_api=self.gh, issue_api=self.gh,
+                                                      final_check=final_check)
                 return handoff.receipt(meta, result)
             except Exception as error:
                 return handoff.receipt(meta, error=error)
 
 
-    def run_rerun(self, op_id: str | None = None) -> dict:
+    def run_rerun(self, op_id: str | None = None, final_check=None) -> dict:
         """The receipt the ``ci-rerun`` job of the handoff workflow uploads:
         the check before any token, then the rerun and its readback."""
         op_id = op_id or self.record["active_operation_id"]
@@ -350,7 +355,8 @@ class World:
             ci_rerun.load_request(root, op_id, self.policy, phase="handoff")
             with mock.patch("collect.branch_head", self.gh.branch_head):
                 return ci_rerun.run_operation(root, op_id, self.gh, self.policy, "4242",
-                                              phase="handoff", sleep=lambda _s: None)
+                                              phase="handoff", sleep=lambda _s: None,
+                                              final_check=final_check or (lambda record, op: None))
 
 
 def failed(world: World, failure=handoff.INFRASTRUCTURE) -> dict:
@@ -873,6 +879,10 @@ class TestCleanHeadCiDispatch(unittest.TestCase):
         with self.assertRaisesRegex(handoff.HandoffError, "dispatch failed"):
             self.go(self.Api("on: workflow_dispatch\n"),
                      lambda *_a: (_ for _ in ()).throw(RuntimeError("HTTP 403")))
+        # A final check that refuses before the dispatch is not a failure of
+        # the attempt: nothing was written and nothing is charged.
+        with self.assertRaises(handoff.HandoffRefused):
+            self.go(self.Api("on: workflow_dispatch\n"), refuse)
         with self.assertRaisesRegex(handoff.HandoffError, "needs the CI token"):
             self.go(self.Api("on: workflow_dispatch\n"), None)
 
@@ -2112,6 +2122,268 @@ class TestTrustedCurrentState(unittest.TestCase):
                 self.assertEqual(json.loads(out.read_text())["result"], "refused")
 
 
+def refuse(*_args):
+    raise handoff.HandoffRefused("the state of the operation changed on main after the checkout: x")
+
+
+class TestFinalCheckAtHeadOfMain(unittest.TestCase):
+    """Immediately before each write the head of main is read again: what
+    the operation is authorized by and built from must be unchanged there,
+    or the write is refused."""
+
+    HEAD = "e" * 40
+
+    def setUp(self):
+        from tests.helpers import git
+
+        self.world = reviewed()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.world.root(Path(self.tmp.name))
+        git(self.root, "init", "-q")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "state")
+        self.checked = git(self.root, "rev-parse", "HEAD")
+        self.record, self.op = handoff.load_request(self.root, self.world.record["active_operation_id"],
+                                                    self.world.policy)
+        self.record_path = f".state/contributions/{contribution_file_id(CID)}.json"
+        self.op_path = f".state/operations/{self.op['operation_id']}.json"
+        self.at_head = self.op
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def api(self, head=None):
+        import base64
+
+        def get(path):
+            if path == f"/repos/{CONTROL_REPO}/git/ref/heads/main":
+                return {"object": {"sha": head or self.HEAD}}
+            if path == (f"/repos/{CONTROL_REPO}/contents/{self.op_path}?ref={head or self.HEAD}"):
+                if self.at_head is None:
+                    raise collect.CollectError("HTTP 404")
+                return {"encoding": "base64",
+                        "content": base64.b64encode(canonical_json(self.at_head).encode()).decode()}
+            raise AssertionError(path)
+        api = mock.Mock()
+        api.get.side_effect = get
+        return api
+
+    def check(self, files=None, cmp=None, api=None):
+        cmp = cmp if cmp is not None else {
+            "status": "ahead", "ahead_by": 1, "behind_by": 0,
+            "files": [{"filename": f} if isinstance(f, str) else f for f in files or []]}
+        compare = cmp if callable(cmp) else mock.Mock(return_value=cmp)
+        with mock.patch("collect.compare_commits", compare):
+            return handoff.unchanged_on_main(self.root, self.record, self.op, api or self.api())
+
+    def test_the_same_commit_passes_with_one_read(self):
+        api = self.api(head=self.checked)
+        with mock.patch("collect.compare_commits", side_effect=AssertionError("compared")):
+            self.assertEqual(handoff.unchanged_on_main(self.root, self.record, self.op, api),
+                             self.checked)
+        api.get.assert_called_once_with(f"/repos/{CONTROL_REPO}/git/ref/heads/main")
+
+    def test_unrelated_commits_pass(self):
+        self.assertEqual(self.check([".state/contributions/other--proj--1.json",
+                                     ".state/events/closeio--ciso8601--1/000099.json",
+                                     "controller.py", ".github/workflows/handoff.yml"]), self.HEAD)
+
+    def test_a_change_to_what_authorizes_the_operation_refuses(self):
+        evidence = [f".state/evidence/{self.record[name]}.json"
+                    for name in ("plan_evidence_id", "last_ci_evidence_id", "submission_rewrite_id",
+                                 "submission_review_id")]
+        self.assertEqual(len(evidence), 4)
+        for path in ["policy.json", self.record_path, *evidence]:
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(handoff.HandoffRefused, re.escape(path)):
+                    self.check(["controller.py", path])
+        # A renamed record (its previous name).
+        with self.assertRaisesRegex(handoff.HandoffRefused, re.escape(self.record_path)):
+            self.check([{"filename": ".state/contributions/x.json",
+                         "previous_filename": self.record_path, "status": "renamed"}])
+
+    def test_a_pause_committed_after_the_checkout_refuses(self):
+        # The record at the head of main is paused: only the path is
+        # rendered, never what changed.
+        with self.assertRaises(handoff.HandoffRefused) as caught:
+            self.check([self.record_path])
+        self.assertIn("changed on main after the checkout", str(caught.exception))
+
+    def test_a_relaunch_count_is_not_a_change(self):
+        self.at_head = recovery.charge_launch(recovery.charge_launch(self.op, T0), T0)
+        self.assertEqual(self.check([self.op_path]), self.HEAD)
+        for name, changed in {
+                "closed": dict(self.op, status="failed"),
+                "other target": dict(self.op, target=dict(self.op["target"], ref="riscv64-dev")),
+                "other proposal": dict(self.op, proposed=dict(self.op["proposed"], tree="9" * 40)),
+                "removed": None}.items():
+            with self.subTest(name):
+                self.at_head = changed
+                with self.assertRaises(handoff.HandoffRefused):
+                    self.check([self.op_path])
+        self.at_head = {"not": "an operation"}
+        with self.assertRaises(handoff.HandoffRefused):
+            self.check([self.op_path])
+
+    def test_what_cannot_be_read_refuses(self):
+        def failing(*_a):
+            raise collect.CollectError("HTTP 502")
+
+        cases = {
+            "diverged": {"status": "diverged", "ahead_by": 1, "behind_by": 1, "files": []},
+            "behind": {"status": "ahead", "ahead_by": 1, "behind_by": 1, "files": []},
+            "no files": {"status": "ahead", "ahead_by": 1, "behind_by": 0},
+            "malformed files": {"status": "ahead", "behind_by": 0, "files": [{"name": "x"}]},
+            "truncated": {"status": "ahead", "behind_by": 0,
+                          "files": [{"filename": f"x/{i}.py"} for i in range(300)]},
+            "compare fails": failing,
+        }
+        for name, cmp in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(handoff.HandoffRefused):
+                    self.check(cmp=cmp)
+        api = mock.Mock()
+        api.get.side_effect = collect.CollectError("HTTP 502")
+        with self.assertRaisesRegex(handoff.HandoffRefused, "head of main cannot be read"):
+            self.check([], api=api)
+        api.get.side_effect = None
+        api.get.return_value = {"object": {"sha": "not a sha"}}
+        with self.assertRaises(handoff.HandoffRefused):
+            self.check([], api=api)
+
+    def test_the_final_check_has_no_default(self):
+        import inspect
+
+        for function in (handoff.build_upstream_branch, handoff.post_package):
+            parameter = inspect.signature(function).parameters["final_check"]
+            self.assertIs(parameter.default, inspect.Parameter.empty, function.__name__)
+            self.assertIs(parameter.kind, inspect.Parameter.KEYWORD_ONLY, function.__name__)
+
+    def test_the_workflow_passes_it_to_each_effect(self):
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": CONTROL_REPO,
+               "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ID": "5",
+               "UPSTREAMING_ISSUE_TOKEN": "t"}
+        op_id = self.op["operation_id"]
+        seen = []
+
+        def effect(root, operation_id, **kwargs):
+            seen.append(operation_id)
+            kwargs["final_check"](self.record, self.op)
+            raise AssertionError("written")
+
+        out = self.root / "handoff/outcome.json"
+        for action, name in (("branch", "build_upstream_branch"), ("comment", "post_package")):
+            with self.subTest(action), mock.patch.dict("os.environ", env), \
+                    mock.patch("os.getcwd", return_value=str(self.root)), \
+                    mock.patch("common.load_policy", return_value=self.world.policy), \
+                    mock.patch(f"handoff.{name}", effect), \
+                    mock.patch("handoff.reviewed_series", return_value=b""), \
+                    mock.patch("handoff.unchanged_on_main", side_effect=refuse) as final, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(handoff.main([action, "--operation-id", op_id, "--out", str(out)]), 0)
+                result = json.loads(out.read_text())
+                self.assertEqual((result["result"], result["failure"]), ("refused", None))
+                final.assert_called_once()
+        self.assertEqual(seen, [op_id, op_id])
+
+
+class TestFinalCheckBeforeEachWrite(unittest.TestCase):
+    """The final check runs immediately before each write, and a refusal
+    there is an uncharged receipt that is not folded."""
+
+    def test_the_package_is_not_posted_when_it_refuses(self):
+        world = through("handoff.preparing_submission")
+        receipt = world.run_workflow(final_check=refuse)
+        self.assertEqual((receipt["result"], receipt["failure"]), ("refused", None))
+        self.assertEqual(world.gh.comments, {})
+        self.assertNotIn("POST", [c[0] for c in world.gh.calls])
+        # A package already posted is discovered and read back: no write, no
+        # check.
+        first = world.run_workflow()
+        again = world.run_workflow(final_check=lambda *_a: self.fail("checked without a write"))
+        self.assertEqual((again["result"], again["comment_id"]), ("applied", first["comment_id"]))
+        # The moved branch is checked first: it still returns for repair.
+        world = through("handoff.preparing_submission")
+        world.gh.branches["riscv64"] = "d" * 40
+        receipt = world.run_workflow(final_check=refuse)
+        self.assertEqual((receipt["result"], receipt["failure"]), ("failed", handoff.MOVED))
+
+    def test_a_refusal_is_relaunched_and_a_paused_record_waits(self):
+        world = reviewed()
+        op_id = world.record["active_operation_id"]
+        receipt = world.run_workflow(final_check=refuse)
+        self.assertEqual(receipt["result"], "refused")
+        self.assertEqual(world.gh.fork_writes(), [])
+        out = world.tick(at(2), receipts=[receipt])
+        self.assertEqual(world.kinds(out), [])
+        self.assertEqual((world.state, world.operations[op_id]["status"]),
+                         ("handoff.building_upstream_branch", "planned"))
+        # The pause the final check saw: nothing is launched or closed while
+        # paused, however long it lasts.
+        out = world.tick(at(3), comments=[comment("/upstreaming pause", cid=930)])
+        self.assertEqual(world.kinds(out), ["pause"])
+        for minute in (20, 40, 60, 120):
+            out = world.tick(at(minute))
+            self.assertEqual((world.kinds(out), out.report["handoff_requests"]), ([], []))
+            self.assertEqual(world.operations[op_id]["status"], "planned")
+        # After the resume the same operation is launched again and confirms.
+        out = world.tick(at(121), comments=[comment(
+            f'/upstreaming resume revision={world.record["revision"]} reason="x"', cid=931)])
+        self.assertEqual(world.kinds(out), ["resume_pause"])
+        self.assertEqual(world.record["active_operation_id"], op_id)
+        self.assertEqual([r["operation_id"] for r in out.report["handoff_requests"]], [op_id])
+        world.tick(at(122), receipts=[world.run_workflow()])
+        self.assertEqual(world.operations[op_id]["status"], "confirmed")
+        self.assertNotEqual(world.state, "handoff.building_upstream_branch")
+
+    def test_the_rerun_request_is_not_made_when_it_refuses(self):
+        world = TestCleanHeadCi.other_tree(None)
+        world.gh.ci_state = "cancelled"
+        world.tick(at(2), receipts=[world.run_workflow()])
+        self.assertEqual(world.active["kind"], "ci_rerun")
+        before = list(world.gh.calls)
+        with self.assertRaises(handoff.HandoffRefused):
+            world.run_rerun(final_check=refuse)
+        self.assertEqual([c for c in world.gh.calls if c not in before and c[0] == "POST"], [])
+        self.assertEqual(world.run_rerun()["status"], "rerun")
+
+    def test_the_rerun_job_writes_no_receipt_when_it_refuses(self):
+        world = TestCleanHeadCi.other_tree(None)
+        world.gh.ci_state = "cancelled"
+        world.tick(at(2), receipts=[world.run_workflow()])
+        op_id = world.record["active_operation_id"]
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": CONTROL_REPO,
+               "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ID": "5", "UPSTREAMING_FORK_TOKEN": "t"}
+        calls = []
+
+        def run_operation(root, operation_id, api, p, run_id, *, phase, final_check):
+            calls.append(phase)
+            if phase == "handoff":
+                final_check(world.record, world.active)
+            else:
+                self.assertIsNone(final_check)
+            return {"status": "rerun"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = world.root(Path(directory))
+            out = root / "ci-rerun/outcome.json"
+            with mock.patch.dict("os.environ", env), mock.patch("os.getcwd", return_value=str(root)), \
+                    mock.patch("common.load_policy", return_value=world.policy), \
+                    mock.patch("ci_rerun.run_operation", run_operation), \
+                    mock.patch("handoff.unchanged_on_main", side_effect=refuse) as final, \
+                    contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(ci_rerun.main(["operation", "--operation-id", op_id,
+                                                "--phase", "handoff", "--out", str(out)]), 1)
+                self.assertFalse(out.exists())
+                self.assertEqual(json.loads(printed.getvalue())["result"], "refused")
+                final.assert_called_once()
+                # The development phase passes no final check (out of scope).
+                self.assertEqual(ci_rerun.main(["operation", "--operation-id", op_id,
+                                                "--out", str(out)]), 0)
+                self.assertTrue(out.exists())
+        self.assertEqual(calls, ["handoff", "development"])
+
+
 class TestOperationTable(unittest.TestCase):
     def test_fires_and_counts(self):
         for (state, kind), fires in recovery.FIRES.items():
@@ -2268,7 +2540,7 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
             (state / rel).write_text(canonical_json(value))
         return state, op, checked
 
-    def build(self, state, op, mbox, *, observed=None, push=None):
+    def build(self, state, op, mbox, *, observed=None, push=None, final_check=None):
         def branch_head(_api, _name, ref):
             if observed:
                 return {"head": observed.pop(0)}
@@ -2286,7 +2558,8 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
                 mock.patch("collect.upstream_pull_requests", lambda *_a, **_k: list(self.upstream_prs)), \
                 mock.patch("collect.fork_pull_requests", lambda *_a, **_k: list(self.fork_prs)):
             return handoff.build_upstream_branch(state, op["operation_id"], policy=policy(),
-                                                 read_api=object(), token="t", series=mbox, push=push)
+                                                 read_api=object(), token="t", series=mbox, push=push,
+                                                 final_check=final_check or (lambda record, op: None))
 
     def test_riscv64_is_not_written_while_it_heads_a_fork_pr_or_without_riscv64_dev(self):
         approved = self.development(("Build riscv64", {"setup.py": "b\n"}))
@@ -2337,6 +2610,84 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
         pushes = []
         again = self.build(state, op, mbox, push=lambda *a: pushes.append(a))
         self.assertEqual((again["written"], pushes), (False, []))
+
+    def test_the_final_check_runs_immediately_before_the_push(self):
+        approved = self.development(("Build riscv64", {"setup.py": "b\n"}))
+        mbox = self.reviewed_series(approved, "Build riscv64 wheels")
+        state, op, checked = self.state(approved, mbox)
+        pushes = []
+        with self.assertRaises(handoff.HandoffRefused) as caught:
+            self.build(state, op, mbox, push=lambda *a: pushes.append(a), final_check=refuse)
+        self.assertEqual((pushes, self.branch()), ([], None))
+        receipt = handoff.receipt({"operation_id": op["operation_id"]}, error=caught.exception)
+        self.assertEqual((receipt["result"], receipt["failure"]), ("refused", None))
+        # It runs after the lease read and the open-PR check, directly before
+        # the push, with the record and operation the effect loaded.
+        events = []
+        real_head = self.branch
+
+        def final_check(record, loaded):
+            self.assertEqual(loaded["operation_id"], op["operation_id"])
+            self.assertEqual(record["active_operation_id"], op["operation_id"])
+            events.append("check")
+
+        def push(work, args, auth):
+            events.append("push")
+            import fork_publish
+            return handoff._git(work, "push", "--porcelain", fork_publish._url("riseproject-upstreaming/proj"),
+                                *args, check=False, env=auth)
+
+        def lease(_api, _name, ref):
+            events.append(f"read {ref}")
+            head = real_head(ref)
+            return {"head": head} if head else None
+
+        with mock.patch("collect.branch_head", lease), \
+                mock.patch("collect.upstream_pull_requests",
+                           lambda *_a, **_k: events.append("prs") or []), \
+                mock.patch("collect.fork_pull_requests", lambda *_a, **_k: []):
+            handoff.build_upstream_branch(state, op["operation_id"], policy=policy(), read_api=object(),
+                                          token="t", series=mbox, push=push, final_check=final_check)
+        self.assertEqual(events, ["read riscv64-dev", "read riscv64", "prs", "check", "push",
+                                  "read riscv64"])
+        self.assertEqual(self.branch(), checked["head"])
+        # Already at the reviewed head: read back, nothing written, no check.
+        again = self.build(state, op, mbox, final_check=lambda *_a: self.fail("checked without a write"))
+        self.assertFalse(again["written"])
+
+    def test_the_ci_dispatch_has_its_own_final_check(self):
+        approved = self.development(("Build riscv64", {"setup.py": "b\n"}),
+                                    ("{debug} trace", {"ci.yml": "jobs: [debug]\n"}))
+        mbox = self.reviewed_series(approved, "Build riscv64 wheels")
+        state, op, checked = self.state(approved, mbox)
+        checks, dispatched = [], []
+
+        def second_refuses(record, loaded):
+            checks.append(len(checks))
+            if len(checks) == 2:
+                refuse()
+
+        def fake_dispatch_ci(_api, *, fork, head, workflow_path, dispatch):
+            # A dispatch is really made.
+            dispatch(f"/repos/{fork}/actions/workflows/build.yml/dispatches",
+                     {"ref": "refs/heads/riscv64"})
+            return {"ci_dispatch": handoff.DISPATCHED, "ci_workflow": ".github/workflows/build.yml"}
+
+        with mock.patch("handoff.dispatch_clean_head_ci", fake_dispatch_ci):
+            with self.assertRaises(handoff.HandoffRefused) as caught, \
+                    mock.patch("collect.branch_head",
+                               lambda _a, _n, ref: {"head": self.branch(ref)} if self.branch(ref) else None), \
+                    mock.patch("collect.upstream_pull_requests", lambda *_a, **_k: []), \
+                    mock.patch("collect.fork_pull_requests", lambda *_a, **_k: []):
+                handoff.build_upstream_branch(
+                    state, op["operation_id"], policy=policy(), read_api=object(), token="t",
+                    series=mbox, final_check=second_refuses,
+                    dispatch=lambda path, body: dispatched.append(path))
+        # The push happened, the dispatch did not, and the receipt is an
+        # uncharged refusal.
+        self.assertEqual((self.branch(), dispatched, checks), (checked["head"], [], [0, 1]))
+        receipt = handoff.receipt({"operation_id": op["operation_id"]}, error=caught.exception)
+        self.assertEqual((receipt["result"], receipt["failure"]), ("refused", None))
 
     def test_a_squashed_series_with_the_same_tree_is_built(self):
         approved = self.development(("Build riscv64", {"setup.py": "b\n"}),
@@ -2445,7 +2796,8 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
                 mock.patch("collect.fork_pull_requests", lambda *_a, **_k: []):
             return handoff.build_upstream_branch(state, op["operation_id"], policy=policy(),
                                                  read_api=object(), token="t", series=mbox,
-                                                 workdir=work, prepared=True)
+                                                 workdir=work, prepared=True,
+                                                 final_check=lambda record, op: None)
 
 
 class TestCollector(unittest.TestCase):

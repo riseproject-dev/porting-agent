@@ -26,8 +26,9 @@ Two paths use it, and no workflow of its own:
   the effect; the controller launches it through the development PR
   workflow in development, and through the ``ci-rerun`` job of the handoff
   workflow in handoff (``operation --phase``, after ``check`` before any
-  token), and the reconciler reads the new attempt back before it closes
-  the operation. In handoff the operation reruns CI on the clean head on
+  token, and with the check at the head of ``main`` immediately before the
+  request, ``handoff.unchanged_on_main``), and the reconciler reads the new
+  attempt back before it closes the operation. In handoff the operation reruns CI on the clean head on
   ``riscv64`` (or on the approved candidate head on ``riscv64-dev`` when
   the reviewed series has its tree, ``handoff.ci_head``).
 
@@ -541,14 +542,19 @@ def load_request(root: Path, operation_id: str, policy: dict, *,
 
 def run_operation(root: Path, operation_id: str, api: Api, policy: dict, run_id: str, *,
                   phase: str = "development",
-                  sleep: Callable[[float], None] = time.sleep) -> dict:
+                  sleep: Callable[[float], None] = time.sleep,
+                  final_check: Callable[[dict, dict], Any] | None = None) -> dict:
     """Execute a planned ``ci_rerun`` operation and return its receipt.
 
     The stale fence before the request: in development the development head
     is the recorded head and ``riscv64-dev`` still resolves to it; in
     handoff ``riscv64`` still resolves to the clean head (the guard of the
     observation), and a moved ``riscv64-dev`` does not block it. Every run
-    is read on the expected head before it is rerun (``request``)."""
+    is read on the expected head before it is rerun (``request``).
+    ``final_check(record, op)`` runs immediately before the request: in
+    handoff the CLI passes ``handoff.unchanged_on_main``, which raises
+    ``handoff.HandoffRefused`` when the state of the operation changed at the
+    head of ``main``."""
     record, op = load_request(root, operation_id, policy, phase=phase)
     fork = op["target"]["repository"]
     head = op["target"]["expected_head"]
@@ -570,6 +576,8 @@ def run_operation(root: Path, operation_id: str, api: Api, policy: dict, run_id:
         fence = head
     if not observed or observed["head"] != fence:
         return base | {"status": "stale", "runs": []}
+    if final_check is not None:
+        final_check(record, op)
     return base | request(api, fork, head, marker_runs(op), sleep=sleep)
 
 
@@ -617,11 +625,31 @@ def main(argv: list[str] | None = None) -> int:
     if a.out is None:
         ap.error("--out is required")
     if a.cmd == "operation":
+        import handoff
+        import isolation
+
         _trusted_workflow()
         token = os.environ.pop("UPSTREAMING_FORK_TOKEN", "")
-        result = run_operation(Path.cwd(), a.operation_id or "",
-                               Api(token=token, reader=collect.Api()), policy,
-                               os.environ["GITHUB_RUN_ID"], phase=a.phase)
+        final_check = None
+        if a.phase == "handoff":
+            # Immediately before the rerun request: the state of the
+            # operation is unchanged at the head of main.
+            state_api = collect.Api(token=os.environ.get("GH_TOKEN") or None)
+
+            def final_check(record: dict, op: dict) -> str:
+                return handoff.unchanged_on_main(Path.cwd(), record, op, state_api)
+        try:
+            result = run_operation(Path.cwd(), a.operation_id or "",
+                                   Api(token=token, reader=collect.Api()), policy,
+                                   os.environ["GITHUB_RUN_ID"], phase=a.phase,
+                                   final_check=final_check)
+        except handoff.HandoffRefused as error:
+            # Like a refused check: no receipt (the refusal can be
+            # transient); the launch budget relaunches the operation, then
+            # closes it.
+            print(json.dumps({"operation_id": a.operation_id, "result": "refused",
+                              "reason": isolation.clean_text(error, 200)}))
+            return 1
         code = 0
     elif a.cmd == "preflight":
         result = preflight(record=json.loads(a.record.read_text()),

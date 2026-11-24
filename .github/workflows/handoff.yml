@@ -11,9 +11,10 @@
 # handoff.waiting_ci) with a token for the one fork that carries only
 # `actions: write`, and post the submission package on the tracking issue. Each job checks out the state at the head of main, checks
 # that it is still the head and still runs the controller-recorded operation
-# before it mints a token, validates the operation again before any effect, and
-# uploads a receipt the controller reads back. No model runs here and no
-# credential can write upstream.
+# before it mints a token, validates the operation again before any effect,
+# immediately before each write checks at the head of main that the state of
+# the operation did not change, and uploads a receipt the controller reads
+# back. No model runs here and no credential can write upstream.
 name: Handoff
 run-name: "Handoff ${{ inputs.operation-id }}"
 on:

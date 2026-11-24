@@ -873,6 +873,38 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.fix_needed", "request_repair"),
                      ("planning.idle", "dispatch_planning")),
     ),
+    Item(
+        "The final check of a handoff effect reads the head of `main`",
+        "Whether a pause, a `read_only` policy, or another change of the state committed to "
+        "`main` after a handoff job checked its checkout stops the write. Before, each job "
+        "checked that its checkout was the head of `main` before it minted its token, and its "
+        "final check before the write read that same checkout, so a change committed in the "
+        "minutes between was not seen.",
+        "Immediately before each write of `handoff.yml` (the push of `riscv64`, the CI dispatch "
+        "on it, the post of the package, and the rerun request of the `ci-rerun` job) the head "
+        "of `main` is read again (`handoff.unchanged_on_main`). The same commit as the checkout "
+        "passes. Otherwise `main` must contain the checkout, and none of the files that "
+        "authorize the operation may have changed between the two commits: the policy, the "
+        "record, the operation (other than its launch count and `updated_at`, which a relaunch "
+        "changes), and the plan, CI, rewrite, and review evidence the record names. An "
+        "unrelated commit does not refuse, so other contributions do not spend the launches of "
+        "a healthy run; a change to code or workflows does not refuse either, since pause and "
+        "`read_only` are the operator's stops. An unreadable head, a `main` that no longer "
+        "contains the checkout, or a comparison that is malformed or lists 300 files or more "
+        "refuses (fail closed). A refusal is a `refused` receipt (no receipt for the rerun) "
+        "that charges no attempt and is not folded: the operation is launched again within "
+        "`operation_launch`, not while paused, and spent launches are a failed infrastructure "
+        "attempt within `upstream_branch` or `submission_comment`, then a human wait. A change "
+        "committed after that last read is not seen: the table already says that an effect "
+        "that passed the publisher's final check before a pause may finish, and the reconciler "
+        "reads every effect back. No row, budget, or record field changes.",
+        ("handoff.building_upstream_branch", "handoff.waiting_ci", "handoff.preparing_submission",
+         "handoff.waiting_upstream_pr"),
+        edges=(("handoff.building_upstream_branch", "confirm_clean_head"),
+               ("handoff.preparing_submission", "confirm_submission_package")),
+        highlighted=(("handoff.building_upstream_branch", "confirm_clean_head"),
+                     ("handoff.preparing_submission", "confirm_submission_package")),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
