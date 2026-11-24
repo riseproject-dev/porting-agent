@@ -39,6 +39,7 @@ import recovery
 import schemas
 import state
 import work as work_queue
+import work_task
 from commands import URGENT, Command
 from common import (
     CONTROL_REPO,
@@ -1200,9 +1201,26 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 rep["deferred"].append({"contribution": c["contribution_id"],
                                         "why": f"no Work is allocated in {state}"})
                 continue
-            verb, why = _due_allocation(due, allocations, facts, ci, ops, inputs, policy, now)
+            verb, why, allocated = _due_allocation(due, allocations, facts, ci, ops, inputs,
+                                                   policy, now)
             if verb is None:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
+                continue
+            # The Work is allocated only when its task can be committed and
+            # queued: the dry run builds the task file and the queue payload
+            # of the Work the row would request. When it cannot, nothing is
+            # allocated or charged: it is a failure of the pipeline, not of
+            # the contribution, and the check is made again in the next tick
+            # (after a change of the code, or of what the task is built from).
+            unbuildable = work_task.dry_run(allocated, evidence or {})
+            if unbuildable:
+                cause = (f"the task file could not be built: {unbuildable}; a failure of the "
+                         "pipeline, not of the contribution")
+                rep["deferred"].append({"contribution": c["contribution_id"],
+                                        "why": f"held: {cause}"})
+                rep["alerts"].append({"contribution": c["contribution_id"],
+                                      "alert": f"{verb} is held until the pipeline code "
+                                               f"changes: {cause}"})
                 continue
             kind = task_for(verb, due)
             candidates.append((PRIORITY[kind], c["updated_at"], kind, c, verb))
@@ -1472,10 +1490,11 @@ def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
 
 def _due_allocation(due: dict, allocations: tuple[str, ...], facts: frozenset, ci: dict | None,
                     ops: tuple[str, ...], inputs: Inputs, policy: dict,
-                    now: str) -> tuple[str | None, str | None]:
+                    now: str) -> tuple[str | None, str | None, dict | None]:
     """The row that allocates the Work due in this state once a worker slot
-    and capacity are free, or why none applies: evaluated here (nothing is
-    staged), and taken by the selection once the slot is assigned."""
+    and capacity are free, or why none applies, and the record after it:
+    evaluated here (nothing is staged), and taken by the selection once the
+    slot is assigned."""
     match engine.dispatch(engine.try_apply_one_of(
             due, allocations, policy=policy, now=now, facts=facts, ci_evidence=ci,
             open_operations=ops,
@@ -1483,9 +1502,9 @@ def _due_allocation(due: dict, allocations: tuple[str, ...], facts: frozenset, c
                 due, task_for(verb, due), inputs, now)}}),
             ("controller", "_due_allocation"), "|".join(allocations)):
         case engine.Applied() as allocation:
-            return allocation.verb, None
+            return allocation.verb, None, allocation.record
         case engine.Skip(refused):
-            return None, refused.detail
+            return None, refused.detail, None
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("controller", "_due_allocation"))
 

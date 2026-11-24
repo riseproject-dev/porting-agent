@@ -169,6 +169,9 @@ def effects_text(e: lc.Effects) -> str:
     if e.restarts:
         parts.append(f"starts again the counter named in `{lc.PENDING_COUNTER}` "
                      f"(one of {code(e.restarts)})")
+    if e.credits:
+        parts.append(f"gives back {code(e.credits)} as the lost allocation charged them "
+                     f"(`{lc.PENDING_CREDIT}`)")
     return "; ".join(parts) or "none"
 
 

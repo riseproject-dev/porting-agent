@@ -3279,3 +3279,22 @@ flowchart TB
     handoff_waiting_human ==>|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
     development_waiting_human ==>|resume_upstream_read| development_fix_needed
 ```
+
+### The task of a Work is a file in the state, and the queue carries a reference
+
+How does a Work whose task outgrows the payload of the work queue reach its agent, and who pays for a dispatch that never reached the queue (the owner's decision of 2026-11-24)?
+
+**Change.** The owner's decision: everything the agents need is committed by the controller into `.state` as one task file (addressed by the task id, pinned by commit and SHA-256), and the gh-aw queue payload keeps only a fixed-size reference to it (repository, commit, path, SHA-256, plus what gh-aw needs: the task kind, the dedupe key, the resource scope and the effect contract). The controller commits the file (`task` evidence, derived from the Work id) in the commit that records the Work and its history, so the dispatcher defers Work without it and every reader resolves the reference (`task_file.resolve`) and gets the payload it always had. The controller builds the task and the payload before it takes a row that requests Work, and takes none when it cannot: it is a failure of the pipeline, held with an alert, never charged to the contribution. A wait with `dispatch_failed` takes `rearm_dispatch` once the pipeline code is not the version it failed at (the version is recorded by `exhaust_recovery`, so it resumes once per version), and the row gives back the budgets the lost allocation charged (`Effects.credits`, `active_work.charged`, `pending_human_action.credit`). No new verb, state or flag.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_fix_needed -->|request_patch| development_agent_running
+    development_agent_running ==>|exhaust_recovery| development_waiting_human
+    development_waiting_human ==>|rearm_dispatch| development_fix_needed
+```

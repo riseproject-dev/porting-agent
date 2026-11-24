@@ -250,7 +250,7 @@ flowchart TB
     planning_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal Work graph is never submitted again under the same identity. Every Work allocation also charges `work_total`. While the installed work-queue Policy refuses every dispatch, a dispatch is not decided until the queue is quiescent, where the dispatcher reinstalls the compiled policy; a dispatch that failed before the reinstall is re-armed by `rearm_dispatch`.
+Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal Work graph is never submitted again under the same identity. Every Work allocation also charges `work_total`. While the installed work-queue Policy refuses every dispatch, a dispatch is not decided until the queue is quiescent, where the dispatcher reinstalls the compiled policy; a dispatch that failed before the reinstall, or at an earlier version of the pipeline code, is re-armed by `rearm_dispatch`, which gives back the budgets its lost allocation charged.
 
 ### Failure case 4: fork provisioning fails or its outcome is uncertain
 
@@ -335,7 +335,7 @@ flowchart TB
     development_waiting_human -->|rearm_dispatch| development_fix_needed
 ```
 
-Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion wait for a human in development. A rejected proposal, a replan, and a resume keep the pending feedback. A dispatch that failed while the installed work-queue Policy refused every dispatch is re-armed by `rearm_dispatch` once the dispatcher has reinstalled the compiled policy.
+Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion wait for a human in development. A rejected proposal, a replan, and a resume keep the pending feedback. A dispatch that failed while the installed work-queue Policy refused every dispatch, or at an earlier version of the pipeline code, is re-armed by `rearm_dispatch` once the dispatcher has reinstalled the compiled policy or the code has changed, and gives back the budgets its lost allocation charged.
 
 ### Failure case 2: trusted publication failure
 

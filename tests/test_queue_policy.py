@@ -152,12 +152,12 @@ class TestPolicyRecovery(unittest.TestCase):
         self.record = waiting()
         self.failed = datetime.fromisoformat(self.record["pending_human_action"]["requested_at"])
 
-    def recover(self, projection_, *, runs=(), now=None):
+    def recover(self, projection_, *, runs=(), now=None, pipeline=None):
         contributions = {"c": copy.deepcopy(self.record)}
-        status = queue_policy.status(projection_, compiled())
-        launch, staged, report = reconcile.queue_policy_recovery(
+        status = queue_policy.status(projection_, compiled()) if projection_ is not None else None
+        launch, staged, report = reconcile.dispatch_failure_recovery(
             contributions, queue_policy=status, runs=list(runs),
-            now=now or self.failed + timedelta(hours=2), policy=self.policy)
+            now=now or self.failed + timedelta(hours=2), policy=self.policy, pipeline=pipeline)
         return contributions["c"], launch, staged, report
 
     def test_the_stuck_record_is_re_armed_once_the_policy_is_reinstalled(self):
@@ -238,6 +238,57 @@ class TestPolicyRecovery(unittest.TestCase):
                  "created_at": (now - timedelta(hours=5)).isoformat()}
         self.assertEqual(self.recover(projection(), runs=[stuck], now=now)[1],
                          [{"type": "reinstall_queue_policy"}])
+
+    def test_a_changed_pipeline_re_arms_without_a_policy_reinstall(self):
+        """A dispatch that failed for the dispatch path, whatever its cause,
+        is re-armed once the pipeline code is not the version it failed at,
+        and gives back what its allocation charged."""
+        self.record["budget"] = dict(self.record["budget"], attempts_used=4)
+        record, launch, staged, report = self.recover(None, pipeline="a" * 64)
+        self.assertEqual(engine.state_key(record), "planning.idle")
+        self.assertIsNone(record["pending_human_action"])
+        self.assertEqual(launch, [])
+        # A wait that records no credit gives back `work_total`, as every
+        # allocation charges it.
+        self.assertEqual(record["budget"]["attempts_used"], 3)
+        [event] = [r for kind, r in staged if kind == "events"]
+        self.assertEqual(event["kind"], "rearm_dispatch")
+        self.assertEqual(event["cause"]["id"], "pipeline:" + "a" * 12)
+        self.assertEqual(event["details"]["credited"], ["work_total"])
+        self.assertEqual((event["details"]["cause"], event["details"]["automatic"],
+                          event["details"]["pipeline_version"]),
+                         ("pipeline_changed", True, "a" * 64))
+        self.assertIsNone(event["details"]["failed_at_version"])
+        self.assertIn("pipeline code changed", report[0]["decision"])
+
+    def test_what_the_lost_allocation_charged_is_given_back(self):
+        self.record["budget"] = dict(self.record["budget"], attempts_used=4,
+                                     clusters={"build": 2, "test": 1})
+        self.record["pending_human_action"]["credit"] = [
+            "repair_attempts_cluster:build", "work_total", "dispatch_recovery"]
+        record, _launch, staged, _report = self.recover(None, pipeline="a" * 64)
+        self.assertEqual((record["budget"]["attempts_used"], record["budget"]["clusters"]),
+                         (3, {"build": 1, "test": 1}))
+        [event] = [r for kind, r in staged if kind == "events"]
+        self.assertEqual(event["details"]["credited"],
+                         ["repair_attempts_cluster:build", "work_total"])
+
+    def test_a_wait_resumes_once_per_version_of_the_code(self):
+        self.record["pending_human_action"]["pipeline_version"] = "a" * 64
+        record, _launch, staged, report = self.recover(None, pipeline="a" * 64)
+        self.assertEqual((record, staged), (self.record, []))
+        self.assertIn("no change of the pipeline code", report[0]["decision"])
+        # An unknown version of the code resumes nothing.
+        self.assertEqual(self.recover(None, pipeline=None)[2], [])
+        record, _launch, staged, _report = self.recover(None, pipeline="b" * 64)
+        self.assertEqual(engine.state_key(record), "planning.idle")
+        self.assertEqual(staged[-1][1]["details"]["failed_at_version"], "a" * 64)
+
+    def test_a_paused_record_waits_for_a_change_of_the_code_too(self):
+        self.record.update(paused=True, paused_at=NOW, paused_by="human", paused_reason="hold")
+        record, _launch, staged, _report = self.recover(None, pipeline="a" * 64)
+        self.assertEqual(staged, [])
+        self.assertEqual(engine.state_key(record), "planning.waiting_human")
 
     def test_a_busy_queue_launches_nothing(self):
         p = projection()

@@ -25,6 +25,10 @@ Every terminal path of a trusted workflow explicitly continues `controller.yml`:
 
 Missing Work, unavailable queue state, invalid research, malformed artifacts, and exhausted dispatch retries fail closed. None of them fabricates Completion, a Result, or state.
 
+## A dispatch that failed for the pipeline
+
+A dispatch that never reached the queue is a failure of the dispatch path, never of the contribution. The controller does not request Work whose task it cannot commit and queue: it holds the request with an alert, charges nothing, and checks again in every tick. A contribution that waits for a human with `dispatch_failed` is resumed by the controller once the pipeline code changes (once per version of the code, which the next failure records), gives back the budgets the lost request charged, and requests the Work again: no human resume is needed, and `/upstreaming resume` still works.
+
 ## An interrupted planning record job
 
 If the trusted record job of a planning run is interrupted after queue Result resolution, its partial `porting-publication` still contains the trusted task, the exact Result receipt, the plan, and the proposal. Ordinary controller collection:

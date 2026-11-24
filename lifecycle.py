@@ -369,7 +369,9 @@ class Effects:
     clear in ``QUALIFIED_CLEARS`` clears only the part of a field it names.
     ``restarts`` names the budgets whose counter the transition may start
     again: it starts exactly the one named in ``pending_human_action.counter``,
-    and none when no counter is named.
+    and none when no counter is named. ``credits`` names the budgets the
+    transition gives back: those the allocation of the lost Work charged
+    (``pending_human_action.credit``, else ``work_total`` alone).
     """
 
     revision: str = "keep"
@@ -378,6 +380,7 @@ class Effects:
     sets: tuple[str, ...] = ()
     clears: tuple[str, ...] = ()
     restarts: tuple[str, ...] = ()
+    credits: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.revision not in ("keep", "bump") or self.generation not in ("keep", "bump"):
@@ -623,6 +626,14 @@ PENDING_GUARDS: dict[str, tuple[bool, tuple[str, ...]]] = {}
 # The field in which an exhaustion that leads to a human wait names the
 # counter that the resume from that wait starts again.
 PENDING_COUNTER = "pending_human_action.counter"
+# The fields in which the exhaustion of a lost dispatch records the version of
+# the pipeline code it failed at, and the budgets its Work's allocation charged
+# (`active_work.charged`), which the re-arm gives back.
+PENDING_PIPELINE = "pending_human_action.pipeline_version"
+PENDING_CREDIT = "pending_human_action.credit"
+# The budgets an allocation charges that a lost dispatch gives back: the
+# counter of the Work, and the repair counter of the failing CI job.
+CREDITABLE = ("work_total", "repair_attempts_cluster")
 
 
 def _one_of(kinds: tuple[str, ...]) -> str:
@@ -787,11 +798,17 @@ def _exhaust_recovery(*failures: str) -> Transition:
                    *((NOT_PIPELINE_FAILURE,) if "work_terminal_without_result" in failures
                      else ())),
         _E(work="clear", sets=("pending_human_action=" + "|".join(kinds), PENDING_COUNTER,
+                               *((PENDING_PIPELINE, PENDING_CREDIT)
+                                 if "dispatch_lost" in failures else ()),
                                *(("pending_publication.exhausted",) if held else ()))),
         description="The pending action names the failure, and `pending_human_action.counter` "
                     "the budget it spent: " + "; ".join({
                         "dispatch_lost": "`dispatch_failed` with `dispatch_recovery` for a lost "
-                                         "dispatch",
+                                         "dispatch, which also records the version of the "
+                                         "pipeline code it failed at "
+                                         "(`pending_human_action.pipeline_version`) and the "
+                                         "budgets the allocation of the lost Work charged "
+                                         "(`pending_human_action.credit`)",
                         "work_terminal_without_result":
                             "`work_failed` for a Work graph terminal without a usable Result, "
                             "with `work_total` when that budget is exhausted (also when "
@@ -809,18 +826,27 @@ _EXHAUST_WORK_RECOVERY = _exhaust_recovery("dispatch_lost", "work_terminal_witho
 _EXHAUST_PUBLICATION_RECOVERY = _exhaust_recovery(
     "dispatch_lost", "work_terminal_without_result", "publication_infrastructure_error")
 _EXHAUST_PUBLISH_RECOVERY = _exhaust_recovery("publication_infrastructure_error")
-# A dispatch refused because the installed work-queue Policy no longer
-# matches the compiled one is not a failure of the Work: once the dispatcher
-# reinstalls the compiled policy, the controller requests the Work again.
-QUEUE_POLICY_REINSTALLED = ("the work-queue Policy was installed after the dispatch failed, and "
-                            "the compiled policy preserves it")
+# A dispatch that failed for the dispatch path, never for the output of the
+# contribution (the installed work-queue Policy no longer matched the compiled
+# one, or the Work could not be queued at all), is not a failure of the Work:
+# once the cause can have changed, the controller requests the Work again and
+# gives back what the lost allocation charged.
+DISPATCH_CAUSE_CHANGED = ("the work-queue Policy was installed after the dispatch failed and the "
+                          "compiled policy preserves it, or the pipeline code changed since the "
+                          "dispatch failed")
 _REARM_DISPATCH = Transition(
     _K, None,
-    (pending_is("dispatch_failed"), QUEUE_POLICY_REINSTALLED, NOT_PAUSED, QUIESCENT),
-    _E(revision="bump", clears=("pending_human_action",), restarts=("dispatch_recovery",)),
-    description="Re-arms a dispatch that failed while the installed work-queue Policy refused "
-                "every dispatch, once the dispatcher has reinstalled the compiled policy: the "
-                "same transition as the resume a human would post, taken by the controller.")
+    (pending_is("dispatch_failed"), DISPATCH_CAUSE_CHANGED, NOT_PAUSED, QUIESCENT),
+    _E(revision="bump", clears=("pending_human_action",), restarts=("dispatch_recovery",),
+       credits=CREDITABLE),
+    description="Re-arms a dispatch that failed, once its cause can have changed: the dispatcher "
+                "reinstalled the compiled policy that the installed one refused, or the pipeline "
+                "code changed since the failure (a resume once per version of the code, which "
+                "the next failure records). The Work the lost dispatch allocated is given back "
+                "its budgets: `work_total` (and the repair counter of its failing CI job) as "
+                "its allocation charged them (`pending_human_action.credit`), `work_total` "
+                "alone for a wait that records none. The same transition as the resume a "
+                "human would post, taken by the controller.")
 # Guards that decide which transition applies when Work is due. EXCLUSIVE_GUARDS
 # lists the combinations that cannot hold together.
 WORK_TOTAL_REMAINS = "work_total remains"
@@ -3319,8 +3345,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "same identity. Every Work allocation also charges `work_total`. While the "
                      "installed work-queue Policy refuses every dispatch, a dispatch is not "
                      "decided until the queue is quiescent, where the dispatcher reinstalls the "
-                     "compiled policy; a dispatch that failed before the reinstall is re-armed by "
-                     "`rearm_dispatch`."),
+                     "compiled policy; a dispatch that failed before the reinstall, or at an "
+                     "earlier version of the pipeline code, is re-armed by `rearm_dispatch`, "
+                     "which gives back the budgets its lost allocation charged."),
             Diagram(
                 "Failure case 4: fork provisioning fails or its outcome is uncertain",
                 ("provisioning.idle", "provisioning.waiting_human", "development.fix_needed",
@@ -3396,8 +3423,10 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 text="Dispatch recovery and bounded repair are automatic. Dispatch and Work "
                      "exhaustion wait for a human in development. A rejected proposal, a replan, "
                      "and a resume keep the pending feedback. A dispatch that failed while the "
-                     "installed work-queue Policy refused every dispatch is re-armed by "
-                     "`rearm_dispatch` once the dispatcher has reinstalled the compiled policy."),
+                     "installed work-queue Policy refused every dispatch, or at an earlier "
+                     "version of the pipeline code, is re-armed by `rearm_dispatch` once the "
+                     "dispatcher has reinstalled the compiled policy or the code has changed, "
+                     "and gives back the budgets its lost allocation charged."),
             Diagram(
                 "Failure case 2: trusted publication failure",
                 ("development.agent_running", "development.publishing", "development.fix_needed",

@@ -24,6 +24,7 @@ Evidence is append-only: a task file is never removed, like the history.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -209,11 +210,13 @@ def build(record: dict, evidence: dict[str, dict], *, policy: dict, now: str,
 
 
 def dry_run(record: dict, evidence: dict[str, dict]) -> str | None:
-    """Why the task of the Work ``record`` requests cannot be built, or
-    ``None`` when it can: the controller asks before it allocates the Work,
+    """Why the task of the Work ``record`` requests cannot be built or queued,
+    or ``None`` when it can: the controller asks before it allocates the Work,
     with the history it would record in the same commit (the history is
-    bounded, so it stands in for itself). The digests are those of a task
-    built later, and have the same size."""
+    bounded, so it stands in for itself), and the dispatch recovery asks for
+    Work that was allocated without. The digests are those of a task built
+    later, and have the same size, and the queue payload is measured with the
+    longest control repository id."""
     request = work.request_from_active(record)
     if request is None:
         return None
@@ -228,6 +231,12 @@ def dry_run(record: dict, evidence: dict[str, dict]) -> str | None:
                  "summary": "x", "data": data, "digests": {"task_id": "0" * 64}}
         if len(canonical_json(probe).encode()) > TASK_FILE_MAX_BYTES + 4096:
             return "the task file is over its size bound"
+        queued = work.queue_payload(
+            request, control_repo_id="9" * work.CONTROL_REPO_ID_MAX_DIGITS,
+            reference=task_file.reference(request["dedupe_key"], "0" * 40, "0" * 64))
+        size = len(json.dumps(queued, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > work.MAX_QUEUE_PAYLOAD_BYTES:
+            return f"the queue payload takes {size} bytes, over {work.MAX_QUEUE_PAYLOAD_BYTES}"
     except TaskFileError as error:
         return str(error)
     return None

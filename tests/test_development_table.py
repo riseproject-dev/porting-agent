@@ -58,6 +58,8 @@ REVIEW = {"review_ids": [77], "comment_ids": [], "conversation_comment_ids": [],
           "conversation_comments": [], "inquiry_comment_ids": [],
           "inquiry_conversation_comment_ids": [], "inquiry_comments": [],
           "inquiry_conversation_comments": []}
+FROZEN_ISSUE = {"id": 5000, "number": 12, "description": "d", "description_digest": "d" * 64,
+                "url": "https://github.com/riseproject-dev/porting-agent/issues/12"}
 HELD = {"worker_run_id": "555", "attempts": 1, "last_reason": "HTTP 502",
         "next_attempt_at": NOW, "exhausted": False}
 
@@ -1016,7 +1018,8 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         wait. A history recorded by a later tick counts the runs from the
         time it was recorded."""
         rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair",
-                                       requested_at="2026-11-23T08:00:00+00:00"))
+                                       requested_at="2026-11-23T08:00:00+00:00",
+                                       tracking_issue=FROZEN_ISSUE))
         runs = [{"id": 100 + i, "status": "completed",
                  "created_at": f"2026-11-23T08:{10 + i:02d}:00Z"} for i in range(3)]
         out = tick(rec, observe=False, runs=runs)
@@ -1047,6 +1050,30 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
                                 "contribution_id": rec["contribution_id"]}]))
         self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
                          "relaunch: no dispatcher run")
+
+    def test_work_whose_task_file_cannot_be_built_is_held_not_charged(self):
+        """Work the queue does not hold, allocated by code that did not check
+        that its task can be built, is a failure of the pipeline: nothing is
+        launched, charged or waited for, and the alert says so, until the
+        pipeline code changes."""
+        rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair",
+                                       requested_at=T.isoformat()))
+        runs = [{"id": 100 + i, "status": "completed",
+                 "created_at": f"2026-11-23T09:{10 + i:02d}:00Z"} for i in range(3)]
+        out = tick(rec, observe=False, runs=runs, now=T + timedelta(hours=1))
+        self.assertEqual((out.staged, out.report["dispatch_relaunch"]), ([], []))
+        [entry] = out.report["dispatch_recovery"]
+        self.assertIn("held: the task file could not be built", entry["decision"])
+        self.assertIn("no frozen tracking-issue description", entry["alert"])
+        self.assertIn("not of the contribution", entry["alert"])
+        self.assertIn("no frozen tracking-issue description", entry["held"]["task_file"])
+        self.assertIn(entry["alert"], [a["alert"] for a in out.report["controller"]["alerts"]])
+        # Once its task file is committed it is decided like any Work.
+        rec["active_work"]["tracking_issue"] = FROZEN_ISSUE
+        evidence = helpers.committed_history(rec, POLICY)
+        out = tick(rec, observe=False, runs=runs[:1], evidence=evidence,
+                   now=T + timedelta(hours=1))
+        self.assertEqual(kinds(out), ["retry_dispatch"])
 
     def test_a_launch_that_shows_no_run_is_launched_again_without_a_row(self):
         """No dispatcher run since the request: the dispatcher is launched on

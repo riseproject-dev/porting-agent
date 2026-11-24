@@ -228,6 +228,12 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     committed, the dispatcher runs are counted from the later of the request
     and the time they were recorded.
 
+    Work the queue does not hold, whose task file is not committed and cannot
+    be built (``work_task.dry_run``: the controller allocated it before it
+    checked) is held: nothing is launched, charged or waited for, an alert
+    names the cause as a failure of the pipeline, and the check is made
+    again in every tick.
+
     ``queue_retries`` (``queue_result.work_retries``) names the available
     Work whose earlier Claim ended without a Result (a worker run that was
     cancelled, timed out or lost its runner): the queue retries it, within
@@ -285,6 +291,24 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             if state not in (None, "available", "completed", "cancelled"):
                 continue      # a live Claim is resolved by the worker outcome
             requested = datetime.fromisoformat(aw["requested_at"])
+            if state is None and evidence is not None \
+                    and work_task.evidence_id(aw["dedupe_key"]) not in evidence:
+                # Work the queue does not hold and whose task file is not
+                # committed: when the controller cannot build the task (Work
+                # allocated by code that did not check), no worker can ever
+                # receive it, and that is a failure of the pipeline, not of the
+                # contribution: nothing is launched, charged or waited for.
+                unbuildable = work_task.dry_run(c, evidence)
+                if unbuildable:
+                    why = (f"the task file could not be built: {unbuildable}; a failure of the "
+                           "pipeline, not of the contribution")
+                    report.append({"contribution": c["contribution_id"], "task": aw["task"],
+                                   "queue_state": state,
+                                   "decision": f"held: {why}; nothing is launched or charged "
+                                               "until the pipeline code changes",
+                                   "held": {"task_file": unbuildable[:300]},
+                                   "alert": f"{aw['dedupe_key']}: {why}"})
+                    continue
             history = _committed_history(aw, evidence)
             if history is False and state is None \
                     and now - requested < HISTORY_WAIT:
@@ -421,7 +445,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             new, event, decision = _lost_dispatch(c, aw, latest, len(after), now=now,
                                                   policy=policy,
                                                   history_missing=history is False,
-                                                  retry=retry)
+                                                  retry=retry, pipeline=pipeline)
             if new is None:
                 report.append(entry | {"decision": decision})
                 continue
@@ -783,16 +807,24 @@ def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | boo
     return evidence.get(work_history.evidence_id(aw["dedupe_key"])) or False
 
 
-def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict | None,
-                          runs: list[dict] | None, now: datetime, policy: dict,
-                          skip: frozenset[str] = frozenset(),
-                          ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
-    """Recovery from a work-queue Policy that refused every dispatch.
+def dispatch_failure_recovery(contributions: dict[str, dict], *, queue_policy: dict | None,
+                              runs: list[dict] | None, now: datetime, policy: dict,
+                              skip: frozenset[str] = frozenset(),
+                              pipeline: str | None = None,
+                              ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
+    """Recovery from a dispatch that failed for the dispatch path, never for
+    the output of the contribution.
 
     * A record that waits with ``pending_human_action`` ``dispatch_failed``
-      takes the table's ``rearm_dispatch`` once the installed Policy epoch
-      was published after the failure and the compiled policy preserves it:
-      the dispatch failed for a cause the dispatcher has since removed.
+      takes the table's ``rearm_dispatch`` once the cause can have changed
+      (``DISPATCH_CAUSE_CHANGED``): the installed Policy epoch was published
+      after the failure and the compiled policy preserves it (the dispatch
+      failed for a cause the dispatcher has since removed), or the pipeline
+      code is not the version the dispatch failed at
+      (``pending_human_action.pipeline_version``; a wait that recorded none
+      counts as an earlier version). It resumes once per version of the code:
+      a failure at the new version records that version. The row gives back
+      what the lost allocation charged.
     * While the installed Policy drops a compiled worker profile and the
       queue is quiescent, and a record holds or waits for dispatched Work,
       the dispatcher is launched to reinstall it, at most once every
@@ -802,10 +834,8 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
     launch: list[dict] = []
     staged: list[tuple[str, dict]] = []
     report: list[dict] = []
-    if queue_policy is None:
-        return launch, staged, report
     iso = now.isoformat()
-    installed = queue_policy.get("installed_at")
+    installed = (queue_policy or {}).get("installed_at")
     waiting = False
     for key, c in sorted(contributions.items()):
         if c["contribution_id"] in skip:
@@ -816,31 +846,44 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
         if pending.get("kind") != "dispatch_failed":
             continue
         waiting = True
-        with isolation.contribution(c["contribution_id"], "queue_policy_recovery"):
-            if not queue_policy["preserved"] or not installed or \
-                    datetime.fromisoformat(installed) <= datetime.fromisoformat(pending["requested_at"]):
+        with isolation.contribution(c["contribution_id"], "dispatch_failure_recovery"):
+            reinstalled = bool(queue_policy and queue_policy["preserved"] and installed
+                               and datetime.fromisoformat(installed)
+                               > datetime.fromisoformat(pending["requested_at"]))
+            failed_at = pending.get("pipeline_version")
+            changed = pipeline is not None and failed_at != pipeline
+            if not reinstalled and not changed:
                 report.append({"contribution": c["contribution_id"],
-                               "decision": "no Policy reinstall since the dispatch failed"})
+                               "decision": "no Policy reinstall and no change of the pipeline "
+                                           "code since the dispatch failed"})
                 continue
+            if reinstalled:
+                cause_id = f"queue-policy-{queue_policy.get('epoch')}"
+                details = {"cause": "policy_reinstalled", "policy_epoch": queue_policy.get("epoch"),
+                           "installed_at": installed}
+            else:
+                cause_id = f"pipeline:{pipeline[:12]}"
+                details = {"automatic": True, "cause": "pipeline_changed",
+                           "failed_at_version": failed_at, "pipeline_version": pipeline}
             match engine.dispatch(engine.try_apply_transition(
-                    c, "rearm_dispatch", policy=policy, now=iso,
-                    cause_id=f"queue-policy-{queue_policy.get('epoch')}",
-                    facts={"queue_policy_reinstalled"},
-                    details={"policy_epoch": queue_policy.get("epoch"),
-                             "installed_at": installed}),
-                    ("reconcile", "queue_policy_recovery")):
+                    c, "rearm_dispatch", policy=policy, now=iso, cause_id=cause_id,
+                    facts={"dispatch_cause_changed"}, details=details),
+                    ("reconcile", "dispatch_failure_recovery")):
                 case engine.Applied() as out:
                     contributions[key] = out.record
                     staged.extend([("contributions", out.record), ("events", out.event)])
                     report.append({"contribution": c["contribution_id"],
-                                   "decision": "dispatch re-armed after the Policy reinstall"})
+                                   "decision": "dispatch re-armed after the Policy reinstall"
+                                   if reinstalled else
+                                   "dispatch re-armed: the pipeline code changed since it failed"})
                 case engine.Skip(refused):
                     report.append({"contribution": c["contribution_id"],
                                    "decision": f"not re-armed: {refused.detail}"})
                 case engine.Bug(refused):
                     raise engine.TransitionRefused(refused,
-                                                   ("reconcile", "queue_policy_recovery"))
-    if waiting and not queue_policy["preserved"] and queue_policy["quiescent"] and runs is not None:
+                                                   ("reconcile", "dispatch_failure_recovery"))
+    if queue_policy is not None and waiting and not queue_policy["preserved"] \
+            and queue_policy["quiescent"] and runs is not None:
         recent = _dispatchers_in_flight(runs, now) + [
             r for r in runs if r.get("status") == "completed" and now - _created(r) < timedelta(
                 minutes=POLICY_REINSTALL_LAUNCH_MINUTES)]
@@ -855,8 +898,8 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
 
 
 def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
-                   policy: dict, history_missing: bool = False, retry: dict | None = None
-                   ) -> tuple[dict | None, dict | None, str]:
+                   policy: dict, history_missing: bool = False, retry: dict | None = None,
+                   pipeline: str | None = None) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work that a dispatcher run left absent
     or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
     relaunches spent) remains, ``exhaust_recovery`` once it is
@@ -906,7 +949,9 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
             out = engine.applied(engine.try_apply_transition(
                 c, "exhaust_recovery", policy=policy, now=iso,
                 cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"}, counts=counts,
-                details=details | {"count": count, "limit": limit}),
+                values={lifecycle.PENDING_PIPELINE: pipeline},
+                details=details | {"count": count, "limit": limit,
+                                   **({"pipeline_version": pipeline} if pipeline else {})}),
                 ("reconcile", "_lost_dispatch"))
             return out.record, out.event, "dispatch failed; waiting for a human"
         case engine.Skip(refused):
@@ -3265,15 +3310,18 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["dispatch_recovery"] = rep
     held_alerts = [{"contribution": entry["contribution"], "alert": entry["alert"]}
                    for entry in rep if entry.get("alert")]
-    # 1d. A dispatch refused by the installed work-queue Policy: re-arm it
-    # once the dispatcher has reinstalled the compiled policy, and launch the
-    # dispatcher to reinstall it when the queue is quiescent.
-    launch, staged, rep = queue_policy_recovery(contributions, queue_policy=queue_policy,
-                                                runs=dispatcher_runs, now=now, policy=policy,
-                                                skip=skip)
+    # 1d. A dispatch that failed for the dispatch path: re-arm it once the
+    # dispatcher has reinstalled the compiled policy the installed one
+    # refused, or the pipeline code has changed since it failed, and launch
+    # the dispatcher to reinstall the policy when the queue is quiescent.
+    launch, staged, rep = dispatch_failure_recovery(contributions, queue_policy=queue_policy,
+                                                    runs=dispatcher_runs, now=now, policy=policy,
+                                                    skip=skip, pipeline=pipeline)
     out.staged.extend(staged)
     if queue_policy is not None:
         out.report["queue_policy"] = {"status": queue_policy, "recovery": rep}
+    elif rep:
+        out.report["dispatch_failure_recovery"] = rep
     out.report["dispatch_relaunch"] = relaunch + launch
 
     # 2. Live branch and CI observation.

@@ -968,7 +968,7 @@ for _guard, _name in (
     ("exact fork and ref readback", "fork_and_ref_read_back"),
     ("the prerequisite is corrected", "prerequisite_corrected"),
     ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_lost"),
-    (lc.QUEUE_POLICY_REINSTALLED, "queue_policy_reinstalled"),
+    (lc.DISPATCH_CAUSE_CHANGED, "dispatch_cause_changed"),
     ("the Work graph is terminal without a usable Result", "work_terminal_without_result"),
     (lc.PIPELINE_FAILURE, "pipeline_failure"),
     (lc.PIPELINE_FAILURE_CLEARED, "pipeline_failure_cleared"),
@@ -1548,7 +1548,7 @@ def _derived(name: str, ctx: Context) -> tuple[bool, Any]:
 
 
 # ``sets`` entries the engine always derives; the caller gives no value.
-ENGINE_VALUES = (lc.WORK_FEEDBACK, lc.RERUNS)
+ENGINE_VALUES = (lc.WORK_FEEDBACK, lc.RERUNS, lc.PENDING_CREDIT)
 # ``sets`` entries whose value the caller may omit.
 OPTIONAL_VALUES = frozenset({"admission_override", "paused_reason", "paused_at_commit",
                              lc.PENDING_COUNTER})
@@ -1703,6 +1703,49 @@ def _clear(rec: dict, before: dict, name: str) -> None:
         _put(rec, name, copy.deepcopy(_EMPTY.get(name)))
 
 
+def _charged_entries(ctx: Context, t: lc.Transition) -> list[str]:
+    """The budgets the allocation row ``t`` charges that a lost dispatch gives
+    back (``lc.CREDITABLE``), as ``active_work.charged`` records them: the
+    repair counter with the failing CI job it was charged for
+    (``repair_attempts_cluster:<job>``)."""
+    entries = []
+    for name in t.charges:
+        if name == "repair_attempts_cluster" and ctx.cluster:
+            entries.append(f"{name}:{ctx.cluster}")
+        elif name in lc.CREDITABLE and name != "repair_attempts_cluster":
+            entries.append(name)
+    return entries
+
+
+def credit_entries(record: dict, t: lc.Transition) -> list[str]:
+    """The budgets the row ``t`` gives back to ``record``: the ones its
+    ``credits`` name among those the lost allocation charged
+    (``pending_human_action.credit``), ``work_total`` alone for a wait that
+    records none (an allocation before the field existed charged it, as
+    every allocation does)."""
+    if not t.effects.credits:
+        return []
+    recorded = (record.get("pending_human_action") or {}).get("credit")
+    entries = ["work_total"] if recorded is None else list(recorded)
+    return [e for e in entries if e.partition(":")[0] in t.effects.credits]
+
+
+def _credit(rec: dict, entry: str) -> None:
+    """Give back one budget entry of ``credit_entries``."""
+    name, _, detail = entry.partition(":")
+    budget = rec["budget"] = dict(rec["budget"])
+    if name == "work_total":
+        budget["attempts_used"] = max(0, int(budget.get("attempts_used", 0)) - 1)
+    elif name == "repair_attempts_cluster" and detail:
+        clusters = budget["clusters"] = dict(budget.get("clusters") or {})
+        if int(clusters.get(detail, 0)) > 1:
+            clusters[detail] = int(clusters[detail]) - 1
+        else:
+            clusters.pop(detail, None)
+    else:
+        raise TransitionError(f"the budget {entry!r} cannot be credited")
+
+
 def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
                    values: dict[str, Any]) -> tuple[dict, tuple[str, ...], dict | None]:
     e = t.effects
@@ -1743,6 +1786,7 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         rec["active_work"]["feedback_evidence_ids"] = carried if e.work == "reallocate" else []
 
     pending_kind = None
+    pipeline_version = None
     counter: Any = None
     counter_declared = False
     exhaustion = recovery_exhaustion(ctx) if lc.RECOVERY_EXHAUSTED in t.guard else None
@@ -1760,6 +1804,11 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
             if not isinstance(pending_kind, str) or not pending_kind:
                 raise TransitionError(f"{verb} sets pending_human_action; its kind is required")
             continue
+        if name == lc.PENDING_PIPELINE:
+            pipeline_version = values.get(name)
+            continue
+        if name == lc.PENDING_CREDIT:
+            continue      # derived below, from what the lost allocation charged
         if name == lc.PENDING_COUNTER:
             counter_declared = True
             if not literal and isinstance(exhaustion, tuple):
@@ -1802,6 +1851,15 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         rec["pending_human_action"] = {"kind": pending_kind, "requested_at": ctx.now,
                                        "reminded_at": None, "escalated_at": None,
                                        "counter": counter}
+        if pending_kind == "dispatch_failed":
+            # What the re-arm needs: the version of the pipeline code the
+            # dispatch failed at, and what the lost allocation charged (a Work
+            # allocated before it was recorded gives back `work_total` alone).
+            if isinstance(pipeline_version, str) and pipeline_version:
+                rec["pending_human_action"]["pipeline_version"] = pipeline_version
+            charged = (before.get("active_work") or {}).get("charged")
+            if charged is not None:
+                rec["pending_human_action"]["credit"] = list(charged)
     elif counter_declared:
         raise TransitionError(f"{verb} names a counter without a pending human action")
     if lc.RERUNS in e.sets:
@@ -1812,6 +1870,16 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
                                           feedback_evidence_ids=carried)
 
     charged_elsewhere = tuple(name for name in t.charges if not _charge(rec, name, ctx))
+    if e.work in ("allocate", "reallocate") and rec.get("active_work"):
+        # What this allocation charged, which a lost dispatch gives back.
+        # A graph that replaces one that failed for the pipeline charges
+        # nothing, so the allocation of the first graph is what it stands for;
+        # any other fresh graph charged its own.
+        prior = (list(rec["active_work"].get("charged") or [])
+                 if verb == "reallocate_after_pipeline_failure" else [])
+        rec["active_work"] = dict(rec["active_work"], charged=prior + _charged_entries(ctx, t))
+    for entry in credit_entries(before, t):
+        _credit(rec, entry)
     rec["phase"], rec["activity"] = target.split(".", 1)
     return rec, charged_elsewhere, restarted
 
@@ -1833,6 +1901,8 @@ def _apply_transition(evaluation: _Evaluation, record: dict, *, now: str,
     info: dict[str, Any] = {"verb": verb, "from_state": ctx.state, "to_state": target}
     if t.charges:
         info["charged"] = list(t.charges)
+    if credited := credit_entries(record, t):
+        info["credited"] = credited
     if evaluation.restarted:
         info["restarted"] = evaluation.restarted
     if actor:
@@ -2412,7 +2482,7 @@ handles("observe_ci", "_observe_release", ("require_release_intervention", "veri
         _ALL_BUG, PAUSED=SKIP)
 
 # reconcile: Results, receipts and the recovery of Work.
-handles("reconcile", "queue_policy_recovery", "rearm_dispatch", D_TICK)
+handles("reconcile", "dispatch_failure_recovery", "rearm_dispatch", D_TICK)
 handles("reconcile", "_lost_dispatch", "retry_dispatch", D_TICK, FACT_MISSING=BUG,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
 handles("reconcile", "_lost_dispatch", "exhaust_recovery", _ALL_BUG)

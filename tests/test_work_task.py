@@ -259,16 +259,29 @@ class TestTick(unittest.TestCase):
         [entry] = out.report["work_task"]
         self.assertIn("history of the Work is not recorded", entry["deferred"])
 
-    def test_a_task_that_cannot_be_built_is_an_alert_of_the_pipeline(self):
+    def test_a_task_that_cannot_be_built_holds_the_allocation_before_anything_is_charged(self):
         # A record that froze no description at intake.
         rec = dev.record("waiting_ci")
         rec["tracking_issue"] = {"id": 5000, "number": 12}
         out = dev.tick(rec, verdict="failed", evidence=self.evidence())
-        alerts = [a["alert"] for a in out.report["controller"]["alerts"]]
-        self.assertTrue(any("task file" in a and "not of the contribution" in a for a in alerts),
-                        alerts)
-        self.assertFalse([e for k, e in out.staged if k == "evidence" and e["kind"] == "task"])
-
+        self.assertEqual(dev.kinds(out), ["record_ci_failure"])
+        held = dev.final(out, rec)
+        self.assertIsNone(held["active_work"])
+        self.assertEqual(held["budget"]["attempts_used"], rec["budget"]["attempts_used"])
+        self.assertEqual([e["kind"] for k, e in out.staged if k == "evidence"], ["ci"])
+        self.assertEqual(out.report["controller"]["selected"], [])
+        [alert] = [a["alert"] for a in out.report["controller"]["alerts"]
+                   if "task file" in a["alert"]]
+        self.assertIn("request_repair is held until the pipeline code changes", alert)
+        self.assertIn("a failure of the pipeline, not of the contribution", alert)
+        self.assertIn("no frozen tracking-issue description", alert)
+        [entry] = [d for d in out.report["controller"]["deferred"] if "held" in d["why"]]
+        self.assertIn("could not be built", entry["why"])
+        # Nothing was stored: the next tick allocates once the task can be
+        # built.
+        rec["tracking_issue"] = dev.record("waiting_ci")["tracking_issue"]
+        again = dev.tick(rec, verdict="failed", evidence=self.evidence())
+        self.assertEqual(dev.kinds(again), ["record_ci_failure", "request_repair"])
 
 if __name__ == "__main__":
     unittest.main()
