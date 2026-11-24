@@ -22,13 +22,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** every development patch is published from `development.publishing` after `accept_patch_review` or `publish_after_failed_reviews`; the row in `development.agent_running` is kept only for the Work in flight across the change.
 - **Required:** remove the row, its guard, and the legacy publish path of the worker and the publish-only retry once no requested Work, held Result, or retained worker artifact without the review contract remains (the artifacts expire after 30 days).
 
-## The comment of a patch published after failed reviews is posted once
-
-- **Where:** `publish-retry.yml`, the step that runs `python -m patch_review comment` after the push of a patch published by `publish_after_failed_reviews`.
-- **Today:** the comment is posted by the same publish-only run that pushed the patch, with its fork token, and is found by its marker instead of posted again by a later attempt. A comment that fails to post (an API error) does not fail the publication and is not retried: the push is read back and `record_publish_success` clears the pending publication that names the review, so no later run posts it. A push that was not read back (`uncertain`) and is confirmed later by head observation is not commented either, since no run reports it `published`.
-- **Table:** `publish_after_failed_reviews` states that once the patch is published, trusted code posts on the development PR the latest review and why it failed.
-- **Required:** a receipt of the comment folded by the reconciler, or a controller step that posts a comment still missing for the latest `publish_anyway` review of the published head.
-
 ## A repository renamed during upstream review is not followed
 
 - **Where:** `upstream_review.*`; `require_renamed_upstream`, and `resume_upstream_revision` and `resume_renamed_upstream` in `upstream_review.waiting_human`; the collector (`collect.upstream_snapshots`).

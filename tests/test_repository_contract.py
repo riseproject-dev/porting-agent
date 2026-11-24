@@ -59,10 +59,7 @@ class TestRepositoryLayout(unittest.TestCase):
             },
             {".github/aw/actions-lock.json"},
         )
-        # The reviewer of development patches has no source in the migrated
-        # repository: it was added after the migration.
-        expected_targets = {item["target"] for item in manifest["workflows"]} | {
-            "reviewer.lock.yml"}
+        expected_targets = {item["target"] for item in manifest["workflows"]}
         for lock in WORKFLOWS.glob("*.lock.yml"):
             self.assertIn(lock.name, expected_targets)
             self.assertTrue(lock.with_name(lock.name.removesuffix(".lock.yml") + ".md").is_file())
@@ -103,7 +100,11 @@ class TestMigrationInventory(unittest.TestCase):
         manifest = json.loads((ROOT / "docs/workflow-migration.json").read_text())
         self.assertEqual(manifest["sourceCommit"], SOURCE_COMMIT)
         workflows = manifest["workflows"]
-        sources = [item["source"] for item in workflows]
+        # A workflow added after the migration (the reviewer of development
+        # patches) has no source in the migrated repository.
+        for item in workflows:
+            self.assertEqual(item["source"] is None, item["status"] == "added", item["target"])
+        sources = [item["source"] for item in workflows if item["source"] is not None]
         targets = [item["target"] for item in workflows]
         self.assertEqual(len(sources), len(set(sources)))
         self.assertEqual(len(targets), len(set(targets)))

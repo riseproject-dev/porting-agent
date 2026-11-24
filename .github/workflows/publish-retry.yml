@@ -16,10 +16,12 @@
 # A development patch is reviewed before it is published: while its Work is
 # still the one that wrote it, a retry only verifies it again without a fork
 # token, and its artifact carries the verified series (`patches.mbox`), which
-# the held patch then pins by this run and the artifact's id; once its review is done (`development.publishing`), the patch is
-# pushed only when the series has the held digest and rebuilds to exactly the
-# reviewed commit. A patch published after successive failed reviews then gets
-# the latest review, and why it failed, posted on the development PR.
+# the held patch then pins by this run and the artifact's id. Once its review
+# is done (`development.publishing`), the patch is pushed only when the series
+# has the held digest and rebuilds to exactly the reviewed commit. The
+# comment of a patch published after successive failed reviews is posted by
+# `review-comment.yml`, which the controller launches once the publication is
+# folded.
 #
 # Launched by the controller's reconcile job (never by the agent), with the
 # worker run ID it recorded in state.
@@ -166,22 +168,6 @@ jobs:
           jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
           exit $(( rc == 1 || rc == 3 ? 0 : rc ))
 
-      - name: Post the latest review of a patch published after failed reviews
-        # Trusted code, once the push is read back: the one post about a
-        # review, on the development PR, and only for a patch published
-        # although its latest review failed. A comment that carries the
-        # marker of the review is found instead of posted again.
-        if: steps.result.outputs.publish == 'true'
-        continue-on-error: true
-        working-directory: control
-        env:
-          UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          uv run --locked \
-            python -m patch_review comment --record ../in/record.json --outcome ../in/outcome.json \
-              --out ../in/review-comment.json
-
       - name: Mint a CI rerun token for exactly this fork
         id: rerun-token
         if: steps.result.outputs.rerun == 'true'
@@ -230,7 +216,6 @@ jobs:
             in/patches.mbox
             in/plan.json
             in/report.json
-            in/review-comment.json
             in/worker-run-id
           if-no-files-found: ignore
           retention-days: 30

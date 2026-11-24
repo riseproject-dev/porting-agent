@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: 2026 The RISE Project
+# SPDX-License-Identifier: MIT
+
+# Posts, on the development PR, the latest review of a development patch that
+# was published although that review failed (after successive failed
+# reviews), once per review: a comment that already carries the review's
+# marker is found instead of posted again. Launched by the controller's
+# reconcile job for the record's due comment (`review_comment`) and its
+# current attempt, never by an agent. The record is read from the committed
+# state; nothing is posted unless the comment is still due at that attempt,
+# the contribution is not paused and the policy permits writes. The token is
+# minted for the one fork, with `pull-requests: write` only. The receipt
+# (`review-comment.json`) is folded by the reconciler, which launches a
+# failed or lost post again, bounded, and raises an alert once the attempts
+# are spent.
+name: Review Comment
+run-name: "Review comment ${{ inputs.evidence-id }} (attempt ${{ inputs.attempt }})"
+on:
+  workflow_dispatch:
+    inputs:
+      contribution:
+        description: The contribution's file id
+        required: true
+        type: string
+      evidence-id:
+        description: The patch_review evidence whose comment is due
+        required: true
+        type: string
+      attempt:
+        description: The attempt the controller recorded
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: porting-review-comment
+  cancel-in-progress: false
+jobs:
+  comment:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate inputs
+        env:
+          CONTRIBUTION: ${{ inputs.contribution }}
+          EVIDENCE: ${{ inputs.evidence-id }}
+          ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRIBUTION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$ ]] || { echo "bad contribution"; exit 1; }
+          [[ "$EVIDENCE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "bad evidence id"; exit 1; }
+          [[ "$ATTEMPT" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "bad attempt"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - name: Check that the comment is due, without a token
+        id: due
+        env:
+          CONTRIBUTION: ${{ inputs.contribution }}
+          EVIDENCE: ${{ inputs.evidence-id }}
+          ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          set -euo pipefail
+          uv run --locked python -m patch_review comment-due --contribution "$CONTRIBUTION" \
+            --evidence "$EVIDENCE" --attempt "$ATTEMPT" --out review-comment/due.json
+          jq -r '"due=" + (.due|tostring), "fork_name=" + .fork_name' review-comment/due.json \
+            >> "$GITHUB_OUTPUT"
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: comment-token
+        if: steps.due.outputs.due == 'true'
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ steps.due.outputs.fork_name }}
+          permission-pull-requests: write
+      - name: Post the latest review, or find it by its marker
+        if: steps.due.outputs.due == 'true'
+        env:
+          CONTRIBUTION: ${{ inputs.contribution }}
+          EVIDENCE: ${{ inputs.evidence-id }}
+          ATTEMPT: ${{ inputs.attempt }}
+          UPSTREAMING_FORK_TOKEN: ${{ steps.comment-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          uv run --locked python -m patch_review comment --contribution "$CONTRIBUTION" \
+            --evidence "$EVIDENCE" --attempt "$ATTEMPT" --out review-comment/review-comment.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: porting-review-comment
+          path: review-comment/review-comment.json
+          if-no-files-found: ignore
+          retention-days: 30
+  continuation:
+    needs: comment
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: control-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-contents: read
+          permission-actions: write
+      - name: Continue reconciliation after the comment
+        env:
+          GH_TOKEN: ${{ steps.control-token.outputs.token }}
+        run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main

@@ -494,6 +494,7 @@ class TestWorkflowContracts(unittest.TestCase):
             WORKFLOWS / "provision.yml",
             WORKFLOWS / "dev-pr.yml",
             WORKFLOWS / "publish-retry.yml",
+            WORKFLOWS / "review-comment.yml",
             WORKFLOWS / "worker.md",
             WORKFLOWS / "handoff.yml",
         ]
@@ -601,11 +602,13 @@ class TestWorkflowContracts(unittest.TestCase):
                 "Fork Provisioning",
                 "Development PR",
                 "Publish Retry",
+                "Review Comment",
                 "Handoff",
             },
         )
         self.assertIn("workflow_run", controller["jobs"]["filter"]["if"])
-        for name in ("provision.yml", "dev-pr.yml", "publish-retry.yml", "handoff.yml"):
+        for name in ("provision.yml", "dev-pr.yml", "publish-retry.yml", "review-comment.yml",
+                     "handoff.yml"):
             continuation = workflow(name)["jobs"]["continuation"]
             self.assertEqual(continuation["if"], "always()")
             self.assertIn("gh workflow run controller.yml", str(continuation))
@@ -613,7 +616,8 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_development_writers_do_not_wait_for_environment_review(self):
         worker = source("worker")
         self.assertNotIn("environment", worker["jobs"]["publish"])
-        for name in ("provision.yml", "publish-retry.yml", "dev-pr.yml", "handoff.yml"):
+        for name in ("provision.yml", "publish-retry.yml", "review-comment.yml", "dev-pr.yml",
+                     "handoff.yml"):
             data = workflow(name)
             for job in data["jobs"].values():
                 self.assertNotIn("environment", job, name)
@@ -774,6 +778,7 @@ class TestWorkflowContracts(unittest.TestCase):
                 "provision.yml",
                 "dev-pr.yml",
                 "publish-retry.yml",
+                "review-comment.yml",
                 "handoff.yml",
             },
         )
@@ -793,7 +798,7 @@ class TestWorkflowContracts(unittest.TestCase):
             launches,
             {
                 "controller.yml", "dispatcher.lock.yml", "provision.yml",
-                "dev-pr.yml", "publish-retry.yml", "handoff.yml",
+                "dev-pr.yml", "publish-retry.yml", "review-comment.yml", "handoff.yml",
             },
         )
 

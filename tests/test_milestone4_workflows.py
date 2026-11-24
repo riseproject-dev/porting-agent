@@ -219,6 +219,7 @@ class TestPlannerSecurityAndContinuation(unittest.TestCase):
                 "Fork Provisioning",
                 "Development PR",
                 "Publish Retry",
+                "Review Comment",
                 "Handoff",
             },
         )

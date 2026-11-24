@@ -106,6 +106,22 @@
       "owner": "trusted publication recovery",
       "agentic": false,
       "status": "migrated"
+    },
+    {
+      "source": null,
+      "target": "reviewer.md",
+      "milestone": 6,
+      "owner": "review of a held development patch",
+      "agentic": true,
+      "status": "added"
+    },
+    {
+      "source": null,
+      "target": "reviewer.lock.yml",
+      "milestone": 6,
+      "owner": "generated reviewer lock",
+      "agentic": false,
+      "status": "added"
     }
   ]
 }

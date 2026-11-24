@@ -275,7 +275,7 @@ class TestLiveRecord(unittest.TestCase):
         if not path.exists():
             self.skipTest("no live record in this checkout")
         rec = json.loads(path.read_text())
-        self.assertEqual(engine.with_defaults(copy.deepcopy(rec))[1:], (["held_patch"], []))
+        self.assertEqual(engine.with_defaults(copy.deepcopy(rec))[1:], (["held_patch", "review_comment"], []))
         self.assertEqual(engine.state_key(rec), "handoff.awaiting_submission")
         plan = json.loads((ROOT / ".state/evidence" / f"{rec['plan_evidence_id']}.json").read_text())
         self.assertEqual(commit_rules.series_requirements_from_plan(plan["data"]), [])

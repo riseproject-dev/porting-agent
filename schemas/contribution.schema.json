@@ -55,6 +55,7 @@
     "publication_operation_id",
     "pending_publication",
     "held_patch",
+    "review_comment",
     "processed_publications",
     "processed_review_ids",
     "processed_review_comment_ids",
@@ -1299,6 +1300,62 @@
             "held_at": {
               "type": "string",
               "format": "date-time"
+            }
+          }
+        }
+      ]
+    },
+    "review_comment": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "evidence_id",
+            "head",
+            "attempts",
+            "next_attempt_at",
+            "launched_at",
+            "last_reason",
+            "exhausted"
+          ],
+          "properties": {
+            "evidence_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+            },
+            "head": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "next_attempt_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "launched_at": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              ]
+            },
+            "last_reason": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "exhausted": {
+              "type": "boolean"
             }
           }
         }

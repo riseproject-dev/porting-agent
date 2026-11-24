@@ -62,6 +62,7 @@ from common import (
     INTAKE_LABEL,
     UPSTREAM_REF,
     canonical_json,
+    contribution_file_id,
     load_policy,
     repository_root,
     safe_id,
@@ -141,6 +142,7 @@ def migration_report(
         "dispatch_relaunch": [],
         "provision_requests": [],
         "publication_retries": [],
+        "review_comment_requests": [],
         "dev_pr_requests": [],
         "handoff_requests": [],
     }
@@ -1731,6 +1733,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             values = {"proposal_artifact": artifact,
                       "publication_operation_id": (op or {}).get("operation_id")
                       or rec.get("publication_operation_id")}
+        if verb == "record_publish_success" and engine.state_key(rec) == lifecycle.PUBLISHING:
+            # A patch published after successive failed reviews: the latest
+            # review is due on the development PR, at exactly the reviewed
+            # commit the pin names, posted by trusted code that the tick
+            # launches (`review_comments`) until it is posted or its
+            # attempts are spent.
+            values["review_comment"] = patch_review.comment_due(
+                rec, head=(rec.get("held_patch") or {}).get("candidate"), now=now)
         if verb == "record_revision_publish_success":
             head = published_head(outcome)
             values["upstream_pr.head_sha"] = head
@@ -1785,7 +1795,8 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
 
 # The lists of a tick report that name what the tick asks the workflow to launch.
 _EFFECT_LISTS = ("requested_effects", "dispatch_relaunch", "provision_requests",
-                 "dev_pr_requests", "publication_retries", "handoff_requests")
+                 "dev_pr_requests", "publication_retries", "handoff_requests",
+                 "review_comment_requests")
 
 
 def _touched(out: TickOutput, contribution_id: str) -> list[str]:
@@ -2278,6 +2289,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          ci_reruns: list[dict] | None = None,
          handoff_runs: dict[str, int] | None = None,
          development_pr_runs: dict[str, int] | None = None,
+         review_comment_receipts: list[dict] | None = None,
          skip: frozenset[str] = frozenset(), pypi=None,
          queue_policy: dict | None = None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
@@ -2591,6 +2603,10 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
                                 "worker_run_id": pp["worker_run_id"], "attempt": attempt})
     out.report["publication_retries"] = retries
+    # 4b. The comment of a patch published after successive failed reviews:
+    # its receipts are folded, and a due post is launched, bounded.
+    out.report["review_comments"] = review_comments(
+        contributions, review_comment_receipts or [], out, policy=policy, now=now, skip=skip)
     # 5. The history of every requested Work that has none yet, normally
     # recorded in the tick that allocates it: the new human steering of the
     # contribution, then the history built from all its evidence. A failed
@@ -2605,6 +2621,97 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             tracking_issues=tracking_issues or {}, skip=skip)
     out.staged = observe_ci.dedupe(out.staged)
     return out
+
+
+def review_comments(contributions: dict[str, dict], receipts: list[dict], out: TickOutput, *,
+                    policy: dict, now: datetime, skip: frozenset[str]) -> list[dict]:
+    """Post the comment of every patch published after successive failed
+    reviews (``review_comment``), durably and bounded.
+
+    The receipt of a launched post (``review-comment.json`` of the
+    ``review-comment.yml`` run, for the record's review and its current
+    attempt) is folded first: a comment posted, or found by its marker,
+    ends it; a post that failed, was skipped, or left no receipt within
+    ``COMMENT_RECEIPT_WAIT_MINUTES`` is launched again later, at most
+    ``COMMENT_ATTEMPTS`` times. Once they are spent the comment stays
+    recorded (``exhausted``, with the last reason) and an alert says that the
+    development PR lacks it. A due post is launched while the record is not
+    paused and the policy permits writes; its attempt is recorded before the
+    launch, so a post is never launched twice for one attempt."""
+    report = []
+    out.report.setdefault("review_comment_requests", [])
+    iso = now.isoformat()
+    by_cid = {c["contribution_id"]: k for k, c in contributions.items()}
+    folded: dict[tuple[str, str, int], dict] = {}
+    for receipt in receipts:
+        attempt = receipt.get("attempt")
+        if isinstance(attempt, int) and not isinstance(attempt, bool):
+            folded[(str(receipt.get("contribution_id")), str(receipt.get("evidence_id")),
+                    attempt)] = receipt
+    for cid, key in by_cid.items():
+        c = contributions[key]
+        due = c.get("review_comment")
+        if not due or due.get("exhausted") or cid in skip:
+            continue
+        with isolation.contribution(cid, "review_comment"):
+            attempt = int(due["attempts"])
+            entry: dict[str, Any] = {"contribution": cid, "evidence_id": due["evidence_id"],
+                                     "attempt": attempt}
+            if due.get("launched_at"):
+                receipt = folded.get((cid, due["evidence_id"], attempt))
+                waited = now - datetime.fromisoformat(due["launched_at"])
+                if receipt is None and waited < timedelta(
+                        minutes=patch_review.COMMENT_RECEIPT_WAIT_MINUTES):
+                    report.append(entry | {"status": "launched"})
+                    continue
+                status = (receipt or {}).get("status")
+                if status in patch_review.COMMENT_DONE:
+                    new = engine.record_beside(c, "review_comment_answered", now=iso,
+                                               review_comment=None)
+                    contributions[key] = new
+                    out.staged.append(("contributions", new))
+                    report.append(entry | {"status": status,
+                                           "comment_id": (receipt or {}).get("comment_id")})
+                    continue
+                reason = isolation.clean_text(
+                    (receipt or {}).get("reason") or (
+                        f"{status}" if receipt else
+                        f"no receipt within {patch_review.COMMENT_RECEIPT_WAIT_MINUTES} minutes"),
+                    500)
+                spent = attempt >= patch_review.COMMENT_ATTEMPTS
+                due = dict(due, launched_at=None, last_reason=reason, exhausted=spent,
+                           next_attempt_at=(now + timedelta(
+                               minutes=patch_review.COMMENT_RETRY_MINUTES * attempt)).isoformat())
+                c = engine.record_beside(c, "review_comment_answered", now=iso,
+                                         review_comment=due)
+                contributions[key] = c
+                out.staged.append(("contributions", c))
+                if spent:
+                    out.report["controller"]["alerts"].append({
+                        "contribution": cid,
+                        "alert": (f"the comment of the review {due['evidence_id']} on the "
+                                  f"development PR could not be posted in {attempt} attempts "
+                                  f"(last: {reason}); the patch was published although that "
+                                  "review failed, and the PR does not say so")})
+                    report.append(entry | {"status": "exhausted", "reason": reason})
+                    continue
+                entry["reason"] = reason
+            if c.get("paused") or policy.get("read_only", True) \
+                    or datetime.fromisoformat(due["next_attempt_at"]) > now:
+                report.append(entry | {"status": "waiting"})
+                continue
+            attempt += 1
+            new = engine.record_beside(c, "review_comment_launched", now=iso,
+                                       review_comment=dict(due, attempts=attempt,
+                                                           launched_at=iso))
+            contributions[key] = new
+            out.staged.append(("contributions", new))
+            out.report["review_comment_requests"].append({
+                "type": "post_review_comment", "contribution_id": cid,
+                "contribution_file": contribution_file_id(cid),
+                "evidence_id": due["evidence_id"], "attempt": attempt})
+            report.append(entry | {"status": "launch", "attempt": attempt})
+    return report
 
 
 # The bounds of what the histories of one tick stage, in bytes of canonical
@@ -2905,6 +3012,21 @@ def _handoff_runs(path: str | None, prefix: str = HANDOFF_RUN_PREFIX) -> dict[st
     return runs
 
 
+def _review_comment_receipts(directory: str | None) -> list[dict]:
+    """The receipts of the posts of review comments (``review-comment.json``
+    of each collected ``review-comment.yml`` run); a malformed one is
+    skipped."""
+    receipts = []
+    for path in sorted(Path(directory).glob("*/review-comment.json")) if directory else []:
+        try:
+            receipt = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            continue
+        if isinstance(receipt, dict):
+            receipts.append(receipt)
+    return receipts
+
+
 def _receipt_outcomes(directory: str | None, *, kind: str) -> list[dict]:
     receipts = []
     for path in sorted(Path(directory).glob("*/outcome.json")) if directory else []:
@@ -2999,6 +3121,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     handoff_runs = None if args.offline else _handoff_runs(getattr(args, "handoff_runs", None))
     development_pr_runs = None if args.offline else _handoff_runs(
         getattr(args, "development_pr_runs", None), DEVELOPMENT_PR_RUN_PREFIX)
+    comment_receipts = _review_comment_receipts(getattr(args, "review_comments", None))
     issues = [] if args.offline else collect.intake_issues(api)
     tracking = sorted(
         {record["tracking_issue"]["number"] for record in snapshot.contributions.values()}
@@ -3080,6 +3203,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             ci_reruns=ci_reruns,
             handoff_runs=handoff_runs,
             development_pr_runs=development_pr_runs,
+            review_comment_receipts=comment_receipts,
         )
     except isolation.TickFailure as failure:
         # A pipeline failure: nothing is written, so nothing is committed.
@@ -3136,6 +3260,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provisions")
     parser.add_argument("--development-prs")
     parser.add_argument("--ci-reruns")
+    parser.add_argument("--review-comments")
     parser.add_argument("--handoffs")
     parser.add_argument("--handoff-runs")
     parser.add_argument("--development-pr-runs")

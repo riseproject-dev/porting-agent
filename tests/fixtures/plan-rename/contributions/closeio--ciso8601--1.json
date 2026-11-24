@@ -68,6 +68,7 @@
   },
   "pending_publication": null,
   "held_patch": null,
+  "review_comment": null,
   "phase": "handoff",
   "prerequisite_ids": [],
   "previous_phase": null,

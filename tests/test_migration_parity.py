@@ -330,10 +330,11 @@ class TestRerunFenceMigration(unittest.TestCase):
             schemas.validate("contribution", rec)
             self.assertFalse(state.needs_field_migration(rec))
             return
-        # The review of development patches added `held_patch`: the evented
-        # field migration adds it, null, and changes nothing else.
+        # The review of development patches added `held_patch` and
+        # `review_comment`: the evented field migration adds them, null, and
+        # changes nothing else.
         self.assertTrue(state.needs_field_migration(rec))
         new, event = state.migrate_record_fields(rec, now="2026-11-23T13:00:00+00:00")
         self.assertEqual((event["details"]["added"], event["details"]["removed"]),
-                         (["held_patch"], []))
+                         (["held_patch", "review_comment"], []))
         schemas.validate("contribution", new)

@@ -192,6 +192,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "publication_operation_id": None,
         "pending_publication": None,
         "held_patch": None,
+        "review_comment": None,
         "processed_publications": [],
         "processed_review_ids": [],
         "processed_review_comment_ids": [],
@@ -642,6 +643,10 @@ HELD_RESULT = "pending_publication"
 # (the worker run, the artifact, the Work, the digest of the series, and the
 # commit it rebuilds to). A stop discards it like a held Result.
 HELD_PATCH = "held_patch"
+# The comment of a patch published after successive failed reviews, due on
+# the development PR until trusted code has posted it or its attempts are
+# spent.
+REVIEW_COMMENT = "review_comment"
 STOP_KINDS = ("generation_end", "terminal")
 # Clears that take only a part of a field, as (field, the part cleared).
 # A published Result clears exactly the feedback its Work carried.
@@ -1222,13 +1227,17 @@ LIFECYCLE: dict[str, State] = {
             ("record_publish_success", "development.waiting_ci"): Transition(
                 _R, None,
                 ("the Result is published, or uncertain and later confirmed",),
-                _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
+                _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS,
+                                       REVIEW_COMMENT),
                    clears=(CARRIED_FEEDBACK, HELD_PATCH)),
                 description="The published patch answers exactly the feedback its Work "
                             "carried. An `uncertain` publication is confirmed as in "
                             "`development.agent_running`. The report stored at the hold is "
                             "stored again with the head the publication read back "
-                            "(`head_after`). A published patch starts `dev_reviews` and "
+                            "(`head_after`). A patch published after successive failed reviews "
+                            "records the comment of the latest review as due on the development "
+                            "PR (`review_comment`), which trusted code posts, retries, and "
+                            "alerts on, beside the table. A published patch starts `dev_reviews` and "
                             "`no_progress` again."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,

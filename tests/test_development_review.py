@@ -407,8 +407,73 @@ class TestVerdicts(unittest.TestCase):
         # The last review is not pending feedback: it requests no repair.
         self.assertNotIn(review["evidence_id"], rec["pending_feedback_evidence_ids"])
         self.assertEqual(pending["feedback_evidence_ids"], rec["held_patch"]["feedback_evidence_ids"])
-        self.assertEqual(patch_review.comment_due(rec, {"status": "published"}),
-                         review["evidence_id"])
+        # Once published, the comment of the review is due on the
+        # development PR, posted by trusted code, durably.
+        done = tick(rec, [published(rec, run=rec["held_patch"]["worker_run_id"])])
+        last = final(done)
+        self.assertEqual(engine.state_key(last), "development.waiting_ci")
+        self.assertEqual(last["review_comment"]["evidence_id"], review["evidence_id"])
+        self.assertEqual(last["review_comment"]["head"], CANDIDATE)
+        self.assertEqual(done.report["review_comment_requests"], [{
+            "type": "post_review_comment", "contribution_id": rec["contribution_id"],
+            "contribution_file": "example--proj--12", "evidence_id": review["evidence_id"],
+            "attempt": 1}])
+        self.assertEqual(last["review_comment"]["attempts"], 1)
+        self.assertEqual(last["review_comment"]["launched_at"], NOW)
+
+    def test_the_comment_of_a_patch_published_anyway_is_retried_then_alerted(self):
+        due = {"evidence_id": "patch-review-x", "head": CANDIDATE, "attempts": 0,
+               "next_attempt_at": NOW, "launched_at": None, "last_reason": "",
+               "exhausted": False}
+        rec = contribution(activity="waiting_ci", review_comment=due)
+        at = datetime.fromisoformat(NOW)
+
+        def run(record, receipts=(), minutes=0, **over):
+            snap = reconcile.Snapshot(contributions={"c": record}, operations={}, consumed={},
+                                      projects={}, evidence={})
+            return reconcile.tick(None, snap, policy=dict(POLICY, **over),
+                                  now=at + timedelta(minutes=minutes), publications=[],
+                                  pressure=capacity.Pressure(ok=True), observe=False,
+                                  review_comment_receipts=list(receipts))
+
+        def receipt(attempt, status, **extra):
+            return {"contribution_id": rec["contribution_id"], "evidence_id": "patch-review-x",
+                    "attempt": attempt, "status": status, **extra}
+
+        # Not launched while paused or read-only.
+        for record, over in ((dict(rec, paused=True), {}), (rec, {"read_only": True})):
+            out = run(record, **over)
+            self.assertEqual(out.report.get("review_comment_requests") or [], [])
+        launched = final(run(rec))
+        self.assertEqual(launched["review_comment"]["attempts"], 1)
+        # Waiting for its receipt: nothing is launched again.
+        waiting = run(launched, minutes=10)
+        self.assertEqual(waiting.report.get("review_comment_requests") or [], [])
+        # A receipt of an older attempt is not this one's.
+        self.assertEqual(run(launched, [receipt(0, "posted")], minutes=10)
+                         .report["review_comments"][0]["status"], "launched")
+        # Posted, or found by its marker: the comment is done.
+        for status in ("posted", "found"):
+            done = final(run(launched, [receipt(1, status, comment_id=9)], minutes=10))
+            self.assertIsNone(done["review_comment"])
+        # A failed or skipped post, or one without a receipt, is launched
+        # again later, at most COMMENT_ATTEMPTS times.
+        record, minutes = launched, 0
+        for attempt in range(1, patch_review.COMMENT_ATTEMPTS + 1):
+            minutes += 61 + patch_review.COMMENT_RETRY_MINUTES * attempt
+            receipts = [receipt(attempt, "failed", reason="HTTP 502")] if attempt % 2 else []
+            out = run(record, receipts, minutes=minutes)
+            record = final(out)
+            if attempt < patch_review.COMMENT_ATTEMPTS:
+                self.assertEqual(record["review_comment"]["attempts"], attempt, out.report)
+                again = run(record, minutes=minutes + patch_review.COMMENT_RETRY_MINUTES * attempt)
+                record = final(again)
+                self.assertEqual(again.report["review_comment_requests"][0]["attempt"],
+                                 attempt + 1)
+        self.assertTrue(record["review_comment"]["exhausted"])
+        self.assertIn("could not be posted", out.report["controller"]["alerts"][0]["alert"])
+        self.assertEqual(run(record, minutes=minutes + 600).report.get(
+            "review_comment_requests") or [], [])
 
     def test_an_unusable_review_is_work_without_a_usable_result(self):
         reviewing, _ = held(running())
@@ -447,7 +512,6 @@ class TestHeldPatchEnds(unittest.TestCase):
 
     def test_a_review_that_cannot_run_keeps_the_held_patch_for_a_resume(self):
         import commands
-
         from tests.helpers import apply_command
 
         reviewing, _ = held(running())
@@ -656,9 +720,9 @@ class TestLiveRecords(unittest.TestCase):
                     self.assertFalse(state.needs_field_migration(rec))
                     continue
                 new, event = state.migrate_record_fields(rec, now=NOW)
-                self.assertEqual(event["details"]["added"], ["held_patch"])
+                self.assertEqual(event["details"]["added"], ["held_patch", "review_comment"])
                 self.assertEqual({k: v for k, v in new.items()
-                                  if k not in ("held_patch", "updated_at")},
+                                  if k not in ("held_patch", "review_comment", "updated_at")},
                                  {k: v for k, v in rec.items() if k != "updated_at"})
                 work_ = new.get("active_work")
                 if work_ and work_.get("task") == "development_patch":
@@ -765,7 +829,7 @@ class TestWorkflows(unittest.TestCase):
         token = next(step for step in steps if step.get("id") == "fork-token")
         self.assertEqual(token["if"], "steps.result.outputs.publish == 'true'")
 
-    def test_the_publish_only_retry_verifies_publishes_and_comments(self):
+    def test_the_publish_only_retry_verifies_and_publishes(self):
         retry = self.yaml.safe_load((self.root / "publish-retry.yml").read_text())
         steps = retry["jobs"]["publish"]["steps"]
         result = next(step for step in steps if step.get("id") == "result")
@@ -774,19 +838,30 @@ class TestWorkflows(unittest.TestCase):
                       if str(step.get("uses", "")).startswith("actions/upload-artifact"))
         # The series a verification retry verified, which a held patch pins.
         self.assertIn("in/patches.mbox", upload["with"]["path"].split())
-        comment = next(step for step in steps
-                       if step.get("name", "").startswith("Post the latest review"))
-        self.assertEqual(comment["if"], "steps.result.outputs.publish == 'true'")
-        self.assertTrue(comment["continue-on-error"])
-        self.assertIn("python -m patch_review comment", comment["run"])
-        self.assertEqual(comment["env"]["UPSTREAMING_FORK_TOKEN"],
-                         "${{ steps.fork-token.outputs.token }}")
-        names = [step.get("name") for step in steps]
-        self.assertLess(names.index("Rebuild, validate and push to riscv64 (exact-head lease)"),
-                        names.index(comment["name"]))
+        # It posts no comment: review-comment.yml does, durably.
+        self.assertNotIn("patch_review comment", (self.root / "publish-retry.yml").read_text())
+
+    def test_the_comment_workflow_posts_with_a_pull_requests_token_only(self):
+        source = self.yaml.safe_load((self.root / "review-comment.yml").read_text())
+        self.assertEqual(source["permissions"], {"contents": "read"})
+        steps = source["jobs"]["comment"]["steps"]
+        due = next(step for step in steps if step.get("id") == "due")
+        self.assertIn("python -m patch_review comment-due", due["run"])
+        self.assertNotIn("TOKEN", str(due.get("env")))
+        token = next(step for step in steps if step.get("id") == "comment-token")
+        self.assertEqual({k: v for k, v in token["with"].items() if k.startswith("permission-")},
+                         {"permission-pull-requests": "write"})
+        self.assertEqual(token["if"], "steps.due.outputs.due == 'true'")
+        post = next(step for step in steps if "patch_review comment " in step.get("run", ""))
+        self.assertEqual(post["env"]["UPSTREAMING_FORK_TOKEN"],
+                         "${{ steps.comment-token.outputs.token }}")
         upload = next(step for step in steps
                       if str(step.get("uses", "")).startswith("actions/upload-artifact"))
-        self.assertIn("in/review-comment.json", upload["with"]["path"].split())
+        self.assertEqual((upload["with"]["name"], upload["if"]),
+                         ("porting-review-comment", "always()"))
+        controller_text = (self.root / "controller.yml").read_text()
+        self.assertIn("--review-comments review-comments", controller_text)
+        self.assertIn("gh workflow run review-comment.yml", controller_text)
 
     def test_the_controller_collects_and_follows_the_reviewer(self):
         text = (self.root / "controller.yml").read_text()

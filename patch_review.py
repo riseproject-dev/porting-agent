@@ -328,43 +328,90 @@ def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
-def comment_due(record: dict, outcome: dict) -> str | None:
-    """The review evidence id whose comment is due on the development PR, or
-    ``None``: only a published patch whose pending publication records a
-    failed review it was published after."""
+# The posts of the comment of one review: the attempts, and the minutes
+# before an attempt that failed is made again (times the attempts so far).
+COMMENT_ATTEMPTS = 5
+COMMENT_RETRY_MINUTES = 30
+# A launched post whose receipt is not folded within this many minutes is
+# a failed attempt.
+COMMENT_RECEIPT_WAIT_MINUTES = 60
+# The outcomes of a post that end its comment: posted now, or found by its
+# marker (an earlier attempt posted it).
+COMMENT_DONE = ("posted", "found")
+
+
+def comment_due(record: dict, *, head: str, now: str) -> dict | None:
+    """The comment that becomes due once the held patch is published at
+    ``head``: only for a patch whose pending publication records a failed
+    review it was published after. Its value is the record's
+    ``review_comment``: the review, the published head, and no attempt yet,
+    due now."""
     review = (record.get("pending_publication") or {}).get("patch_review") or {}
-    if outcome.get("status") != "published" or not review.get("published_anyway"):
+    if not review.get("published_anyway"):
         return None
-    return review.get("evidence_id")
+    return {"evidence_id": review["evidence_id"], "head": head, "attempts": 0,
+            "next_attempt_at": now, "launched_at": None, "last_reason": "",
+            "exhausted": False}
 
 
-def comment(api, record: dict, outcome: dict, *, root: Path | None = None) -> dict:
-    """Post the comment of a patch published after successive failed
-    reviews on the development PR, once: a comment that carries the marker
-    of the review is found instead of posted again."""
-    eid = comment_due(record, outcome)
-    if eid is None:
-        return {"status": "not_due"}
+def comment_check(record: dict, evidence_id: str, attempt: int, policy: dict) -> str | None:
+    """Why the comment named by ``evidence_id`` and ``attempt`` must not be
+    posted now, or ``None``: it is the record's due comment, at its current
+    attempt, on a recorded development PR, while the record is not paused and
+    the policy permits writes."""
+    due = record.get("review_comment") or {}
+    if due.get("evidence_id") != evidence_id or due.get("attempts") != attempt:
+        return "the comment is not the record's due comment at this attempt"
+    if due.get("exhausted"):
+        return "the comment's attempts are spent"
+    if record.get("paused"):
+        return "the contribution is paused"
+    if policy.get("read_only", True):
+        return "the policy is read-only"
     fork = record.get("fork") or {}
-    repository, number = fork.get("name"), fork.get("pr_number")
-    if not repository or not number:
-        return {"status": "skipped", "reason": "no development PR is recorded"}
-    path = (root or repository_root()) / STATE_ROOT / "evidence" / f"{eid}.json"
+    if not fork.get("name") or not fork.get("pr_number"):
+        return "no development PR is recorded"
+    if not _SHA.match(str(due.get("head") or "")):
+        return "the published head is unknown"
+    return None
+
+
+def _comments(api, repository: str, number: int):
+    """Every comment of the PR, page by page."""
+    page = 1
+    while True:
+        items = api.call("GET", f"/repos/{repository}/issues/{number}/comments"
+                                f"?per_page=100&page={page}") or []
+        yield from items
+        if len(items) < 100:
+            return
+        page += 1
+
+
+def comment(api, record: dict, evidence_id: str, attempt: int, *, policy: dict,
+            root: Path | None = None) -> dict:
+    """Post the comment of a patch published after successive failed reviews
+    on the development PR, once: a comment that carries the marker of the
+    review, on any page, is found instead of posted again. The receipt names
+    the contribution, the review and the attempt."""
+    receipt = {"contribution_id": record["contribution_id"], "evidence_id": evidence_id,
+               "attempt": attempt}
+    why = comment_check(record, evidence_id, attempt, policy)
+    if why:
+        return receipt | {"status": "skipped", "reason": why}
+    fork = record["fork"]
+    repository, number = fork["name"], int(fork["pr_number"])
+    path = (root or repository_root()) / STATE_ROOT / "evidence" / f"{evidence_id}.json"
     review = json.loads(path.read_text(encoding="utf-8"))
-    if review.get("kind") != STATUS or review.get("evidence_id") != eid:
-        raise ValueError(f"{eid} is not a patch review")
-    head = outcome.get("candidate") or ((outcome.get("operation") or {}).get("proposed")
-                                        or {}).get("commit")
-    if not _SHA.match(str(head or "")):
-        raise ValueError("the published head is unknown")
-    marker = COMMENT_MARKER.format(eid)
-    existing = api.call("GET", f"/repos/{repository}/issues/{int(number)}/comments?per_page=100")
-    for item in existing or []:
+    if review.get("kind") != STATUS or review.get("evidence_id") != evidence_id:
+        return receipt | {"status": "skipped", "reason": f"{evidence_id} is not a patch review"}
+    marker = COMMENT_MARKER.format(evidence_id)
+    for item in _comments(api, repository, number):
         if marker in (item.get("body") or ""):
-            return {"status": "found", "comment_id": item.get("id"), "evidence_id": eid}
-    posted = api.call("POST", f"/repos/{repository}/issues/{int(number)}/comments",
-                      {"body": comment_body(review, head)})
-    return {"status": "posted", "comment_id": (posted or {}).get("id"), "evidence_id": eid}
+            return receipt | {"status": "found", "comment_id": item.get("id")}
+    posted = api.call("POST", f"/repos/{repository}/issues/{number}/comments",
+                      {"body": comment_body(review, record["review_comment"]["head"])})
+    return receipt | {"status": "posted", "comment_id": (posted or {}).get("id")}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -374,10 +421,14 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--task", type=Path, required=True)
     c.add_argument("--result", type=Path, required=True, help="the review proposal.json")
     c.add_argument("--out", type=Path, required=True)
-    p = sub.add_parser("comment", help="post the comment of a patch published anyway")
-    p.add_argument("--record", type=Path, required=True)
-    p.add_argument("--outcome", type=Path, required=True)
-    p.add_argument("--out", type=Path, required=True)
+    for name, text in (("comment-due", "whether the comment of a patch published anyway is "
+                                         "due, without a token"),
+                       ("comment", "post the comment of a patch published anyway")):
+        p = sub.add_parser(name, help=text)
+        p.add_argument("--contribution", required=True, help="the contribution's file id")
+        p.add_argument("--evidence", required=True)
+        p.add_argument("--attempt", type=int, required=True)
+        p.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "check":
         task = json.loads(args.task.read_text())
@@ -389,17 +440,40 @@ def main(argv: list[str] | None = None) -> int:
         args.out.write_text(json.dumps(result, indent=2))
         return 0
     import review_response
+    from common import load_policy
 
-    record = json.loads(args.record.read_text())
-    outcome = json.loads(args.outcome.read_text())
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}", args.contribution) \
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", args.evidence) \
+            or ".." in args.evidence or "/" in args.evidence:
+        raise SystemExit("bad contribution or evidence id")
+    record = json.loads((repository_root() / STATE_ROOT / "contributions"
+                         / f"{args.contribution}.json").read_text(encoding="utf-8"))
+    schemas.validate("contribution", record)
+    policy = load_policy()
     token = os.environ.pop("UPSTREAMING_FORK_TOKEN", None)
-    if comment_due(record, outcome) is None:
-        result = {"status": "not_due"}
-    elif not token:
-        raise SystemExit("UPSTREAMING_FORK_TOKEN is missing")
-    else:
-        result = comment(review_response.Api(token), record, outcome)
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.command == "comment-due":
+        why = comment_check(record, args.evidence, args.attempt, policy)
+        result = {"due": why is None, "reason": why,
+                  "fork_name": str((record.get("fork") or {}).get("name") or "").split("/")[-1]}
+        if why:
+            # The receipt of a post that is not due: the reconciler folds it.
+            receipt = {"contribution_id": record["contribution_id"],
+                       "evidence_id": args.evidence, "attempt": args.attempt,
+                       "status": "skipped", "reason": why}
+            (args.out.parent / "review-comment.json").write_text(json.dumps(receipt, indent=2))
+    elif not token:
+        result = {"contribution_id": record["contribution_id"], "evidence_id": args.evidence,
+                  "attempt": args.attempt, "status": "failed",
+                  "reason": "no token for the development PR"}
+    else:
+        try:
+            result = comment(review_response.Api(token), record, args.evidence, args.attempt,
+                             policy=policy)
+        except Exception as error:  # noqa: BLE001 - every failure is a receipt
+            result = {"contribution_id": record["contribution_id"],
+                      "evidence_id": args.evidence, "attempt": args.attempt,
+                      "status": "failed", "reason": worker_report.clean(str(error), 500)}
     args.out.write_text(json.dumps(result, indent=2))
     print(json.dumps(result))
     return 0
