@@ -5443,7 +5443,38 @@ def private_engine_names_in(tree) -> list[tuple[int, str]]:
                 and names[node.id] in PRIVATE_ENGINE_NAMES \
                 and isinstance(node.ctx, ast.Load):
             found.append((node.lineno, f"engine.{names[node.id]}"))
+        # The namespace of the module, or the module reached by its name:
+        # either one gives every name without the checks above.
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in modules and node.attr == "__dict__":
+            found.append((node.lineno, "engine.__dict__"))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id in ("vars", "dir") and node.args \
+                and isinstance(node.args[0], ast.Name) and node.args[0].id in modules:
+            found.append((node.lineno, f"{node.func.id}(engine)"))
+        elif isinstance(node, ast.Call) and _is_engine_lookup(node):
+            found.append((node.lineno, "the engine looked up by its name"))
+        elif isinstance(node, ast.Subscript) and _mentions_engine(node.slice) \
+                and "modules" in ast.unparse(node.value):
+            found.append((node.lineno, "sys.modules['engine']"))
     return found
+
+
+def _mentions_engine(node) -> bool:
+    import ast
+
+    return isinstance(node, ast.Constant) and node.value == "engine"
+
+
+def _is_engine_lookup(call) -> bool:
+    """``importlib.import_module("engine")``, ``__import__("engine")``, or
+    ``sys.modules.get("engine")``."""
+    import ast
+
+    target = ast.unparse(call.func)
+    return bool(call.args) and _mentions_engine(call.args[0]) and (
+        target.endswith("import_module") or target == "__import__"
+        or target.endswith("modules.get"))
 
 
 def private_engine_uses(root) -> list[str]:

@@ -77,6 +77,30 @@ def called(call: ast.Call, module: str, bindings) -> str | None:
     return None
 
 
+def taker_references(tree, bindings) -> list[tuple[ast.AST, str]]:
+    """Every reference to a function that takes a row (``STATIC_TAKERS``) in
+    a module, the engine under any alias: the node that names it (the
+    function of a call, or any other use of the name) and the name."""
+    modules, names = bindings
+    found = []
+    for node in ast.walk(tree):
+        name = None
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in modules:
+            name = f"engine.{node.attr}"
+        elif isinstance(node, ast.Name) and node.id in names \
+                and isinstance(node.ctx, ast.Load):
+            name = f"engine.{names[node.id]}"
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == "getattr" and len(node.args) > 1 \
+                and isinstance(node.args[0], ast.Name) and node.args[0].id in modules \
+                and isinstance(node.args[1], ast.Constant):
+            name = f"engine.{node.args[1].value}"
+        if name in STATIC_TAKERS:
+            found.append((node, name))
+    return found
+
+
 def own_nodes(function):
     """The nodes of a function, but those of the functions defined in it
     (each is analysed on its own)."""
@@ -102,6 +126,17 @@ def analyse(sources: dict[str, str]) -> tuple[dict[tuple[str, str], Site], list[
     takers = set(STATIC_TAKERS) | {"recovery.fire"}
     found: dict[tuple[str, str], Site] = {}
     problems: list[str] = []
+    # A taker is only ever called, directly, in a function: not bound to a
+    # name, passed to `functools.partial` or any other function, called in
+    # a lambda, or called at module level.
+    called_here = {id(call.func) for module, function in functions
+                   for call in own_nodes(function) if isinstance(call, ast.Call)
+                   and called(call, module, bindings[module]) in STATIC_TAKERS}
+    reference_problems = [
+        f"{module}:{node.lineno}: {name} is not called directly in a function"
+        for module, tree in trees.items()
+        for node, name in taker_references(tree, bindings[module])
+        if id(node) not in called_here]
     while True:
         found, problems = {}, []
         grown = False
@@ -195,7 +230,7 @@ def analyse(sources: dict[str, str]) -> tuple[dict[tuple[str, str], Site], list[
                    if isinstance(c, ast.Call) and called(c, m, bindings[m]) == key]
         if not callers and (module, function) in found:
             problems.append(f"{key}: returns the outcome of a row to no caller")
-    return found, problems
+    return found, problems + reference_problems
 
 
 def sites() -> dict[tuple[str, str], Site]:
@@ -262,6 +297,15 @@ class TestTheCallSites(unittest.TestCase):
             "d": "import engine\n"
                  "def f(r):\n    out = engine.try_apply_transition(r, 'x')\n"
                  "    engine.dispatch(out, ('d', 'f'))\n    engine.dispatch(out, ('d', 'f'))\n",
+            # A taker that is bound to a name, handed to another function,
+            # or called in a lambda or at module level.
+            "e": "import engine\ndef f(r):\n    t = engine.try_apply_transition\n    t(r, 'x')\n",
+            "f": "import engine, functools\n"
+                 "def f(r):\n    functools.partial(engine.try_apply_transition, r)('x')\n",
+            "g": "import engine\nTAKE = lambda r: engine.try_apply_transition(r, 'x')\n",
+            "h": "import engine\ndef f(r):\n    g = lambda: engine.try_apply_transition(r, 'x')\n"
+                 "    return g\n",
+            "i": "import engine\nengine.try_apply_transition({}, 'x')\n",
         }
         for module, source in bad.items():
             with self.subTest(module=module):
@@ -279,7 +323,12 @@ class TestTheCallSites(unittest.TestCase):
                        "from engine import *\n",
                        "import engine\ngetattr(engine, 'apply_transition')\n",
                        "import engine\ngetattr(engine, name)\n",
-                       "import engine\nx = engine\nx._evaluate\n"):
+                       "import engine\nx = engine\nx._evaluate\n",
+                       "import engine\nengine.__dict__['_apply_transition']\n",
+                       "import engine\nvars(engine)['apply_transition']\n",
+                       "import importlib\nimportlib.import_module('engine').preconditions\n",
+                       "import sys\nsys.modules['engine'].preconditions\n",
+                       "__import__('engine').preconditions\n"):
             with self.subTest(source=source):
                 self.assertTrue(lc.private_engine_names_in(ast.parse(source)), source)
         self.assertEqual(lc.private_engine_names_in(ast.parse(
