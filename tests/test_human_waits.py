@@ -3,7 +3,7 @@
 """A wait for a human is left only by the rows the table lists for it.
 
 Multi-tick loops through ``reconcile.tick``: the development human wait that
-``exhaust_work_total`` and ``exhaust_work_recovery`` enter stays as it is
+``exhaust_work_total`` and ``exhaust_recovery`` enter stays as it is
 under failing, pending, and passing CI, posts nothing again, and is left by
 ``resume_development``, ``park_contribution``, or ``refresh_planning``.
 """
@@ -100,7 +100,7 @@ def wait_from_work_total() -> World:
 
 
 def wait_from_work_recovery() -> World:
-    """``exhaust_work_recovery`` after the Work graph ended without a Result
+    """``exhaust_recovery`` after the Work graph ended without a Result
     on every attempt ``work_recovery`` allows."""
     record, evidence = failing_record()
     world = World(record, evidence)
@@ -110,13 +110,13 @@ def wait_from_work_recovery() -> World:
         queue = {work.graph_id(aw["dedupe_key"]): "completed"} if aw else {}
         events, _ = world.tick(queue_works=queue, runs=runs)
         if engine.state_key(world.rec) == "development.waiting_human":
-            assert "exhaust_work_recovery" in [e["kind"] for e in events], events
+            assert "exhaust_recovery" in [e["kind"] for e in events], events
             return world
     raise AssertionError(f"never exhausted: {engine.state_key(world.rec)}")
 
 
 WAITS = {"exhaust_work_total": wait_from_work_total,
-         "exhaust_work_recovery": wait_from_work_recovery}
+         "exhaust_recovery": wait_from_work_recovery}
 
 
 class TestDevelopmentHumanWaitIsStable(unittest.TestCase):

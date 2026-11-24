@@ -346,7 +346,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
         out = apply_command(rec, commands.parse(
             f"/upstreaming resume revision={rec['revision']} reason=fixed"), operations=ops)
         self.assertTrue(out.accepted, out.reason)
-        self.assertEqual(out.event["kind"], "resume_development_pr")
+        self.assertEqual(out.event["kind"], "resume_ci")
         self.assertEqual(engine.state_key(out.record), "development.waiting_ci")
         self.assertEqual(out.record["revision"], rec["revision"] + 1)
         self.assertEqual(out.restarted["counter"], "operation_launch")
@@ -363,7 +363,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
             with self.subTest(kind=kind):
                 other = dict(rec, pending_human_action=dict(rec["pending_human_action"],
                                                             kind=kind, counter=None))
-                self.assertIsNotNone(engine.refusal(other, "resume_development_pr",
+                self.assertIsNotNone(engine.refusal(other, "resume_ci",
                                                     policy=policy(), now=NOW))
 
     def test_a_verified_receipt_confirms_also_while_paused(self):

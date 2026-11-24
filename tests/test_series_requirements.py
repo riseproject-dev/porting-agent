@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """The series requirements of a plan (schema version 4) are checked on the
 exact head before nomination; unmet ones are returned as development Work
-(``return_for_series_requirements``), and the worker gate enforces them on
+(``return_for_feedback``), and the worker gate enforces them on
 that Work."""
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ class TestObservation(unittest.TestCase):
         gh = FakeGitHub([commit(SHA_B, "Build riscv64 wheels")], ["setup.py"])
         rec = record()
         out = observed(rec, gh, plan_evidence(CHANGELOG, NEWS))
-        self.assertEqual(kinds(out)[0], "return_for_series_requirements")
+        self.assertEqual(kinds(out)[0], "return_for_feedback")
         self.assertEqual(gh.compared, [(rec["fork"]["name"], SHA_C, SHA_A)])
         [ev] = [e for kind, e in out.staged
                 if kind == "evidence" and e["kind"] == "series_requirements"]
@@ -96,7 +96,7 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(ev["digests"], {"head": SHA_A})
         self.assertIn("`changelog`: change `CHANGELOG.md`", ev["summary"])
         returned = next(e for kind, e in out.staged
-                        if kind == "events" and e["kind"] == "return_for_series_requirements")
+                        if kind == "events" and e["kind"] == "return_for_feedback")
         self.assertEqual(returned["details"]["series_requirements_unmet"], ["changelog", "news"])
         self.assertTrue(returned["revision_bumped"])
         new = final(out, rec)
@@ -158,14 +158,14 @@ class TestObservation(unittest.TestCase):
                         ["CHANGELOG.md", "setup.py"],
                         by_commit={d1: ["CHANGELOG.md"], d2: ["setup.py"]})
         out = observed(record(), gh, plan_evidence(CHANGELOG))
-        self.assertEqual(kinds(out)[0], "return_for_series_requirements")
+        self.assertEqual(kinds(out)[0], "return_for_feedback")
         self.assertEqual(gh.read, [d2])
         # A path changed by a non-debug commit and reverted later in the
         # series is not in the comparison, so it does not count either.
         gh = FakeGitHub([commit(d1, "{debug} Lift the CI guard"), commit(d2, "Build riscv64")],
                         ["setup.py"], by_commit={d1: [], d2: ["setup.py", "CHANGELOG.md"]})
         self.assertEqual(kinds(observed(record(), gh, plan_evidence(CHANGELOG)))[0],
-                         "return_for_series_requirements")
+                         "return_for_feedback")
         gh = FakeGitHub([commit(d1, "{debug} Lift the CI guard"), commit(d2, "Build riscv64")],
                         ["setup.py", "CHANGELOG.md"],
                         by_commit={d1: [], d2: ["setup.py", "CHANGELOG.md"]})
@@ -180,7 +180,7 @@ class TestObservation(unittest.TestCase):
             out = tick(rec, verdict="passed", evidence={"plan-1": plan_evidence(CHANGELOG)},
                        api=FakeGitHub([], []))
         self.assertNotIn("nominate_for_handoff", kinds(out))
-        self.assertNotIn("return_for_series_requirements", kinds(out))
+        self.assertNotIn("return_for_feedback", kinds(out))
         self.assertEqual(engine.state_key(final(out, rec)), "development.waiting_ci")
 
     def test_a_nomination_needs_the_fact(self):
@@ -196,10 +196,10 @@ class TestObservation(unittest.TestCase):
         gh = FakeGitHub([commit(SHA_B, "x")], ["setup.py"])
         out = observed(record(), gh, plan_evidence(CHANGELOG))
         event = next(e for kind, e in out.staged
-                     if kind == "events" and e["kind"] == "return_for_series_requirements")
+                     if kind == "events" and e["kind"] == "return_for_feedback")
         body = status_ledger.render(dict(event, sequence=3), final(out, record()),
                                     "https://github.com/run")
-        self.assertIn("`return_for_series_requirements`", body)
+        self.assertIn("`return_for_feedback`", body)
         self.assertIn("`changelog`", body)
         self.assertNotIn(CHANGELOG["description"], body)
 

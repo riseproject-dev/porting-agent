@@ -110,7 +110,7 @@ DECISIONS: tuple[Item, ...] = (
         "Work failed. Dispatch exhaustion does not park.",
         ("upstream_review.agent_running", "upstream_review.waiting_human",
          "upstream_review.waiting_ci", "upstream_review.fix_needed"),
-        edges=(("upstream_review.agent_running", "exhaust_dispatch_recovery"),
+        edges=(("upstream_review.agent_running", "exhaust_recovery"),
                ("upstream_review.waiting_ci", "record_pr_closed_unmerged"),
                ("upstream_review.waiting_human", "resume_upstream_review"),
                ("upstream_review.waiting_human", "resume_upstream_revision")),
@@ -192,30 +192,31 @@ DECISIONS: tuple[Item, ...] = (
     ),
     Item(
         "Publication recovery exhaustion and its resume",
-        "From which states `exhaust_publish_recovery` is taken, and where `resume_development` "
-        "leads.",
-        "In development, `exhaust_publish_recovery` leaves only `development.agent_running`. "
+        "From which states the exhaustion of `publish_recovery` (`exhaust_recovery`) is taken, "
+        "and where `resume_development` leads.",
+        "In development, the exhaustion of `publish_recovery` leaves only the states that hold "
+        "a publication, `development.agent_running` and `development.publishing`. "
         "`resume_development` leads to `development.fix_needed`, clears `pending_publication`, "
         "and requests fresh Work. Automatic publish retries still reuse the Result.",
         ("development.agent_running", "development.fix_needed", "development.waiting_human"),
         edges=(("development.agent_running", "schedule_publish_retry"),
-               ("development.agent_running", "exhaust_publish_recovery"),
+               ("development.agent_running", "exhaust_recovery"),
                ("development.waiting_human", "resume_development")),
-        highlighted=(("development.agent_running", "exhaust_publish_recovery"),
+        highlighted=(("development.agent_running", "exhaust_recovery"),
                      ("development.waiting_human", "resume_development")),
     ),
     Item(
         "Dispatch and Work recovery exhaustion targets",
         "Whether dispatch exhaustion and Work exhaustion lead to the same place.",
-        "Both wait for a human: `exhaust_work_recovery` leads to the phase's `waiting_human` in "
-        "planning, development, and upstream review, like `exhaust_dispatch_recovery`. An "
+        "Both wait for a human: the exhaustion of `dispatch_recovery` leads to the phase's "
+        "`waiting_human` in planning, development, and upstream review, like the exhaustion of "
+        "`work_recovery` (one row, `exhaust_recovery`). An "
         "observed development PR that does not match the record takes `record_pr_mismatch` to "
         "`development.waiting_human`.",
         ("development.agent_running", "development.waiting_ci", "development.waiting_human"),
-        edges=(("development.agent_running", "exhaust_dispatch_recovery"),
-               ("development.agent_running", "exhaust_work_recovery"),
+        edges=(("development.agent_running", "exhaust_recovery"),
                ("development.waiting_ci", "record_pr_mismatch")),
-        highlighted=(("development.agent_running", "exhaust_work_recovery"),
+        highlighted=(("development.agent_running", "exhaust_recovery"),
                      ("development.waiting_ci", "record_pr_mismatch")),
     ),
     Item(
@@ -302,7 +303,7 @@ DECISIONS: tuple[Item, ...] = (
         "charges `no_progress`. When no change is needed, `require_reviewer_answer` leads to "
         "`upstream_review.waiting_human` with a pending action to answer the reviewer. "
         "`upstream_review.agent_running` has `schedule_publish_retry` and "
-        "`exhaust_publish_recovery`. Every exhaustion in upstream review leads to "
+        "`exhaust_recovery`. Every exhaustion in upstream review leads to "
         "`upstream_review.waiting_human`.",
         ("upstream_review.waiting_ci", "upstream_review.fix_needed", "upstream_review.agent_running",
          "upstream_review.waiting_human"),
@@ -311,12 +312,12 @@ DECISIONS: tuple[Item, ...] = (
                ("upstream_review.agent_running", "reject_patch_proposal"),
                ("upstream_review.agent_running", "require_reviewer_answer"),
                ("upstream_review.agent_running", "schedule_publish_retry"),
-               ("upstream_review.agent_running", "exhaust_publish_recovery"),
+               ("upstream_review.agent_running", "exhaust_recovery"),
                ("upstream_review.fix_needed", "exhaust_repair_attempts")),
         highlighted=(("upstream_review.agent_running", "reject_patch_proposal"),
                      ("upstream_review.agent_running", "require_reviewer_answer"),
                      ("upstream_review.agent_running", "schedule_publish_retry"),
-                     ("upstream_review.agent_running", "exhaust_publish_recovery")),
+                     ("upstream_review.agent_running", "exhaust_recovery")),
     ),
     Item(
         "Commands without table rows",
@@ -379,7 +380,7 @@ DECISIONS: tuple[Item, ...] = (
         edges=(("planning.agent_running", "retry_dispatch"),
                ("planning.agent_running", "allocate_work_retry"),
                ("planning.agent_running", "reject_plan"),
-               ("planning.agent_running", "exhaust_dispatch_recovery"),
+               ("planning.agent_running", "exhaust_recovery"),
                ("planning.waiting_human", "record_reminder")),
         highlighted=(("planning.agent_running", "allocate_work_retry"),
                      ("planning.agent_running", "reject_plan"),
@@ -484,25 +485,25 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         edges=(("planning.idle", "dispatch_planning"),
                ("planning.idle", "exhaust_work_total"),
                ("planning.agent_running", "allocate_work_retry"),
-               ("planning.agent_running", "exhaust_work_recovery")),
+               ("planning.agent_running", "exhaust_recovery")),
         highlighted=(("planning.idle", "dispatch_planning"),
                      ("planning.idle", "exhaust_work_total"),
-                     ("planning.agent_running", "exhaust_work_recovery")),
+                     ("planning.agent_running", "exhaust_recovery")),
     ),
     Item(
         "No automatic park from upstream review",
         "A generation restarted after an automatic park would write the fork ref that is the "
         "upstream PR head.",
-        "`exhaust_work_recovery` and `exhaust_repair_attempts` no longer park from "
+        "`exhaust_recovery` and `exhaust_repair_attempts` no longer park from "
         "`upstream_review`; they wait for a human. `restart_generation` requires that no "
         "upstream PR is open.",
         ("upstream_review.agent_running", "upstream_review.fix_needed",
          "upstream_review.waiting_human", "parked.idle", "queued.idle"),
-        edges=(("upstream_review.agent_running", "exhaust_work_recovery"),
+        edges=(("upstream_review.agent_running", "exhaust_recovery"),
                ("upstream_review.fix_needed", "exhaust_repair_attempts"),
                ("upstream_review.waiting_human", "park_contribution"),
                ("parked.idle", "restart_generation")),
-        highlighted=(("upstream_review.agent_running", "exhaust_work_recovery"),
+        highlighted=(("upstream_review.agent_running", "exhaust_recovery"),
                      ("upstream_review.fix_needed", "exhaust_repair_attempts"),
                      ("parked.idle", "restart_generation")),
     ),
@@ -652,7 +653,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check "
         "(`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns "
         "to development with the reasons as pending feedback and posts nothing; a Result that "
-        "is not usable is a Work retry (`allocate_work_retry`, `exhaust_work_recovery`), not a "
+        "is not usable is a Work retry (`allocate_work_retry`, `exhaust_recovery`), not a "
         "verdict. A rewrite whose artifact expires before `riscv64` is built "
         "(`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of "
         "`riscv64` as before, the package names `riscv64` and the reviewed title and "
@@ -695,15 +696,15 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`handoff.waiting_ci` to `handoff.waiting_human` with the pending action "
         "`clean_head_ci_missing` at once when no run exists and the workflow cannot be "
         "dispatched, and in any case when CI is not complete 12 hours after the wait began; "
-        "reminders apply, and `resume_clean_head_ci` returns to `handoff.waiting_ci`, observes "
+        "reminders apply, and `resume_ci` returns to `handoff.waiting_ci`, observes "
         "CI again, and starts the wait again. The wait also starts again when CI is started "
         "again: on `rerun_interrupted_ci` there and on `resume_ci` from the human wait.",
         ("handoff.building_upstream_branch", "handoff.waiting_ci", "handoff.waiting_human"),
         edges=(("handoff.building_upstream_branch", "confirm_clean_head"),
                ("handoff.waiting_ci", "require_clean_head_ci"),
-               ("handoff.waiting_human", "resume_clean_head_ci")),
+               ("handoff.waiting_human", "resume_ci")),
         highlighted=(("handoff.waiting_ci", "require_clean_head_ci"),
-                     ("handoff.waiting_human", "resume_clean_head_ci")),
+                     ("handoff.waiting_human", "resume_ci")),
     ),
     Item(
         "Head change while development Work is due",
@@ -823,7 +824,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "pinned commit and SHA-256, and a trusted pre-agent step fetches and verifies it; the "
         "dispatcher defers Work whose history is not committed yet, and dispatch recovery "
         "charges nothing for it for two hours, after which a history never recorded ends in "
-        "the human wait of `exhaust_dispatch_recovery`, whose entry says so; the tick that "
+        "the human wait of `exhaust_recovery`, whose entry says so; the tick that "
         "records a late history launches the dispatcher. No record field changes.",
         ("development.agent_running", "development.waiting_ci",
          "handoff.agent_running", "handoff.review_pending", "handoff.reviewing",
@@ -1007,7 +1008,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         ("development.publishing", "development.waiting_ci", "development.waiting_human",
          "development.fix_needed", "closed.idle"),
         edges=(("development.publishing", "record_publish_success"),
-               ("development.publishing", "exhaust_publish_recovery")),
+               ("development.publishing", "exhaust_recovery")),
         highlighted=(("development.publishing", "record_publish_success"),),
     ),
     Item(
@@ -1042,7 +1043,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "other one, each with an alert. No row, state, or budget changes.",
         ("development.publishing", "development.waiting_human", "development.fix_needed",
          "development.waiting_ci", "parked.idle"),
-        edges=(("development.publishing", "exhaust_publish_recovery"),
+        edges=(("development.publishing", "exhaust_recovery"),
                ("development.waiting_human", "resume_development"),
                ("development.waiting_human", "park_contribution"),
                ("development.fix_needed", "record_head_change")),
@@ -1060,13 +1061,13 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "migration carries Work recorded without a generation as generation 0. The Work such "
         "a Result leaves requested is terminal without a usable Result and is answered by "
         "`allocate_work_retry` within `work_recovery` and `work_total`, then "
-        "`exhaust_work_recovery` to the human wait of the phase. This completes decision 2 "
+        "`exhaust_recovery` to the human wait of the phase. This completes decision 2 "
         "(the generation fence) and decision 19 (late Results): a Result that differs in the "
         "generation, the revision, or the Work id is never folded and never published.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "record_late_effect"),
                ("development.agent_running", "allocate_work_retry"),
-               ("development.agent_running", "exhaust_work_recovery")),
+               ("development.agent_running", "exhaust_recovery")),
         highlighted=(("development.agent_running", "record_late_effect"),
                      ("development.agent_running", "allocate_work_retry")),
     ),
@@ -1228,7 +1229,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     ),
     Item(
         "The counter a failed Work recovery names",
-        "Which counter `exhaust_work_recovery` names when both of its budgets are spent.",
+        "Which counter `exhaust_recovery` names for a Work graph terminal without a usable "
+        "Result when both of its budgets are spent.",
         "`pending_human_action.counter` names `work_total` when that budget is exhausted, also "
         "when `work_recovery` is exhausted too, and `work_recovery` otherwise. A resume starts "
         "exactly the counter the wait names. `work_recovery` is counted in "
@@ -1236,8 +1238,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "starts at attempt 1 anyway; naming `work_total` is the only choice with which one "
         "resume makes Work possible again. No row, state, or record field changes.",
         ("development.agent_running", "development.waiting_human"),
-        edges=(("development.agent_running", "exhaust_work_recovery"),),
-        highlighted=(("development.agent_running", "exhaust_work_recovery"),),
+        edges=(("development.agent_running", "exhaust_recovery"),),
+        highlighted=(("development.agent_running", "exhaust_recovery"),),
     ),
     Item(
         "The counter an exhausted upstream revision names",
@@ -1505,10 +1507,10 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Does a held publication whose `publish_recovery` is exhausted keep the resumes of its "
         "wait from applying?",
         "No. A held publication marked `pending_publication.exhausted` by "
-        "`exhaust_publish_recovery` launches nothing more and is not a pending publication for "
+        "`exhaust_recovery` launches nothing more and is not a pending publication for "
         "the guard \"quiescent: no open operation and no pending publication\" "
         "(`engine.publication_pending`). So `resume_development`, `resume_upstream_revision`, "
-        "`resume_stale`, and `refresh_planning` apply in the wait `exhaust_publish_recovery` "
+        "`resume_stale`, and `refresh_planning` apply in the wait `exhaust_recovery` "
         "entered, and each clears it: the refresh rows list `pending_publication` among their "
         "clears like the resumes, and `lifecycle check` verifies the rows of "
         "`development.waiting_human`. Fresh Work is requested; the held Result is never reused. "
@@ -1516,7 +1518,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "This completes decision 9.",
         ("development.agent_running", "development.waiting_human", "development.fix_needed",
          "queued.idle"),
-        edges=(("development.agent_running", "exhaust_publish_recovery"),
+        edges=(("development.agent_running", "exhaust_recovery"),
                ("development.waiting_human", "resume_development"),
                ("development.waiting_human", "resume_stale")),
         highlighted=(("development.waiting_human", "resume_development"),
@@ -1532,7 +1534,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`pending_publication` among its clears: `hold_patch_for_review`, "
         "`record_publish_success`, `reject_patch_proposal`, `replan_development`, "
         "`request_ci_rerun`, `record_revision_publish_success`, and `require_reviewer_answer`. "
-        "Only `schedule_publish_retry` (which holds the Result), `exhaust_publish_recovery` "
+        "Only `schedule_publish_retry` (which holds the Result), `exhaust_recovery` "
         "(which marks it exhausted), and `record_late_effect` keep it. `lifecycle check` "
         "verifies this, and no write beside the row clears it any more; the launch of a retry "
         "(`publish_retry_launched`) is still recorded beside the table.",
@@ -1595,11 +1597,11 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "worker's own publication being the first, each charged by `schedule_publish_retry`. "
         "The launch of a retry charges nothing (`publish_retry_launched`, beside the table). A "
         "Result is therefore published at most `retries.infrastructure_per_head_failure` plus "
-        "two times (4 with the policy) before `exhaust_publish_recovery`, and the retries are "
+        "two times (4 with the policy) before `exhaust_recovery`, and the retries are "
         "launched 15, 60, then 240 minutes after each failure.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "schedule_publish_retry"),
-               ("development.agent_running", "exhaust_publish_recovery")),
+               ("development.agent_running", "exhaust_recovery")),
         highlighted=(("development.agent_running", "schedule_publish_retry"),),
     ),
     Item(
@@ -1608,7 +1610,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Result when it arrives late?",
         "A launched retry whose Result is not folded within `PUBLISH_RESULT_WAIT_MINUTES` (60) "
         "of `pending_publication.launched_at` is \"publication failed with an infrastructure "
-        "error\": `schedule_publish_retry`, or `exhaust_publish_recovery` once the budget is "
+        "error\": `schedule_publish_retry`, or `exhaust_recovery` once the budget is "
         "spent. Its Result arriving later is folded by its row while the Result is still held "
         "and no human is waited for, and takes `record_late_effect` in the wait, which is "
         "kept. An `infra_error` it reports was already charged (`reconcile._charged_launch`: "
@@ -1616,7 +1618,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`record_late_effect` without a charge.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "schedule_publish_retry"),
-               ("development.agent_running", "exhaust_publish_recovery"),
+               ("development.agent_running", "exhaust_recovery"),
                ("development.agent_running", "record_late_effect")),
         highlighted=(("development.agent_running", "schedule_publish_retry"),
                      ("development.agent_running", "record_late_effect")),
@@ -1626,13 +1628,13 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "What happens when a row that keeps the revision allocates Work whose graph already "
         "returned a Result or is terminal in the queue?",
         "That Work is \"the Work graph is terminal without a usable Result\": the allocation "
-        "row is taken, and then `allocate_work_retry` or `exhaust_work_recovery` in the same "
+        "row is taken, and then `allocate_work_retry` or `exhaust_recovery` in the same "
         "tick. The allocation charges `work_total` (and its own budgets), and the fresh graph "
         "charges `work_recovery` and `work_total` again; the spent graph is never submitted.",
         ("development.fix_needed", "development.agent_running", "development.waiting_human"),
         edges=(("development.fix_needed", "request_repair"),
                ("development.agent_running", "allocate_work_retry"),
-               ("development.agent_running", "exhaust_work_recovery")),
+               ("development.agent_running", "exhaust_recovery")),
         highlighted=(("development.agent_running", "allocate_work_retry"),),
     ),
     Item(
@@ -1643,7 +1645,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "history was recorded or the queue's retry time (`retry_not_before`) when later; every "
         "counted run has ended. Each ended run is decided once: `retry_dispatch` records the "
         "run it decided in `active_work.dispatched_run_id` as an effect of the row, and "
-        "`exhaust_dispatch_recovery` is taken once the count reaches the limit "
+        "`exhaust_recovery` is taken once the count reaches the limit "
         "(`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never "
         "shows up as a run is launched again after `DISPATCH_LAUNCH_GRACE_MINUTES` (15) and "
         "then on every tick until a run shows up, without a row and without a charge, also "
@@ -1652,7 +1654,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "is left out of the retries and reported.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "retry_dispatch"),
-               ("development.agent_running", "exhaust_dispatch_recovery")),
+               ("development.agent_running", "exhaust_recovery")),
         highlighted=(("development.agent_running", "retry_dispatch"),),
     ),
     Item(
@@ -1714,7 +1716,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Which rows wait while an operation of the contribution is open.",
         "Every row that allocates Work carries the guard `no open operation` (or the quiescence "
         "guard), and so does every row of `development.waiting_ci` that acts on passing CI: "
-        "`nominate_for_handoff`, `return_for_feedback`, `return_for_series_requirements`, and "
+        "`nominate_for_handoff`, `return_for_feedback` (also for unmet series requirements), and "
         "the Work allocations `request_patch`, `request_repair`, `request_upstream_revision`, "
         "and `request_review_revision`. The observation keeps the contribution in its state "
         "and reports `handoff_deferred` naming the operation, and the engine refuses the row "
@@ -1725,7 +1727,6 @@ FURTHER_CHANGES: tuple[Item, ...] = (
          "handoff.awaiting_submission"),
         edges=(("development.waiting_ci", "nominate_for_handoff"),
                ("development.waiting_ci", "return_for_feedback"),
-               ("development.waiting_ci", "return_for_series_requirements"),
                ("development.fix_needed", "request_patch"),
                ("development.fix_needed", "request_repair"),
                ("upstream_review.fix_needed", "request_upstream_revision"),
@@ -1897,7 +1898,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
          "upstream_review.waiting_ci", "upstream_review.waiting_human"),
         edges=(("handoff.building_upstream_branch", "confirm_clean_head"),
                ("handoff.waiting_ci", "require_clean_head_ci"),
-               ("handoff.waiting_human", "resume_clean_head_ci"),
+               ("handoff.waiting_human", "resume_ci"),
                ("upstream_review.waiting_ci", "record_head_change")),
         highlighted=(("handoff.waiting_ci", "require_clean_head_ci"),
                      ("upstream_review.waiting_ci", "record_head_change")),
@@ -1926,6 +1927,47 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         edges=(("handoff.building_upstream_branch", "confirm_clean_head"),
                ("handoff.building_upstream_branch", "require_branch_intervention")),
         highlighted=(("handoff.building_upstream_branch", "require_branch_intervention"),),
+    ),
+    Item(
+        "Seven verbs merged into three",
+        "Which verbs of the table name the same transition under two names, and may be one row "
+        "each (the owner's decision of 2026-11-24)?",
+        "Seven verbs are merged into three, so a caller handles one verb per transition and "
+        "a failure case that an existing verb covers gets no new one. `resume_clean_head_ci` "
+        "and `resume_development_pr` are `resume_ci`: in `handoff.waiting_human` it returns to "
+        "`handoff.waiting_ci` after `ci_interrupted` or `clean_head_ci_missing`, in "
+        "`development.waiting_human` to `development.waiting_ci` after `ci_interrupted` or "
+        "`development_pr_launch_exhausted`, starting again the one counter the wait names "
+        "(`interrupted_reruns` or `operation_launch`). `resume_renamed_upstream` is "
+        "`resume_upstream_read`, guarded by \"the wait was entered because reads kept "
+        "failing, or because GitHub named the recorded repository otherwise\"; the event names "
+        "the cause. `exhaust_dispatch_recovery`, `exhaust_work_recovery` and "
+        "`exhaust_publish_recovery` are `exhaust_recovery`, one row per state for the "
+        "recovery budgets of the failures that can occur there: the caller establishes the "
+        "failure (a lost dispatch, a Work graph terminal without a usable Result, a failed "
+        "publication), and the engine derives the pending action and the counter from it "
+        "(`engine.recovery_exhaustion`); the set `pending_human_action=a|b` names the actions "
+        "it may record, and `pending_publication.exhausted` is set only while a publication is "
+        "pending (`lifecycle.QUALIFIED_SETS`). It is a tick row; the exhaustion of "
+        "`publish_recovery` was a Result row, and its event is now caused by the tick. "
+        "`return_for_series_requirements` is `return_for_feedback`, guarded by \"pending "
+        "actionable feedback, or a series requirement of the verified plan is unmet on the "
+        "exact head\": it records the pending feedback (with the unmet requirements) and so "
+        "bumps the revision also when only feedback was pending. Committed events keep the "
+        "names they were written with, and every reader translates them "
+        "(`lifecycle.HISTORIC_NAMES`, `lifecycle.current_name`).",
+        ("development.agent_running", "development.waiting_ci", "development.waiting_human",
+         "development.fix_needed", "handoff.waiting_ci", "handoff.waiting_human"),
+        edges=(("development.agent_running", "exhaust_recovery"),
+               ("development.waiting_human", "resume_ci"),
+               ("development.waiting_ci", "return_for_feedback"),
+               ("handoff.waiting_human", "resume_ci"),
+               ("development.waiting_human", "resume_upstream_read")),
+        highlighted=(("development.agent_running", "exhaust_recovery"),
+                     ("development.waiting_human", "resume_ci"),
+                     ("development.waiting_ci", "return_for_feedback"),
+                     ("handoff.waiting_human", "resume_ci"),
+                     ("development.waiting_human", "resume_upstream_read")),
     ),
 )
 
@@ -2051,7 +2093,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         ("handoff.review_due", "handoff.agent_running", "handoff.building_upstream_branch",
          "handoff.waiting_ci", "handoff.preparing_submission", "handoff.waiting_human"),
         edges=(("handoff.review_due", "exhaust_work_total"),
-               ("handoff.agent_running", "exhaust_work_recovery"),
+               ("handoff.agent_running", "exhaust_recovery"),
                ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
                ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
                ("handoff.preparing_submission", "exhaust_comment_retries"),
@@ -2179,23 +2221,23 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "Exhaustion of `work_total` found while Work is running",
-        "Whether the resume after `exhaust_work_recovery` starts `work_total` again when "
+        "Whether the resume after `exhaust_recovery` starts `work_total` again when "
         "`work_total` was the exhausted budget.",
         "It does. When a Work retry cannot be allocated because `work_total` is exhausted, "
-        "`exhaust_work_recovery` records `pending_human_action.counter=work_total`, and one "
+        "`exhaust_recovery` records `pending_human_action.counter=work_total`, and one "
         "resume starts it again, in planning, development, and upstream review. When "
         "`work_recovery` itself is exhausted, it names `work_recovery`. The slice shows "
         "planning and development; in upstream review `resume_upstream_revision` does the "
         "same.",
         ("planning.agent_running", "planning.waiting_human", "planning.idle",
          "development.agent_running", "development.waiting_human", "development.fix_needed"),
-        edges=(("planning.agent_running", "exhaust_work_recovery"),
+        edges=(("planning.agent_running", "exhaust_recovery"),
                ("planning.waiting_human", "resume_planning"),
-               ("development.agent_running", "exhaust_work_recovery"),
+               ("development.agent_running", "exhaust_recovery"),
                ("development.waiting_human", "resume_development")),
-        highlighted=(("planning.agent_running", "exhaust_work_recovery"),
+        highlighted=(("planning.agent_running", "exhaust_recovery"),
                      ("planning.waiting_human", "resume_planning"),
-                     ("development.agent_running", "exhaust_work_recovery"),
+                     ("development.agent_running", "exhaust_recovery"),
                      ("development.waiting_human", "resume_development")),
     ),
     Item(
@@ -2404,7 +2446,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "and a rerun operation is never left `uncertain`. `request_ci_rerun` is taken only once "
         "the rerun is read back or nothing needed rerunning; a rerun that is refused or not "
         "read back, and a `no_change` Result without the receipt, is a failed publication "
-        "(`schedule_publish_retry`, then `exhaust_publish_recovery`), and a moved head takes "
+        "(`schedule_publish_retry`, then `exhaust_recovery`), and a moved head takes "
         "`replan_development`. A failed interrupted rerun fires no row: the next observation "
         "takes `rerun_interrupted_ci` again within `interrupted_reruns`, then "
         "`exhaust_interrupted_reruns`; a planned rerun of a paused contribution is closed "
@@ -2422,7 +2464,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
          "development.fix_needed"),
         edges=(("development.agent_running", "request_ci_rerun"),
                ("development.agent_running", "schedule_publish_retry"),
-               ("development.agent_running", "exhaust_publish_recovery"),
+               ("development.agent_running", "exhaust_recovery"),
                ("development.agent_running", "replan_development"),
                ("development.waiting_ci", "rerun_interrupted_ci"),
                ("development.waiting_ci", "exhaust_interrupted_reruns"),
@@ -2457,7 +2499,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "What a Result whose push was not read back (`uncertain`) takes in "
         "`development.agent_running`.",
         "In development, an uncertain Result is a failed publication, exactly as in upstream "
-        "review: it takes `schedule_publish_retry` (or `exhaust_publish_recovery`), which clears "
+        "review: it takes `schedule_publish_retry` (or `exhaust_recovery`), which clears "
         "the Work and holds the Result, so no Work recovery takes its completed graph. "
         "`record_publish_success` is taken only when the publication is confirmed: by a "
         "`published` Result (its own operation confirmed), by the publish-only retry reading "
@@ -2466,13 +2508,13 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "held Result being confirmed in the operation store, including a retry rejected as "
         "stale behind it. The row then names the confirmed operation, which the development PR "
         "request requires. The retry is bounded by `publish_recovery`, then "
-        "`exhaust_publish_recovery` leads to `development.waiting_human` with the pending action "
+        "`exhaust_recovery` leads to `development.waiting_human` with the pending action "
         "`publication_infrastructure_failure` and the reminders of every human wait. No new "
         "state, verb, budget, flag, or record field.",
         ("development.agent_running", "development.waiting_ci", "development.waiting_human",
          "development.fix_needed"),
         edges=(("development.agent_running", "schedule_publish_retry"),
-               ("development.agent_running", "exhaust_publish_recovery"),
+               ("development.agent_running", "exhaust_recovery"),
                ("development.agent_running", "record_publish_success"),
                ("development.agent_running", "replan_development")),
         highlighted=(("development.agent_running", "record_publish_success"),),
@@ -2528,7 +2570,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`allowed_paths`. When CI passes on the exact head without pending feedback, the "
         "observation reads the changed paths of the series once: `nominate_for_handoff` "
         "requires every requirement met (or none recorded, or a series too large to read, "
-        "which the event says), and `return_for_series_requirements` leads to "
+        "which the event says), and `return_for_feedback` leads to "
         "`development.fix_needed` otherwise. That row records the passing CI evidence, records "
         "the unmet requirements as `series_requirements` evidence, sets it as pending feedback, "
         "and bumps the revision; `request_patch` then requests a repair that carries it, and "
@@ -2542,13 +2584,12 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         ("development.waiting_ci", "development.fix_needed", "development.agent_running",
          "handoff.awaiting_submission"),
         edges=(("development.waiting_ci", "nominate_for_handoff"),
-               ("development.waiting_ci", "return_for_series_requirements"),
                ("development.waiting_ci", "return_for_feedback"),
                ("development.fix_needed", "request_patch"),
                ("development.agent_running", "reject_patch_proposal"),
                ("development.agent_running", "record_publish_success")),
         highlighted=(("development.waiting_ci", "nominate_for_handoff"),
-                     ("development.waiting_ci", "return_for_series_requirements")),
+                     ("development.waiting_ci", "return_for_feedback")),
     ),
     Item(
         "Result of a completed Work graph",
@@ -2566,7 +2607,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "While the run has not ended, or was not read in the tick, nothing is decided and "
         "nothing is charged: the wait is derived from the queue and the run each tick, with no "
         "new state, flag, record field or deadline, and GitHub's job timeouts bound it. The "
-        "event of `allocate_work_retry` or `exhaust_work_recovery` names `worker_run`, "
+        "event of `allocate_work_retry` or `exhaust_recovery` names `worker_run`, "
         "`run_conclusion` and `result`. A Result collected after the retry still takes "
         "`record_late_effect`. The same reading applies in `planning.agent_running` and "
         "`upstream_review.agent_running`.",
@@ -2574,24 +2615,24 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
          "handoff.reviewing", "handoff.waiting_human"),
         edges=(
             ("development.agent_running", "allocate_work_retry"),
-            ("development.agent_running", "exhaust_work_recovery"),
+            ("development.agent_running", "exhaust_recovery"),
             ("development.agent_running", "record_late_effect"),
             ("handoff.agent_running", "allocate_work_retry"),
-            ("handoff.agent_running", "exhaust_work_recovery"),
+            ("handoff.agent_running", "exhaust_recovery"),
             ("handoff.agent_running", "record_late_effect"),
             ("handoff.reviewing", "allocate_work_retry"),
-            ("handoff.reviewing", "exhaust_work_recovery"),
+            ("handoff.reviewing", "exhaust_recovery"),
             ("handoff.reviewing", "record_late_effect"),
         ),
         highlighted=(
             ("development.agent_running", "allocate_work_retry"),
-            ("development.agent_running", "exhaust_work_recovery"),
+            ("development.agent_running", "exhaust_recovery"),
             ("development.agent_running", "record_late_effect"),
             ("handoff.agent_running", "allocate_work_retry"),
-            ("handoff.agent_running", "exhaust_work_recovery"),
+            ("handoff.agent_running", "exhaust_recovery"),
             ("handoff.agent_running", "record_late_effect"),
             ("handoff.reviewing", "allocate_work_retry"),
-            ("handoff.reviewing", "exhaust_work_recovery"),
+            ("handoff.reviewing", "exhaust_recovery"),
             ("handoff.reviewing", "record_late_effect"),
         ),
     ),
@@ -2609,7 +2650,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "is also taken while paused. Launches spent without one take "
         "`exhaust_development_pr_launches` to `development.waiting_human` with "
         "`development_pr_launch_exhausted`, and the operation is closed as failed and released "
-        "so that `park`, `refresh` and the stale resume apply; `resume_development_pr` returns "
+        "so that `park`, `refresh` and the stale resume apply; `resume_ci` returns "
         "to `development.waiting_ci` with a new revision and starts `operation_launch` again, "
         "and `resume_development` excludes this pending action. The workflow and the "
         "reconciler accept an open `riscv64-dev` PR that carries this contribution's marker "
@@ -2625,12 +2666,12 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                ("development.waiting_ci", "launch_development_pr"),
                ("development.waiting_ci", "confirm_development_pr"),
                ("development.waiting_ci", "exhaust_development_pr_launches"),
-               ("development.waiting_human", "resume_development_pr"),
+               ("development.waiting_human", "resume_ci"),
                ("development.waiting_human", "resume_development")),
         highlighted=(("development.waiting_ci", "launch_development_pr"),
                      ("development.waiting_ci", "confirm_development_pr"),
                      ("development.waiting_ci", "exhaust_development_pr_launches"),
-                     ("development.waiting_human", "resume_development_pr")),
+                     ("development.waiting_human", "resume_ci")),
     ),
     Item(
         "Who records resolution evidence",

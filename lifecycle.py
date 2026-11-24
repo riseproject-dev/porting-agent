@@ -243,7 +243,8 @@ def write_admission(record: dict) -> str | None:
 # Names before the plan rename
 #
 # The planning phase and its plan were once named `investigation` and
-# `dossier`. Committed events keep the names they were written with; the
+# `dossier`, and seven verbs were merged into three. Committed events keep
+# the names they were written with; the
 # record migration of `state.py` (`state.migrate_record_names`) rewrites the
 # stored records, projects, and evidence to the current names, and readers of
 # the event history translate a historic name with `current_name`. Each
@@ -270,6 +271,15 @@ HISTORIC_NAMES: dict[str, str] = {
     "investigation_failed": "planning_failed",
     "dossier": "plan",
     "dossier_evidence_id": "plan_evidence_id",
+    # Verbs merged into one row each (2026-11-24): committed events keep the
+    # name they were written with.
+    "resume_clean_head_ci": "resume_ci",
+    "resume_development_pr": "resume_ci",
+    "resume_renamed_upstream": "resume_upstream_read",
+    "exhaust_dispatch_recovery": "exhaust_recovery",
+    "exhaust_work_recovery": "exhaust_recovery",
+    "exhaust_publish_recovery": "exhaust_recovery",
+    "return_for_series_requirements": "return_for_feedback",
 }
 
 
@@ -556,8 +566,11 @@ UPSTREAM_PR_ON_BASE = ("an open PR against the upstream repository and the froze
                        "base commit")
 # The automatic end of a wait that failed reads caused: reads succeed again.
 UPSTREAM_READ_AGAIN = "the upstream repository and its base branch are read again"
-READS_CAUSED_WAIT = ("the wait was entered because reads kept failing, not because the upstream "
-                     "said that the branch is missing")
+# The automatic end of a wait that failed reads, or a renamed repository,
+# caused: the upstream is read again under its recorded name and id.
+UPSTREAM_READ_WAIT = ("the wait was entered because reads kept failing, or because GitHub named the "
+                      "recorded repository otherwise, not because the upstream said that the "
+                      "branch is missing")
 # The automatic end of the wait a renamed repository caused: GitHub answers
 # for the recorded repository id under its recorded name again.
 RENAME_CAUSED_WAIT = ("the wait was entered because GitHub named the recorded repository "
@@ -702,11 +715,64 @@ _RETRY_DISPATCH = Transition(
     description="Launches the dispatcher again for the same committed Work request. The row "
                 "records the dispatcher run it decided in `active_work.dispatched_run_id`, so "
                 "each ended run is decided once.")
-_EXHAUST_DISPATCH_RECOVERY = Transition(
-    _K, None, ("dispatch_recovery exhausted",),
-    _E(work="clear", sets=("pending_human_action=dispatch_failed",
-                           f"{PENDING_COUNTER}=dispatch_recovery")),
-    exhausts=("dispatch_recovery",))
+# The exhaustion of the recovery of one failure of the Work or of its
+# publication, whichever budget that failure spends: a lost dispatch
+# (`dispatch_recovery`), a Work graph terminal without a usable Result
+# (`work_recovery`, or `work_total` for its fresh graph), or a failed
+# publication of a held Result (`publish_recovery`). The engine derives the
+# pending action and its counter from the failure (``engine.recovery_exhaustion``).
+RECOVERY_EXHAUSTED = ("the recovery of the failure is exhausted: dispatch_recovery for a lost "
+                      "dispatch, work_recovery or work_total for a Work graph terminal without "
+                      "a usable Result, publish_recovery for a failed publication")
+# The failures whose recovery `exhaust_recovery` ends, by the fact the caller
+# asserts: the budgets that recover it (the first exhausted one is the
+# counter the wait names, so `work_total` before `work_recovery`) and the
+# pending action of the wait.
+RECOVERY_FAILURES: dict[str, tuple[tuple[str, ...], str]] = {
+    "dispatch_lost": (("dispatch_recovery",), "dispatch_failed"),
+    "work_terminal_without_result": (("work_total", "work_recovery"), "work_failed"),
+    "publication_infrastructure_error": (("publish_recovery",),
+                                         "publication_infrastructure_failure"),
+}
+# A set entry ``field=a|b`` takes one of the listed values, which the engine
+# derives; a qualified set applies only where its condition holds.
+QUALIFIED_SETS: dict[str, str] = {
+    "pending_publication.exhausted": "only when a publication is pending (the exhaustion of "
+                                     "`publish_recovery`)",
+}
+
+
+def _exhaust_recovery(*failures: str) -> Transition:
+    """The row of ``exhaust_recovery`` in a state where ``failures`` (facts
+    of ``RECOVERY_FAILURES``) can occur."""
+    kinds = [RECOVERY_FAILURES[f][1] for f in failures]
+    budgets = tuple(b for f in failures for b in RECOVERY_FAILURES[f][0])
+    held = "publication_infrastructure_error" in failures
+    return Transition(
+        _K, None, (RECOVERY_EXHAUSTED,),
+        _E(work="clear", sets=("pending_human_action=" + "|".join(kinds), PENDING_COUNTER,
+                               *(("pending_publication.exhausted",) if held else ()))),
+        description="The pending action names the failure, and `pending_human_action.counter` "
+                    "the budget it spent: " + "; ".join({
+                        "dispatch_lost": "`dispatch_failed` with `dispatch_recovery` for a lost "
+                                         "dispatch",
+                        "work_terminal_without_result":
+                            "`work_failed` for a Work graph terminal without a usable Result, "
+                            "with `work_total` when that budget is exhausted (also when "
+                            "`work_recovery` is exhausted too) and `work_recovery` otherwise",
+                        "publication_infrastructure_error":
+                            "`publication_infrastructure_failure` with `publish_recovery` for a "
+                            "failed publication, which keeps the held Result "
+                            "(`pending_publication.exhausted`)"}[f] for f in failures)
+                    + ". The resume starts that counter again; `work_recovery` starts again "
+                    "with the fresh Work.",
+        exhausts=budgets)
+
+
+_EXHAUST_WORK_RECOVERY = _exhaust_recovery("dispatch_lost", "work_terminal_without_result")
+_EXHAUST_PUBLICATION_RECOVERY = _exhaust_recovery(
+    "dispatch_lost", "work_terminal_without_result", "publication_infrastructure_error")
+_EXHAUST_PUBLISH_RECOVERY = _exhaust_recovery("publication_infrastructure_error")
 # A dispatch refused because the installed work-queue Policy no longer
 # matches the compiled one is not a failure of the Work: once the dispatcher
 # reinstalls the compiled policy, the controller requests the Work again.
@@ -815,7 +881,6 @@ WORK_WITHOUT_FEEDBACK = "the Work carries no feedback"
 # Passing CI nominates a head only without pending feedback; with pending
 # feedback it makes Work due again, so the feedback is never stranded.
 NO_PENDING_FEEDBACK = "no pending actionable feedback"
-PENDING_FEEDBACK = "pending actionable feedback"
 # The series requirements of the verified plan (the measurable items of its
 # contribution guidelines: a path the non-debug commits of the series must
 # change) are checked on the exact head before a nomination; unmet ones make
@@ -824,6 +889,10 @@ PENDING_FEEDBACK = "pending actionable feedback"
 SERIES_REQUIREMENTS_MET = ("every series requirement of the verified plan is met on the exact "
                            "head, the plan records none, or the series is too large to read")
 SERIES_REQUIREMENTS_UNMET = "a series requirement of the verified plan is unmet on the exact head"
+# What returns passing CI to development: pending feedback, or unmet series
+# requirements that become pending feedback (one row, `return_for_feedback`).
+FEEDBACK_OR_UNMET = ("pending actionable feedback, or a series requirement of the verified plan "
+                     "is unmet on the exact head")
 EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((WORK_TOTAL_REMAINS,), (WORK_TOTAL_EXHAUSTED,)),
     ((NO_FAILING_JOB,), (FAILING_JOB,)),
@@ -836,15 +905,13 @@ EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((HEAD_FAILED,), (HEAD_NOT_FAILED,)),
     ((REWRITE_CURRENT,), (REWRITE_EXPIRED,)),
     ((HELD_PATCH_CURRENT,), (HELD_PATCH_EXPIRED,)),
-    ((NO_PENDING_FEEDBACK,), (PENDING_FEEDBACK,)),
-    ((SERIES_REQUIREMENTS_MET,), (SERIES_REQUIREMENTS_UNMET,)),
+    ((NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET), (FEEDBACK_OR_UNMET,)),
 )
 # States in which two observations could apply to the same input; their
 # guards are exclusive, so the order of observation never decides.
 EXCLUSIVE_OBSERVATIONS = {
     "handoff.awaiting_submission": ("return_for_repair", "record_actionable_review"),
-    "development.waiting_ci": ("nominate_for_handoff", "return_for_feedback",
-                               "return_for_series_requirements"),
+    "development.waiting_ci": ("nominate_for_handoff", "return_for_feedback"),
 }
 # Further pairs of observations of one state whose guards are exclusive.
 EXCLUSIVE_OBSERVATION_PAIRS = {
@@ -858,15 +925,6 @@ _ALLOCATE_WORK_RETRY = Transition(
     _E(revision="bump", work="reallocate"), ("work_recovery", "work_total"),
     description="A terminal Work graph is never submitted again; a fresh graph is allocated. It "
                 "carries the same feedback ids.")
-_EXHAUST_WORK_RECOVERY = Transition(
-    _K, None,
-    ("the Work graph is terminal without a usable Result", "work_recovery or work_total exhausted"),
-    _E(work="clear", sets=("pending_human_action=work_failed", PENDING_COUNTER)),
-    description="`pending_human_action.counter` names `work_total` when that budget is "
-                "exhausted, also when `work_recovery` is exhausted too, and `work_recovery` "
-                "otherwise: the resume starts `work_total` again, and `work_recovery` starts "
-                "again with the fresh Work.",
-    exhausts=("work_recovery", "work_total"))
 _SCHEDULE_PUBLISH_RETRY = Transition(
     _R, None,
     ("publication failed with an infrastructure error", "publish_recovery remains"),
@@ -877,12 +935,6 @@ _SCHEDULE_PUBLISH_RETRY = Transition(
     "over a push that landed. Its push may have landed, so the report of an `uncertain` "
     "Result is stored as `worker_report` evidence with the commit it proposed, whatever ends "
     "the hold.")
-_EXHAUST_PUBLISH_RECOVERY = Transition(
-    _R, None,
-    ("publish_recovery exhausted",),
-    _E(sets=("pending_human_action=publication_infrastructure_failure",
-            f"{PENDING_COUNTER}=publish_recovery", "pending_publication.exhausted")),
-    exhausts=("publish_recovery",))
 # The replay fences of the review and comment ids a review row recorded, so
 # the same comments are not read again.
 _PROCESSED_IDS = ("processed_review_ids", "processed_review_comment_ids",
@@ -909,10 +961,6 @@ _EXHAUST_INTERRUPTED_RERUNS = Transition(
     _O, None, (_INTERRUPTED, "interrupted_reruns exhausted"),
     _E(sets=("pending_human_action=ci_interrupted", f"{PENDING_COUNTER}=interrupted_reruns")),
     exhausts=("interrupted_reruns",))
-_RESUME_CI = _E(revision="bump", clears=("pending_human_action",), restarts=("interrupted_reruns",))
-_RESUME_CI_NOTE = ("Starts `interrupted_reruns` (`budget.reruns.interrupted`) again for the head; "
-                   "the first observation after it reruns the interrupted jobs on the exact head "
-                   "through `rerun_interrupted_ci`, charging the restarted counter.")
 _LEAVE_HANDOFF = ("clean_head_sha", "clean_head_ci_since", "submission_rewrite_id",
                   "submission_review_id", "handoff_request", "pending_human_action")
 # The effect of a return to development with no CI verdict: the recorded CI
@@ -924,6 +972,17 @@ _RESUME_EFFECTS = _E(revision="bump", clears=("pending_human_action",))
 _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts again the one "
                  "counter named in `pending_human_action.counter`, and no other. The event "
                  "records the actor, the counter, and its count at that point.")
+
+
+_RESUME_CI = _E(revision="bump", clears=("pending_human_action",),
+                restarts=("interrupted_reruns", "operation_launch"))
+_RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh Work is requested. After "
+                   "`ci_interrupted` it starts `interrupted_reruns` (`budget.reruns.interrupted`) "
+                   "again for the head, and the first observation after it reruns the "
+                   "interrupted jobs on the exact head through `rerun_interrupted_ci`, charging "
+                   "the restarted counter. After `development_pr_launch_exhausted` it starts "
+                   "`operation_launch` again, and the next tick plans a new development PR "
+                   "operation for the head. " + _RESTART_NOTE)
 
 
 def _discarding(t: Transition, why: str = "") -> Transition:
@@ -944,20 +1003,21 @@ def _discarding(t: Transition, why: str = "") -> Transition:
 PATCH_REVIEW_UNAVAILABLE = "patch_review_unavailable"
 
 
-def _review_unavailable(t: Transition, counter: str | None) -> Transition:
+def _review_unavailable(t: Transition) -> Transition:
     """``t``, the exhaustion of the recovery of the review Work, as it is
     taken from ``development.reviewing``: the held patch is kept and the
     wait names ``PATCH_REVIEW_UNAVAILABLE``, so the resume asks for the
-    review of the same patch again (``resume_patch_review``)."""
+    review of the same patch again (``resume_patch_review``). The counter is
+    the one the failure spent, as for every other exhaustion of recovery."""
     from dataclasses import replace
 
-    sets = ("pending_human_action=" + PATCH_REVIEW_UNAVAILABLE,
-            f"{PENDING_COUNTER}={counter}" if counter else PENDING_COUNTER)
+    sets = ("pending_human_action=" + PATCH_REVIEW_UNAVAILABLE, PENDING_COUNTER)
     return replace(t, effects=replace(t.effects, sets=sets), description=(
-        (t.description + " ").lstrip() + "The review of the held patch could not run; the held "
-        "patch is kept, unpublished, and `/upstreaming resume` asks for its review again "
-        "(`resume_patch_review`). A patch whose artifact expired by then is discarded "
-        "(`expire_held_patch`) and fresh development Work follows."))
+        "The review of the held patch could not run (its dispatch or its Work recovery is "
+        "exhausted, which `pending_human_action.counter` names as for every other exhaustion "
+        "of recovery); the held patch is kept, unpublished, and `/upstreaming resume` asks for its "
+        "review again (`resume_patch_review`). A patch whose artifact expired by then is "
+        "discarded (`expire_held_patch`) and fresh development Work follows."))
 
 
 def _resume_restarting(*budgets: str) -> Effects:
@@ -1018,9 +1078,8 @@ LIFECYCLE: dict[str, State] = {
         "Planning Work is requested or running and will return a plan.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_dispatch_recovery", "planning.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
+            ("exhaust_recovery", "planning.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "planning.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("reject_plan", "planning.idle"): Transition(
                 _R, None,
                 (PLAN_REJECTED, "planning_attempts remains"),
@@ -1137,9 +1196,8 @@ LIFECYCLE: dict[str, State] = {
         "before development patches were reviewed may still publish its Result here.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_dispatch_recovery", "development.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
+            ("exhaust_recovery", "development.waiting_human"): _EXHAUST_PUBLICATION_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "development.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("hold_patch_for_review", "development.review_pending"): Transition(
                 _R, None,
                 (PATCH_VERIFIED,),
@@ -1200,10 +1258,9 @@ LIFECYCLE: dict[str, State] = {
                 "`reject_patch_proposal`. The rerun is the publication of this Result: the "
                 "trusted publication job requests it on the exact head and reads back the new "
                 "attempt before the row is taken. A rerun that cannot be requested or read back "
-                "is a failed publication (`schedule_publish_retry`, `exhaust_publish_recovery`). "
+                "is a failed publication (`schedule_publish_retry`, `exhaust_recovery`). "
                 "The report of the Work is stored as `worker_report` evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
-            ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
         }),
     "development.review_pending": State(
         "auto_wait", True, False,
@@ -1242,11 +1299,9 @@ LIFECYCLE: dict[str, State] = {
         "with findings for exactly the held patch.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_dispatch_recovery", "development.waiting_human"):
-                _review_unavailable(_EXHAUST_DISPATCH_RECOVERY, "dispatch_recovery"),
+            ("exhaust_recovery", "development.waiting_human"):
+                _review_unavailable(_EXHAUST_WORK_RECOVERY),
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "development.waiting_human"):
-                _review_unavailable(_EXHAUST_WORK_RECOVERY, None),
             ("accept_patch_review", PUBLISHING): Transition(
                 _R, None,
                 (PATCH_REVIEW_PASSED,),
@@ -1273,7 +1328,7 @@ LIFECYCLE: dict[str, State] = {
                 "downloads and checks. The feedback its Work carried "
                 "stays pending. The held patch is discarded and nothing is posted. A Result "
                 "that is not a usable review takes `allocate_work_retry` or "
-                "`exhaust_work_recovery` instead."),
+                "`exhaust_recovery` instead."),
             ("publish_after_failed_reviews", PUBLISHING): Transition(
                 _R, None,
                 (PATCH_REVIEW_FAILED, "dev_reviews exhausted"),
@@ -1312,7 +1367,7 @@ LIFECYCLE: dict[str, State] = {
                             "beside the table. A published patch starts `dev_reviews` and "
                             "`no_progress` again."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
-            ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
+            ("exhaust_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
             ("expire_held_patch", "development.fix_needed"): Transition(
                 _K, None, (HELD_PATCH_EXPIRED,),
                 _E(work="clear", clears=(HELD_RESULT, HELD_PATCH, OVERRIDDEN_REVIEWS)),
@@ -1410,30 +1465,20 @@ LIFECYCLE: dict[str, State] = {
                         "pending_human_action=submit_upstream"))),
             ("return_for_feedback", "development.fix_needed"): Transition(
                 _O, None,
-                ("every required CI job executed and passed on the exact head", PENDING_FEEDBACK,
+                ("every required CI job executed and passed on the exact head", FEEDBACK_OR_UNMET,
                  "no requested Work", "no open operation"),
-                _E(sets=("last_ci_evidence_id",)),
+                _E(revision="bump", sets=("last_ci_evidence_id", "pending_feedback_evidence_ids")),
                 description="CI passed on the exact head while actionable feedback is still "
                             "pending (a push while Work was due for a review, or feedback the "
-                            "published Work did not carry): the passing evidence is recorded "
-                            "and Work is due again, so `request_patch` requests a repair that "
+                            "published Work did not carry), or the series does not meet a "
+                            "series requirement of the verified plan (a path its non-debug "
+                            "commits must change, such as a changelog entry): the passing "
+                            "evidence is recorded, the unmet requirements are recorded as "
+                            "`series_requirements` evidence and join the pending feedback, and "
+                            "Work is due again, so `request_patch` requests a repair that "
                             "carries the feedback. The pending feedback is kept; only a "
-                            "published Result clears it."),
-            ("return_for_series_requirements", "development.fix_needed"): Transition(
-                _O, None,
-                ("every required CI job executed and passed on the exact head",
-                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_UNMET, "no requested Work",
-                 "no open operation"),
-                _E(revision="bump", sets=("last_ci_evidence_id", "pending_feedback_evidence_ids")),
-                description="CI passed on the exact head, no feedback is pending, and the series "
-                            "does not meet a series requirement of the verified plan (a path "
-                            "its non-debug commits must change, such as a changelog entry): "
-                            "the passing evidence is recorded, the unmet requirements are "
-                            "recorded as `series_requirements` evidence and become the pending "
-                            "feedback, and Work is due again, so `request_patch` requests a "
-                            "repair that carries them. Only a published Result clears the "
-                            "feedback. Nothing is charged here: the Work is bounded by "
-                            "`no_progress` and `work_total`."),
+                            "published Result clears it. Nothing is charged here: the Work is "
+                            "bounded by `no_progress` and `work_total`."),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.fix_needed": State(
@@ -1521,16 +1566,9 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("resume_ci", "development.waiting_ci"): Transition(
                 _C, RESUME,
-                (EXACT_REVISION, pending_is("ci_interrupted"), QUIESCENT, NOT_STALE),
+                (EXACT_REVISION, pending_is("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
+                 QUIESCENT, NOT_STALE),
                 _RESUME_CI, description=_RESUME_CI_NOTE),
-            ("resume_development_pr", "development.waiting_ci"): Transition(
-                _C, RESUME,
-                (EXACT_REVISION, pending_is(DEVELOPMENT_PR_LAUNCH_EXHAUSTED), QUIESCENT,
-                 NOT_STALE),
-                _resume_restarting("operation_launch"),
-                description="The head is already published, so no fresh Work is requested: the "
-                            "next tick plans a new development PR operation for it. "
-                            + _RESTART_NOTE),
             ("rearm_dispatch", "development.fix_needed"): _REARM_DISPATCH,
             ("resume_patch_review", "development.review_pending"): Transition(
                 _C, RESUME,
@@ -1631,9 +1669,8 @@ LIFECYCLE: dict[str, State] = {
         "change.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_dispatch_recovery", "handoff.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
+            ("exhaust_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("accept_submission_rewrite", "handoff.review_pending"): Transition(
                 _R, None,
                 (REWRITE_PASSED,),
@@ -1688,9 +1725,8 @@ LIFECYCLE: dict[str, State] = {
         "reasons for exactly the rewritten series and text.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_dispatch_recovery", "handoff.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
+            ("exhaust_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("accept_submission_review", "handoff.building_upstream_branch"): Transition(
                 _R, None,
                 (REVIEW_PASSED,),
@@ -1707,7 +1743,7 @@ LIFECYCLE: dict[str, State] = {
                 description="The reasons are recorded as review evidence and are the pending "
                             "feedback of the next development Work. Nothing is posted and "
                             "`riscv64` is not written. A Result that is not a usable review "
-                            "takes `allocate_work_retry` or `exhaust_work_recovery` instead. "
+                            "takes `allocate_work_retry` or `exhaust_recovery` instead. "
                             "The worker's report is discarded."),
         }),
     "handoff.building_upstream_branch": State(
@@ -1842,17 +1878,16 @@ LIFECYCLE: dict[str, State] = {
                 (EXACT_REVISION, pending_is("upstream_branch_failed", "upstream_branch_blocked")),
                 _resume_restarting("upstream_branch")),
             ("resume_ci", "handoff.waiting_ci"): Transition(
-                _C, RESUME, (EXACT_REVISION, pending_is("ci_interrupted")),
+                _C, RESUME, (EXACT_REVISION, pending_is("ci_interrupted", "clean_head_ci_missing")),
                 _E(revision="bump", sets=("clean_head_ci_since",),
                    clears=("pending_human_action",), restarts=("interrupted_reruns",)),
-                description=_RESUME_CI_NOTE[:-1] + ", and the bounded wait for CI on the clean "
-                            "head starts again."),
-            ("resume_clean_head_ci", "handoff.waiting_ci"): Transition(
-                _C, RESUME, (EXACT_REVISION, pending_is("clean_head_ci_missing")),
-                _E(revision="bump", sets=("clean_head_ci_since",),
-                   clears=("pending_human_action",)),
                 description="CI on the clean head is observed again, and its bounded wait "
-                            "starts again."),
+                            "starts again. After `ci_interrupted` it also starts "
+                            "`interrupted_reruns` (`budget.reruns.interrupted`) again for the "
+                            "head; the first observation after it reruns the interrupted jobs "
+                            "through `rerun_interrupted_ci`, charging the restarted counter. "
+                            "`clean_head_ci_missing` names no counter, so nothing else starts "
+                            "again."),
             ("resume_submission_preparation", "handoff.preparing_submission"): Transition(
                 _C, RESUME, (EXACT_REVISION, pending_is("submission_comment_failed")),
                 _resume_restarting("submission_comment")),
@@ -2005,11 +2040,9 @@ LIFECYCLE: dict[str, State] = {
                             "The pipeline posts nothing on the upstream PR. The report of the "
                             "Work is stored as `worker_report` evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
-            ("exhaust_publish_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_dispatch_recovery", "upstream_review.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
+            ("exhaust_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLICATION_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "upstream_review.waiting_human"): _EXHAUST_WORK_RECOVERY,
         }),
     "upstream_review.waiting_human": State(
         "human_wait", False, False,
@@ -2262,7 +2295,7 @@ _REQUIRE_RENAMED_UPSTREAM = Transition(
                 "repository, so that no other repository later created under the recorded "
                 "name is taken for it). The upstream is still read on every tick, and once "
                 "GitHub answers for the same repository id under its recorded name again the "
-                "wait ends without a human (`resume_renamed_upstream`); a resume while it is "
+                "wait ends without a human (`resume_upstream_read`); a resume while it is "
                 "still named otherwise waits again at once. Once it is answered for under its "
                 "recorded name but its base branch is missing, `require_base_branch` replaces "
                 "the wait. A repository that moved is a new request: the contribution is "
@@ -2289,30 +2322,22 @@ UPSTREAM_READ_RESUMES = {
     "upstream_review.waiting_human": "upstream_review.fix_needed",
 }
 _RESUME_UPSTREAM_READ_DESCRIPTION = (
-    "Ends a wait that failed reads caused once a tick reads the upstream again: the step that "
-    "was due runs again, and the tracking issue states that the contribution continues. A wait "
-    "the upstream's own answer caused (a missing or renamed branch) still needs a resume.")
-
-
-def _resume_renamed_upstream(*restarts: str) -> Transition:
-    # The wait names no counter, so the restarts the checks require of a
-    # resume of this wait start nothing.
-    return Transition(
-        _K, None,
-        (pending_is(UPSTREAM_UNAVAILABLE), RENAME_CAUSED_WAIT, UPSTREAM_READ_AGAIN, NOT_PAUSED,
-         QUIESCENT),
-        _E(revision="bump", clears=("pending_human_action",), restarts=restarts),
-        description="Ends the wait a renamed repository caused once a tick reads the repository "
-                    "under its recorded name and id again: the step that was due runs again, "
-                    "and the tracking issue states that the contribution continues.")
+    "Ends a wait that failed reads caused once a tick reads the upstream again, and the wait a "
+    "renamed repository caused once a tick reads the repository under its recorded name and id "
+    "again: the step that was due runs again, and the tracking issue states that the "
+    "contribution continues. A wait the upstream's own answer caused (a missing or renamed "
+    "branch) still needs a resume.")
 
 
 def _resume_upstream_read(*restarts: str) -> Transition:
     # A tick row, like `rearm_dispatch`: the wait has no observation row, so
-    # the head and CI are not observed while it lasts.
+    # the head and CI are not observed while it lasts. It ends the wait that
+    # failed reads caused (the counter `source_reads`) and the wait a renamed
+    # repository caused (`upstream_unavailable` with no counter, whose resume
+    # starts nothing).
     return Transition(
         _K, None,
-        (pending_is(BASE_BRANCH_UNAVAILABLE, UPSTREAM_UNAVAILABLE), READS_CAUSED_WAIT,
+        (pending_is(BASE_BRANCH_UNAVAILABLE, UPSTREAM_UNAVAILABLE), UPSTREAM_READ_WAIT,
          UPSTREAM_READ_AGAIN, NOT_PAUSED, QUIESCENT),
         _E(revision="bump", clears=("pending_human_action",), restarts=restarts),
         description=_RESUME_UPSTREAM_READ_DESCRIPTION)
@@ -2325,8 +2350,6 @@ for _wait, _to in UPSTREAM_READ_RESUMES.items():
     _restarts = (*(("operation_launch",) if _wait == "provisioning.waiting_human" else ()),
                  "source_reads")
     LIFECYCLE[_wait].transitions[("resume_upstream_read", _to)] = _resume_upstream_read(*_restarts)
-    LIFECYCLE[_wait].transitions[("resume_renamed_upstream", _to)] = \
-        _resume_renamed_upstream(*_restarts)
 
 # The wait a renamed repository caused, once GitHub answers for the recorded
 # repository id under its recorded name again but the upstream says that the
@@ -2466,11 +2489,11 @@ BUDGETS: dict[str, Budget] = {
         "retries.max_attempts_per_contribution", 0,
         "one Work allocation of any kind",
         "`budget.attempts_used`, counted per generation",
-        ("exhaust_work_total", "exhaust_work_recovery", "exhaust_repair_attempts")),
+        ("exhaust_work_total", "exhaust_recovery", "exhaust_repair_attempts")),
     "work_recovery": Budget(
         "retries.work_recovery", 1,
         "one fresh Work graph after terminal Work without a usable Result",
-        "`active_work.attempt`", ("exhaust_work_recovery",), infrastructure=True),
+        "`active_work.attempt`", ("exhaust_recovery",), infrastructure=True),
     "planning_attempts": Budget(
         "retries.planning_attempts", 0,
         "one planning Result without a usable plan",
@@ -2514,13 +2537,13 @@ BUDGETS: dict[str, Budget] = {
         "one dispatcher run that ended with the requested Work absent or unclaimed",
         "dispatcher runs created since the Work was requested, or since its history was "
         "recorded or the queue's retry time (`retry_not_before`) when later; every counted run "
-        "has ended", ("exhaust_dispatch_recovery",),
+        "has ended", ("exhaust_recovery",),
         infrastructure=True),
     "publish_recovery": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one failed publication of the same verified Result (the worker's own, or a "
         "publish-only retry)",
-        "`pending_publication.attempts`", ("exhaust_publish_recovery",), infrastructure=True),
+        "`pending_publication.attempts`", ("exhaust_recovery",), infrastructure=True),
     "source_reads": Budget(
         "retries.source_unavailable_reads", 0,
         "one failed read of the upstream repository or base branch without a definitive "
@@ -2785,7 +2808,6 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("development.waiting_human", "resume_development"),
                 ("development.waiting_ci", "nominate_for_handoff"),
                 ("development.waiting_ci", "return_for_feedback"),
-                ("development.waiting_ci", "return_for_series_requirements"),
                 ("handoff.awaiting_submission", "submit_upstream"),
                 ("handoff.review_due", "request_submission_rewrite"),
                 ("handoff.agent_running", "accept_submission_rewrite"),
@@ -2872,8 +2894,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 (("planning.idle", "dispatch_planning"),
                  ("planning.agent_running", "retry_dispatch"),
                  ("planning.agent_running", "allocate_work_retry"),
-                 ("planning.agent_running", "exhaust_dispatch_recovery"),
-                 ("planning.agent_running", "exhaust_work_recovery"),
+                 ("planning.agent_running", "exhaust_recovery"),
                  ("planning.idle", "exhaust_work_total"),
                  ("planning.waiting_human", "resume_planning"),
                  ("planning.waiting_human", "rearm_dispatch"),
@@ -2953,8 +2974,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.fix_needed", "request_repair"),
                  ("development.agent_running", "retry_dispatch"),
                  ("development.agent_running", "allocate_work_retry"),
-                 ("development.agent_running", "exhaust_dispatch_recovery"),
-                 ("development.agent_running", "exhaust_work_recovery"),
+                 ("development.agent_running", "exhaust_recovery"),
                  ("development.waiting_human", "resume_development"),
                  ("development.waiting_human", "rearm_dispatch")),
                 start="development.fix_needed",
@@ -2971,10 +2991,10 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 (("development.agent_running", "hold_patch_for_review"),
                  ("development.agent_running", "record_publish_success"),
                  ("development.agent_running", "schedule_publish_retry"),
-                 ("development.agent_running", "exhaust_publish_recovery"),
+                 ("development.agent_running", "exhaust_recovery"),
                  ("development.publishing", "record_publish_success"),
                  ("development.publishing", "schedule_publish_retry"),
-                 ("development.publishing", "exhaust_publish_recovery"),
+                 ("development.publishing", "exhaust_recovery"),
                  ("development.publishing", "replan_development"),
                  ("development.publishing", "reject_patch_proposal"),
                  ("development.waiting_human", "resume_development"),
@@ -2996,7 +3016,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_ci", "launch_development_pr"),
                  ("development.waiting_ci", "confirm_development_pr"),
                  ("development.waiting_ci", "exhaust_development_pr_launches"),
-                 ("development.waiting_human", "resume_development_pr")),
+                 ("development.waiting_human", "resume_ci")),
                 start="development.agent_running",
                 text="A published head without a recorded development PR gets one through a "
                      "trusted operation, planned and launched by the controller in "
@@ -3017,8 +3037,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.review_pending", "exhaust_work_total"),
                  ("development.reviewing", "retry_dispatch"),
                  ("development.reviewing", "allocate_work_retry"),
-                 ("development.reviewing", "exhaust_dispatch_recovery"),
-                 ("development.reviewing", "exhaust_work_recovery"),
+                 ("development.reviewing", "exhaust_recovery"),
                  ("development.reviewing", "reject_patch_review"),
                  ("development.reviewing", "publish_after_failed_reviews"),
                  ("development.reviewing", "accept_patch_review"),
@@ -3067,8 +3086,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_ci", "record_head_change"),
                  ("development.fix_needed", "record_head_change"),
                  ("development.waiting_ci", "return_for_feedback"),
-                 ("development.waiting_ci", "return_for_series_requirements"),
-                 ("development.waiting_ci", "record_pr_mismatch")),
+                  ("development.waiting_ci", "record_pr_mismatch")),
                 start="development.waiting_ci",
                 text="Build and test failures and actionable comments request repair automatically. "
                      "The repair worker classifies a failure: one not caused by the patch takes "
@@ -3087,7 +3105,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "due for a review never strands the review. Passing CI on a series that "
                      "does not meet a series requirement of the plan (a path it must change, "
                      "such as a changelog entry) returns there too "
-                     "(`return_for_series_requirements`), with the unmet requirements as the "
+                     "(`return_for_feedback`), with the unmet requirements as the "
                      "feedback of the next Work."),
             Diagram(
                 "Failure case 5: a repair budget is exhausted",
@@ -3188,7 +3206,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 "Failure case 1: waiting for operator action or an external prerequisite",
                 ("development.agent_running", "development.waiting_human", "development.fix_needed",
                  "parked.idle"),
-                (("development.agent_running", "exhaust_publish_recovery"),
+                (("development.agent_running", "exhaust_recovery"),
                  ("development.waiting_human", "resume_development"),
                  ("development.waiting_human", "park_contribution")),
                 start="development.agent_running",
@@ -3262,31 +3280,31 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("planning.idle", "require_upstream_access"),
                  ("planning.idle", "require_renamed_upstream"),
                  ("planning.waiting_human", "resume_planning"),
-                 ("planning.waiting_human", "resume_renamed_upstream"),
+                 ("planning.waiting_human", "resume_upstream_read"),
                  ("planning.waiting_human", "require_base_branch"),
                  ("provisioning.idle", "require_upstream_access"),
                  ("provisioning.idle", "require_renamed_upstream"),
                  ("provisioning.waiting_human", "resume_provisioning"),
-                 ("provisioning.waiting_human", "resume_renamed_upstream"),
+                 ("provisioning.waiting_human", "resume_upstream_read"),
                  ("provisioning.waiting_human", "require_base_branch"),
                  ("development.fix_needed", "require_upstream_access"),
                  ("development.fix_needed", "require_renamed_upstream"),
                  ("development.review_pending", "require_upstream_access"),
                  ("development.review_pending", "require_renamed_upstream"),
                  ("development.waiting_human", "resume_development"),
-                 ("development.waiting_human", "resume_renamed_upstream"),
+                 ("development.waiting_human", "resume_upstream_read"),
                  ("development.waiting_human", "require_base_branch"),
                  ("handoff.review_due", "require_upstream_access"),
                  ("handoff.review_due", "require_renamed_upstream"),
                  ("handoff.review_pending", "require_upstream_access"),
                  ("handoff.review_pending", "require_renamed_upstream"),
                  ("handoff.waiting_human", "resume_submission_review"),
-                 ("handoff.waiting_human", "resume_renamed_upstream"),
+                 ("handoff.waiting_human", "resume_upstream_read"),
                  ("handoff.waiting_human", "require_base_branch"),
                  ("upstream_review.fix_needed", "require_upstream_access"),
                  ("upstream_review.fix_needed", "require_renamed_upstream"),
                  ("upstream_review.waiting_human", "resume_upstream_revision"),
-                 ("upstream_review.waiting_human", "resume_renamed_upstream"),
+                 ("upstream_review.waiting_human", "resume_upstream_read"),
                  ("upstream_review.waiting_human", "require_base_branch")),
                 text="When GitHub answers for the recorded repository id under another name "
                      "(renamed or transferred), `require_renamed_upstream` waits at once with "
@@ -3296,8 +3314,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`source_reads`, `require_upstream_access`, leads to the same waits with "
                      "the counter `source_reads`. Either wait is still read: once GitHub "
                      "answers for the same repository under its recorded name again, "
-                     "`resume_renamed_upstream` ends the first, and once the repository can be "
-                     "read again, `resume_upstream_read` (drawn in failure case 2) ends the "
+                     "`resume_upstream_read` ends the first, and once the repository can be "
+                     "read again, the same row (drawn in failure case 2) ends the "
                      "second. A resume of the first while the repository is still named "
                      "otherwise waits again at once. Once GitHub answers for the same "
                      "repository under its recorded name but the upstream says that the base "
@@ -3419,9 +3437,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "handoff.waiting_upstream_pr"),
                 (("handoff.review_due", "exhaust_work_total"),
                  ("handoff.agent_running", "retry_dispatch"),
-                 ("handoff.agent_running", "exhaust_dispatch_recovery"),
+                 ("handoff.agent_running", "exhaust_recovery"),
                  ("handoff.agent_running", "allocate_work_retry"),
-                 ("handoff.agent_running", "exhaust_work_recovery"),
                  ("handoff.waiting_human", "resume_submission_review"),
                  ("handoff.waiting_human", "rearm_dispatch"),
                  ("handoff.review_due", "request_submission_rewrite"),
@@ -3430,9 +3447,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.review_pending", "exhaust_work_total"),
                  ("handoff.review_pending", "request_submission_review"),
                  ("handoff.reviewing", "retry_dispatch"),
-                 ("handoff.reviewing", "exhaust_dispatch_recovery"),
+                 ("handoff.reviewing", "exhaust_recovery"),
                  ("handoff.reviewing", "allocate_work_retry"),
-                 ("handoff.reviewing", "exhaust_work_recovery"),
                  ("handoff.reviewing", "accept_submission_review"),
                  ("handoff.building_upstream_branch", "expire_submission_rewrite"),
                  ("handoff.building_upstream_branch", "retry_upstream_branch"),
@@ -3443,7 +3459,6 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
                  ("handoff.waiting_human", "resume_ci"),
                  ("handoff.waiting_ci", "require_clean_head_ci"),
-                 ("handoff.waiting_human", "resume_clean_head_ci"),
                  ("handoff.waiting_ci", "accept_clean_head_ci"),
                  ("handoff.preparing_submission", "retry_submission_comment"),
                  ("handoff.preparing_submission", "exhaust_comment_retries"),
@@ -3505,9 +3520,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 (("upstream_review.agent_running", "retry_dispatch"),
                  ("upstream_review.agent_running", "allocate_work_retry"),
                  ("upstream_review.agent_running", "schedule_publish_retry"),
-                 ("upstream_review.agent_running", "exhaust_dispatch_recovery"),
-                 ("upstream_review.agent_running", "exhaust_work_recovery"),
-                 ("upstream_review.agent_running", "exhaust_publish_recovery"),
+                 ("upstream_review.agent_running", "exhaust_recovery"),
                  ("upstream_review.waiting_human", "resume_upstream_revision"),
                  ("upstream_review.waiting_human", "rearm_dispatch")),
                 start="upstream_review.agent_running",
@@ -3656,8 +3669,7 @@ def _reachable(start: str, step) -> set[str]:
 # Tick transitions that end a human wait the way its resume does, once the
 # controller has observed that the cause is gone. The checks hold them to the
 # rules of a resume.
-AUTOMATIC_RESUMES = frozenset({"rearm_dispatch", "resume_renamed_base", "resume_upstream_read",
-                               "resume_renamed_upstream"})
+AUTOMATIC_RESUMES = frozenset({"rearm_dispatch", "resume_renamed_base", "resume_upstream_read"})
 
 
 def resumes_wait(edge: Edge) -> bool:
@@ -3947,7 +3959,7 @@ def _check_feedback(problems: list[str]) -> None:
     # carrying that feedback due, so passing CI never strands them.
     for state in sorted({e.source for e in table_edges()
                          if SERIES_REQUIREMENTS_MET in e.transition.guard}):
-        if not any(SERIES_REQUIREMENTS_UNMET in x.transition.guard
+        if not any(FEEDBACK_OR_UNMET in x.transition.guard
                    and x.transition.trigger == Trigger.OBSERVATION
                    and "pending_feedback_evidence_ids" in x.transition.effects.sets
                    and LIFECYCLE[x.target].launches
@@ -3956,20 +3968,20 @@ def _check_feedback(problems: list[str]) -> None:
                    for x in state_edges(state)):
             problems.append(f"{state}: blocks a nomination on {SERIES_REQUIREMENTS_MET!r} "
                             f"without an observation row guarded by "
-                            f"{SERIES_REQUIREMENTS_UNMET!r} that records them as pending "
+                            f"{FEEDBACK_OR_UNMET!r} that records them as pending "
                             "feedback and makes Work carrying it due")
     # A nomination blocked by pending feedback always has a row that makes
     # Work carrying that feedback due, so passing CI never strands it.
     for state in sorted({e.source for e in table_edges()
                          if NO_PENDING_FEEDBACK in e.transition.guard}):
-        if not any(PENDING_FEEDBACK in x.transition.guard
+        if not any(FEEDBACK_OR_UNMET in x.transition.guard
                    and x.transition.trigger == Trigger.OBSERVATION
                    and LIFECYCLE[x.target].launches
                    and any(_is_patch_work(w) and WORK_FEEDBACK in w.transition.effects.sets
                            for w in state_edges(x.target))
                    for x in state_edges(state)):
             problems.append(f"{state}: blocks a nomination on {NO_PENDING_FEEDBACK!r} without an "
-                            f"observation row guarded by {PENDING_FEEDBACK!r} that makes Work "
+                            f"observation row guarded by {FEEDBACK_OR_UNMET!r} that makes Work "
                             "carrying the feedback due")
 
 
@@ -4110,7 +4122,7 @@ def _check_held_patch(problems: list[str]) -> None:
             continue
         if is_rule_row(e) and e.verb == "record_late_effect":
             continue
-        if e.verb == "exhaust_publish_recovery" and e.source == PUBLISHING:
+        if e.verb == "exhaust_recovery" and e.source == PUBLISHING:
             continue
         if e.source == "development.reviewing" and e.target == "development.waiting_human" \
                 and f"pending_human_action={PATCH_REVIEW_UNAVAILABLE}" in e.transition.effects.sets:
@@ -4138,7 +4150,7 @@ def _check_held_result(problems: list[str]) -> None:
         for e in table_edges():
             if e.source != key or e.transition.trigger != Trigger.RESULT:
                 continue
-            if e.verb in ("schedule_publish_retry", "exhaust_publish_recovery"):
+            if e.verb in ("schedule_publish_retry", "exhaust_recovery"):
                 continue
             if is_rule_row(e) and e.verb == "record_late_effect":
                 continue
@@ -4411,7 +4423,7 @@ def pending_kinds(state: str) -> set[str]:
             for entry in e.transition.effects.sets:
                 name, _, value = entry.partition("=")
                 if name == "pending_human_action":
-                    kinds.add(value)
+                    kinds.update(value.split("|"))
     return kinds
 
 
@@ -4597,6 +4609,15 @@ def _check_counter_restarts(problems: list[str]) -> None:
                             "must state which one it names")
         kinds = [s.partition("=")[2] for s in e.transition.effects.sets
                  if s.startswith("pending_human_action=")]
+        choices = kinds[0].split("|") if len(kinds) == 1 else []
+        if len(choices) > 1:
+            # One of several failures: each pending action names the
+            # counters of its own failure (`RECOVERY_FAILURES`).
+            for budgets, kind in RECOVERY_FAILURES.values():
+                if kind in choices:
+                    entries.setdefault(e.target, []).append(
+                        (counters_named(e) & set(budgets), [kind]))
+            continue
         entries.setdefault(e.target, []).append((counters_named(e), kinds))
     rule_expected: dict[str, set[str]] = {}
     for e in table_edges():

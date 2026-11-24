@@ -342,7 +342,7 @@ class TestPatchResults(unittest.TestCase):
         # times: each failed publication is charged, the launches are not.
         self.assertEqual(publications, limit + 1)
         self.assertEqual(current["pending_publication"]["attempts"], limit)
-        self.assertEqual(kinds(out), ["exhaust_publish_recovery"])
+        self.assertEqual(kinds(out), ["exhaust_recovery"])
         self.assertEqual((engine.state_key(current), current["pending_human_action"]["kind"],
                           current["pending_human_action"]["counter"]),
                          ("development.waiting_human", "publication_infrastructure_failure",
@@ -362,7 +362,7 @@ class TestPatchResults(unittest.TestCase):
     def test_a_retry_without_a_result_is_a_failed_publication(self):
         """A launched publish-only retry whose Result is not folded within its
         wait counts as a failed publication: `publish_recovery` is charged
-        each time, so `exhaust_publish_recovery` is reached and the human wait
+        each time, so `exhaust_recovery` is reached and the human wait
         and its resume follow."""
         rec = running()
         current = final(tick(rec, [dict(publication(rec, "infra_error"),
@@ -379,7 +379,7 @@ class TestPatchResults(unittest.TestCase):
                 break
         limit = lifecycle.budget_limit("publish_recovery", POLICY)
         self.assertEqual([k for _at, k in charged],
-                         ["schedule_publish_retry"] * (limit - 1) + ["exhaust_publish_recovery"])
+                         ["schedule_publish_retry"] * (limit - 1) + ["exhaust_recovery"])
         self.assertEqual([attempt for _at, attempt in launches], list(range(2, limit + 2)))
         # Each lost launch is charged once its wait is over, and the next one
         # follows the backoff.
@@ -555,7 +555,7 @@ class TestUncertainPublication(unittest.TestCase):
         # Result is held.
         out = tick(held, observe=False, operations=ops, queue={work.graph_id(key): "completed"})
         self.assertNotIn("allocate_work_retry", kinds(out))
-        self.assertNotIn("exhaust_work_recovery", kinds(out))
+        self.assertNotIn("exhaust_recovery", kinds(out))
         self.assertEqual(final(out, held), held)
         # The branch observation confirms the operation; the state is kept.
         out = tick(held, head=SHA_B, operations=ops)
@@ -643,7 +643,7 @@ class TestUncertainPublication(unittest.TestCase):
             current = final(out, current)
             if engine.state_key(current) != "development.agent_running":
                 break
-        self.assertEqual(kinds(out), ["exhaust_publish_recovery"])
+        self.assertEqual(kinds(out), ["exhaust_recovery"])
         self.assertEqual((engine.state_key(current), current["pending_human_action"]["kind"],
                           current["pending_human_action"]["counter"]),
                          ("development.waiting_human", "publication_infrastructure_failure",
@@ -898,10 +898,10 @@ class TestObservation(unittest.TestCase):
         after = final(out, rec)
         returned = next(e for k, e in out.staged
                         if k == "events" and e["kind"] == "return_for_feedback")
-        self.assertFalse(returned["revision_bumped"])
+        self.assertTrue(returned["revision_bumped"])
         self.assertEqual(returned["details"]["feedback"], ["review-1"])
         self.assertEqual(engine.state_key(after), "development.agent_running")
-        self.assertEqual(after["revision"], rec["revision"] + 1)
+        self.assertEqual(after["revision"], rec["revision"] + 2)
         self.assertEqual(after["pending_feedback_evidence_ids"], ["review-1"])
         self.assertEqual(after["last_ci_evidence_id"], returned["details"]["evidence_id"])
         work = after["active_work"]
@@ -1002,7 +1002,7 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         for count in range(1, limit + 1):
             out = tick(current, observe=False, runs=runs[:count], evidence=history)
             current = final(out, current)
-        self.assertEqual(kinds(out), ["exhaust_dispatch_recovery"])
+        self.assertEqual(kinds(out), ["exhaust_recovery"])
         self.assertEqual((engine.state_key(current), current["active_work"],
                           current["pending_human_action"]["counter"]),
                          ("development.waiting_human", None, "dispatch_recovery"))
@@ -1023,7 +1023,7 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
                          "waiting for the history of the Work")
         late = tick(rec, observe=False, runs=runs, now=T + reconcile.HISTORY_WAIT)
-        self.assertEqual(kinds(late), ["exhaust_dispatch_recovery"])
+        self.assertEqual(kinds(late), ["exhaust_recovery"])
         # The event, and the tracking issue entry, say that the history was
         # never recorded.
         [event] = [e for kind, e in late.staged if kind == "events"]
@@ -1193,7 +1193,7 @@ class TestFlakyRerun(unittest.TestCase):
             verbs += [e["kind"] for kind, e in staged if kind == "events"]
             if engine.state_key(new) == "development.waiting_human":
                 break
-        self.assertEqual(verbs[-1], "exhaust_publish_recovery")
+        self.assertEqual(verbs[-1], "exhaust_recovery")
         self.assertEqual(new["pending_human_action"]["kind"], "publication_infrastructure_failure")
         # A retry that reruns the jobs ends the held publication.
         rec = running(last_ci_evidence_id="ci-0")
@@ -1506,7 +1506,7 @@ class TestSpentWork(unittest.TestCase):
     returned a Result or is terminal in the queue. That Work is terminal
     without a usable Result: a fresh graph is allocated in the same tick
     (`allocate_work_retry`), or the contribution waits for a human
-    (`exhaust_work_recovery`), and the spent graph is never submitted."""
+    (`exhaust_recovery`), and the spent graph is never submitted."""
 
     def setUp(self):
         failing = observed_ci_id()
@@ -1559,7 +1559,7 @@ class TestSpentWork(unittest.TestCase):
         out = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue)
         self.check(out)
         self.assertEqual(kinds(out), ["record_ci_failure", "request_repair",
-                                      "exhaust_work_recovery"])
+                                      "exhaust_recovery"])
         rec = final(out, waiting)
         self.assertEqual((engine.state_key(rec), rec["active_work"],
                           rec["pending_human_action"]["kind"],
@@ -1667,8 +1667,8 @@ class TestRefreshKeepsFeedback(unittest.TestCase):
 class TestNoLegacyDevelopmentWrites(unittest.TestCase):
     def test_development_has_no_legacy_state_or_write_site(self):
         for verb in ("record_publish_success", "reject_patch_proposal", "replan_development",
-                     "schedule_publish_retry", "exhaust_publish_recovery", "retry_dispatch",
-                     "exhaust_dispatch_recovery", "record_ci_failure", "record_pr_mismatch",
+                     "schedule_publish_retry", "exhaust_recovery", "retry_dispatch",
+                     "record_ci_failure", "record_pr_mismatch",
                      "record_actionable_review", "record_explanation", "record_head_change",
                      "return_for_feedback"):
             self.assertIn(verb, engine.PIPELINE_VERBS)
@@ -1684,22 +1684,23 @@ class TestNoLegacyDevelopmentWrites(unittest.TestCase):
         self.assertIn("review-1", out.reason)
 
     def test_returning_for_feedback_reads_pending_feedback_from_the_record(self):
-        self.assertEqual(engine.PREDICATES[lifecycle.PENDING_FEEDBACK].kind, "record")
+        self.assertEqual(engine.PREDICATES[lifecycle.FEEDBACK_OR_UNMET].kind, "record")
         self.assertEqual(engine.PREDICATES[lifecycle.NO_PENDING_FEEDBACK].kind, "record")
         rec = record(pending_feedback_evidence_ids=[])
         out = engine.apply_transition(
             rec, "return_for_feedback", policy=POLICY, now=NOW, facts={"ci_passed_on_head"},
-            values={"last_ci_evidence_id": "ci-1"})
+            values={"last_ci_evidence_id": "ci-1", "pending_feedback_evidence_ids": []})
         self.assertFalse(out.accepted)
         self.assertIn("no actionable feedback is pending", out.reason)
         out = engine.apply_transition(
             dict(rec, pending_feedback_evidence_ids=["review-1"]), "return_for_feedback",
             policy=POLICY, now=NOW, facts={"ci_passed_on_head"},
-            values={"last_ci_evidence_id": "ci-1"})
+            values={"last_ci_evidence_id": "ci-1", "pending_feedback_evidence_ids": ["review-1"]})
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual((engine.state_key(out.record), out.record["revision"],
-                          out.record["last_ci_evidence_id"]),
-                         ("development.fix_needed", rec["revision"], "ci-1"))
+                          out.record["last_ci_evidence_id"],
+                          out.record["pending_feedback_evidence_ids"]),
+                         ("development.fix_needed", rec["revision"] + 1, "ci-1", ["review-1"]))
 
     def test_the_selection_requests_no_work_outside_the_table(self):
         legacy = record("idle")

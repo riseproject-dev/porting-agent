@@ -178,7 +178,7 @@ class TestLateResultMatrix(unittest.TestCase):
         """The Work an identity-less Result leaves requested is terminal
         without a usable Result once its graph completed: it takes
         ``allocate_work_retry`` within ``work_recovery``, then
-        ``exhaust_work_recovery`` to the human wait of the phase."""
+        ``exhaust_recovery`` to the human wait of the phase."""
         record = self.record(generation=0, revision=5)
         pub = dict(publication(record, "published"),
                    task={"contribution_id": record["contribution_id"], "revision": 5})
@@ -204,7 +204,7 @@ class TestLateResultMatrix(unittest.TestCase):
             {"c": exhausted}, runs=[], queue_works={graph: "completed"}, now=T,
             policy=POLICY, work_results=None, collected=frozenset({graph}))
         self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
-                         ["exhaust_work_recovery"])
+                         ["exhaust_recovery"])
         waiting = [r for kind, r in staged if kind == "contributions"][-1]
         self.assertEqual(engine.state_key(waiting), "development.waiting_human")
 
@@ -472,7 +472,7 @@ class TestExhaustion(unittest.TestCase):
             attempts.append(event["kind"])
             record = new
         self.assertEqual(attempts, ["allocate_work_retry", "allocate_work_retry",
-                                    "exhaust_work_recovery"])
+                                    "exhaust_recovery"])
         self.assertEqual((record["pending_human_action"]["kind"],
                           record["pending_human_action"]["counter"]), ("work_failed", "work_recovery"))
         self.assertEqual(record["budget"]["attempts_used"], 2)
@@ -500,7 +500,7 @@ class TestExhaustion(unittest.TestCase):
                 record["active_work"]["attempt"] = attempt
                 new, event, _decision = controller.terminal_work(
                     record, record["active_work"], "completed", now=T, policy=POLICY)
-                self.assertEqual(event["kind"], "exhaust_work_recovery")
+                self.assertEqual(event["kind"], "exhaust_recovery")
                 self.assertEqual(new["pending_human_action"]["counter"], counter)
                 self.assertEqual(sorted(event["details"]["exhausted"]), sorted(exhausted))
         # One resume from the wait with both spent makes Work possible again.

@@ -370,7 +370,7 @@ class TestPublicationRetry(unittest.TestCase):
         t3 = self.tick(rec2, [dict(pub, publication_artifact_id=4, attempt=4)], now=later)
         rec2 = self.final(t3)
         self.assertEqual([e["kind"] for k, e in t3.staged if k == "events"],
-                         ["exhaust_publish_recovery"])
+                         ["exhaust_recovery"])
         self.assertTrue(rec2["pending_publication"]["exhausted"])
         self.assertEqual(rec2["activity"], "waiting_human")
         self.assertEqual(rec2["pending_human_action"]["kind"], "publication_infrastructure_failure")

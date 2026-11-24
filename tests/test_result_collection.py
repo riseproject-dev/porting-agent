@@ -183,7 +183,7 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
                 spent = copy.deepcopy(record)
                 spent["active_work"]["attempt"] = lc.budget_limit("work_recovery", POLICY)
                 _, staged, _ = recover(spent, results={graph(record): reading()})
-                self.assertEqual(kinds(staged), ["exhaust_work_recovery"])
+                self.assertEqual(kinds(staged), ["exhaust_recovery"])
                 new = [r for kind, r in staged if kind == "contributions"][-1]
                 self.assertEqual(engine.state_key(new), f"{spec[0]}.waiting_human")
 

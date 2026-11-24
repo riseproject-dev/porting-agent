@@ -70,7 +70,7 @@ class Inputs:
     # The queue graphs (``work.graph_id``) of Work that already returned a
     # Result or that the queue holds as terminal. A terminal graph is never
     # submitted again: Work allocated under one takes `allocate_work_retry`
-    # or `exhaust_work_recovery` in the same tick.
+    # or `exhaust_recovery` in the same tick.
     spent_graphs: frozenset[str] = frozenset()
     # The handoff workflow runs that are not completed, by operation (run id);
     # None when the run list was not read this tick.
@@ -130,7 +130,7 @@ def _actionable(c: dict) -> str | None:
 # a worker run of up to 350 minutes (the agent job bound of `worker.md`), so
 # 18 hours covers the three with time to spare. No row reads
 # it: Work whose graph ends without a usable Result is recovered by
-# `allocate_work_retry` and `exhaust_work_recovery`.
+# `allocate_work_retry` and `exhaust_recovery`.
 WORK_DEADLINE_HOURS = 18
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
@@ -203,8 +203,7 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
         source_blocked[cid] = snapshot
         rep["deferred"].append({"contribution": cid, "why": SOURCE_UNVERIFIED})
         return
-    if _upstream_read_resume(c) == "resume_renamed_upstream" \
-            and c["upstream"].get("repository_id") is None:
+    if _upstream_read_resume(c) == "renamed" and c["upstream"].get("repository_id") is None:
         # The wait a renamed repository caused, for a request whose id GitHub
         # did not give: whatever repository is now read under the recorded
         # name may be another one, so it is never bound without a human. A
@@ -297,18 +296,18 @@ def _follow_renamed_base(c: dict, snapshot: dict, by_id: dict[str, dict], operat
 
 
 def _upstream_read_resume(c: dict) -> str | None:
-    """The row that ends the wait of ``c`` once the upstream is read again:
-    ``resume_upstream_read`` for a wait failed reads caused (the counter
-    ``source_reads``), ``resume_renamed_upstream`` for the wait a renamed
-    repository caused (``upstream_unavailable`` with no counter), and
-    ``None`` for any other wait."""
+    """What caused the wait of ``c`` that ``resume_upstream_read`` ends once
+    the upstream is read again: ``reads`` for a wait failed reads caused (the
+    counter ``source_reads``), ``renamed`` for the wait a renamed repository
+    caused (``upstream_unavailable`` with no counter), and ``None`` for any
+    other wait."""
     pending = c.get("pending_human_action") or {}
     if engine.state_key(c) not in lifecycle.UPSTREAM_READ_RESUMES:
         return None
     if pending.get("counter") == "source_reads":
-        return "resume_upstream_read"
+        return "reads"
     if pending.get("kind") == lifecycle.UPSTREAM_UNAVAILABLE and pending.get("counter") is None:
-        return "resume_renamed_upstream"
+        return "renamed"
     return None
 
 
@@ -319,8 +318,9 @@ def _resume_upstream_read(c: dict, snapshot: dict, by_id: dict[str, dict], opera
     (``_upstream_read_resume``). A snapshot of another branch than the record
     names, or of another repository id, says nothing about it, and a paused
     or non-quiescent record keeps the wait."""
-    verb = _upstream_read_resume(c)
-    if verb is None or snapshot.get("error") or snapshot.get("repository_id") is None \
+    cause = _upstream_read_resume(c)
+    verb = "resume_upstream_read"
+    if cause is None or snapshot.get("error") or snapshot.get("repository_id") is None \
             or snapshot.get("base_ref") != c["upstream"].get("base_ref") \
             or snapshot.get("repository_id") != c["upstream"].get("repository_id"):
         return
@@ -330,7 +330,7 @@ def _resume_upstream_read(c: dict, snapshot: dict, by_id: dict[str, dict], opera
         return
     pending = c["pending_human_action"]
     details = {"base_ref": c["upstream"].get("base_ref"), "pending_human_action": pending["kind"],
-               "repository": c["upstream"]["full_name"]}
+               "repository": c["upstream"]["full_name"], "cause": cause}
     out = engine.apply_transition(c, verb, policy=policy, now=now,
                                   facts={"upstream_read_again"}, open_operations=ops,
                                   cause_id=f"upstream-read-r{c['revision']}", details=details)
@@ -407,7 +407,7 @@ def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operati
     about the record's branch: the collector reads one branch per upstream,
     and that snapshot never leads this record to a wait or a charge."""
     cid = c["contribution_id"]
-    if _upstream_read_resume(c) == "resume_renamed_upstream":
+    if _upstream_read_resume(c) == "renamed":
         _replace_rename_wait(c, snapshot, by_id, operations, res, policy, now)
         return
     if engine.state_key(c) not in lifecycle.BASE_BRANCH_WAITS:
@@ -678,7 +678,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # A wait that failed reads caused ends once the upstream is read again
     # (`resume_upstream_read`), and the wait a renamed repository caused
     # once GitHub answers for it under its recorded name again
-    # (`resume_renamed_upstream`), after the commands, so that a resume
+    # (`resume_upstream_read` too), after the commands, so that a resume
     # posted in the same tick is taken as posted.
     for cid, c in list(by_id.items()):
         if cid in skip or cid in source_blocked:
@@ -1130,7 +1130,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             # terminal without a usable Result: it is never submitted again,
             # and a fresh graph is allocated within `work_recovery`
             # (`allocate_work_retry`), or the contribution waits for a human
-            # (`exhaust_work_recovery`).
+            # (`exhaust_recovery`).
             claimed = _retry_spent_work(claimed, inputs, res, policy)
             by_id[c["contribution_id"]] = claimed
             if not claimed.get("active_work"):
@@ -1186,7 +1186,7 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                  deadline_at=(now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
                  dispatched_run_id=None)
     # `allocate_work_retry` is guarded by the bound upstream identity, and a
-    # refusal here would fall through to `exhaust_work_recovery`. A record
+    # refusal here would fall through to `exhaust_recovery`. A record
     # without it never reaches this point: it holds Work only once a row
     # guarded by the same identity allocated it, the identity is cleared
     # only by `restart_generation`, which clears the Work in the same row,
@@ -1201,9 +1201,8 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
         limit = lifecycle.budget_limit("work_recovery", policy)
         return out.record, out.event, f"new revision for terminal Work, attempt {attempt} of {limit}"
     spent = engine.exhausted(c, ("work_total", "work_recovery"), policy=policy, now=iso)
-    out = engine.apply_transition(c, "exhaust_work_recovery", policy=policy, now=iso,
+    out = engine.apply_transition(c, "exhaust_recovery", policy=policy, now=iso,
                                   cause_id=f"queue-{queue_state}", facts=facts,
-                                  values={lifecycle.PENDING_COUNTER: (spent or ["work_recovery"])[0]},
                                   details=details | {"exhausted": spent})
     if not out.accepted:
         return None, None, f"terminal Work: {out.reason}"
@@ -1213,7 +1212,7 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
 def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:
     """``record`` once the Work it was just allocated no longer names a graph
     in ``inputs.spent_graphs``: each spent graph takes ``allocate_work_retry``
-    (a fresh graph at a new revision) or ``exhaust_work_recovery``, which
+    (a fresh graph at a new revision) or ``exhaust_recovery``, which
     clears the Work."""
     while record.get("active_work") and \
             work_queue.graph_id(record["active_work"]["dedupe_key"]) in inputs.spent_graphs:

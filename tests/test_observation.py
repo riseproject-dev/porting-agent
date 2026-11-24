@@ -297,7 +297,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         observation = self.observe(rec, self.snapshot(pending=False))
         final = self.final(observation, rec)
         self.assertEqual(engine.state_key(final), "development.fix_needed")
-        self.assertEqual(final["revision"], rec["revision"])
+        self.assertEqual(final["revision"], rec["revision"] + 1)
         self.assertEqual(final["last_ci_evidence_id"], observation.report[0]["evidence"])
         self.assertEqual(final["pending_feedback_evidence_ids"], ["review-1"])
         self.assertEqual(observation.report[0]["feedback_due"], ["review-1"])
@@ -2031,8 +2031,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                                                "upstream_review.waiting_human",
                                                "upstream_review.fix_needed"))
         self.assertEqual(status_ledger.NOTICE_VERBS,
-                         {"follow_renamed_base", "resume_renamed_base", "resume_upstream_read",
-                          "resume_renamed_upstream"})
+                         {"follow_renamed_base", "resume_renamed_base", "resume_upstream_read"})
 
     def test_a_pr_that_does_not_follow_the_rename_still_waits(self):
         rec = self.reviewing()
@@ -2196,9 +2195,10 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         wait = self.final(self.tick(rec, dict(self.MOVED)), rec)
         self.assertEqual((wait["pending_human_action"]["kind"],
                           wait["pending_human_action"]["counter"]), ("upstream_unavailable", None))
-        # The reads row does not apply: reads did not cause this wait.
-        self.assertTrue(engine.refusal(wait, "resume_upstream_read", policy=policy(), now=NOW,
-                                       facts={"upstream_read_again"}, open_operations=()))
+        # One row ends the waits failed reads and a rename caused; it applies
+        # to this one once the repository is read under its recorded name.
+        self.assertIsNone(engine.refusal(wait, "resume_upstream_read", policy=policy(), now=NOW,
+                                         facts={"upstream_read_again"}, open_operations=()))
         # Still named otherwise: it is read, and the wait stays.
         api = self.Api(full_name="other/proj")
         snapshot = collect.upstream_snapshots(api, [wait], [], policy())["example/proj"]
@@ -2212,12 +2212,12 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                          ["resume_development", "require_renamed_upstream"])
         # Another repository under the recorded name does not end it.
         res = self.tick(wait, dict(self.SNAPSHOT, repository_id=9))
-        self.assertNotIn("resume_renamed_upstream", [e["kind"] for e in self.events(res)])
+        self.assertNotIn("resume_upstream_read", [e["kind"] for e in self.events(res)])
         # GitHub answers for the same repository under its recorded name.
         api = self.Api()
         snapshot = collect.upstream_snapshots(api, [wait], [], policy())["example/proj"]
         res = self.tick(wait, snapshot)
-        [event] = [e for e in self.events(res) if e["kind"] == "resume_renamed_upstream"]
+        [event] = [e for e in self.events(res) if e["kind"] == "resume_upstream_read"]
         self.assertEqual(event["details"]["to_state"], "development.fix_needed")
         resumed = [r for k, r in res.staged if k == "contributions"
                    and r["revision"] == wait["revision"] + 1][0]
@@ -2276,11 +2276,11 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         self.assertEqual(event["details"]["repository_id"], 1)
         res = self.tick(wait, dict(self.SNAPSHOT, repository_id=9))
         kinds = [e["kind"] for e in self.events(res)]
-        self.assertNotIn("resume_renamed_upstream", kinds)
+        self.assertNotIn("resume_upstream_read", kinds)
         self.assertEqual(self.final(res, wait)["upstream"]["repository_id"], 1)
         self.assertIsNone(self.final(res, wait)["upstream"]["base_sha"])
         res = self.tick(wait, dict(self.SNAPSHOT))
-        self.assertIn("resume_renamed_upstream", [e["kind"] for e in self.events(res)])
+        self.assertIn("resume_upstream_read", [e["kind"] for e in self.events(res)])
         healed = self.final(res, wait)
         self.assertEqual((healed["upstream"]["repository_id"], healed["upstream"]["base_sha"]),
                          (1, SHA_B))
@@ -2351,7 +2351,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                 with self.subTest(name, snapshot=snapshot.get("error", "read")):
                     res = self.tick(held, snapshot)
                     kinds = [e["kind"] for e in self.events(res)]
-                    self.assertFalse({"resume_renamed_upstream", "require_base_branch",
+                    self.assertFalse({"resume_upstream_read", "require_base_branch",
                                       "require_renamed_upstream"} & set(kinds), kinds)
                     final = self.final(res, held)
                     self.assertEqual(engine.state_key(final), "development.waiting_human")
@@ -2369,7 +2369,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                 self.assertEqual(res.report["commands"][0]["result"], "accepted",
                                  res.report["commands"])
                 kinds = [e["kind"] for e in self.events(res)]
-                self.assertNotIn("resume_renamed_upstream", kinds)
+                self.assertNotIn("resume_upstream_read", kinds)
                 self.assertNotIn("require_renamed_upstream", kinds)
                 self.assertTrue(kinds[0].startswith("resume_"), kinds)
                 self.assertIsNone(self.final(res, wait)["pending_human_action"])
@@ -2583,7 +2583,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         self.assertEqual(kinds, {"require_base_branch", "exhaust_source_reads",
                                  "require_upstream_access", "require_renamed_upstream",
                                  "record_reminder", "resume_upstream_read",
-                                 "resume_renamed_upstream", "follow_renamed_base",
+                                 "follow_renamed_base",
                                  "resume_renamed_base", "verify_upstream_pr"})
         command_words = set(commands.GRAMMAR)
         identifiers = ({v for v in engine.table_verbs() if v not in command_words}

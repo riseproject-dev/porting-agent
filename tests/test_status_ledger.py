@@ -446,7 +446,7 @@ class TestWordingIsTheTable(unittest.TestCase):
                               pending_feedback_evidence_ids=["review-1", "review-2"])
         body = status_ledger.render(event, record, "https://github.com/run")
         self.assertIn("`return_for_feedback` ", body)
-        self.assertIn(lifecycle.PENDING_FEEDBACK, body)
+        self.assertIn(lifecycle.FEEDBACK_OR_UNMET, body)
         self.assertIn("Now `development.fix_needed`", body)
         self.assertNotIn("review-1", body)
         self.assertNotIn(chr(0x2014), body)

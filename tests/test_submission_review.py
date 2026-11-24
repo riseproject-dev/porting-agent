@@ -440,7 +440,7 @@ class TestReviewWork(unittest.TestCase):
         self.assertEqual(accept.transition.effects.revision, "keep")
         for state in ("handoff.agent_running", "handoff.reviewing"):
             self.assertEqual(lc.find_edge(state, "allocate_work_retry").target, state)
-            self.assertEqual(lc.find_edge(state, "exhaust_work_recovery").target,
+            self.assertEqual(lc.find_edge(state, "exhaust_recovery").target,
                              "handoff.waiting_human")
         # An expired rewrite leads back to a fresh rewrite.
         for state in ("handoff.review_pending", "handoff.building_upstream_branch"):

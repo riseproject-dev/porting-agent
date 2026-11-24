@@ -125,7 +125,7 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
         self.assertEqual(final["pending_human_action"]["kind"], "dispatch_failed")
         self.assertEqual(final["pending_human_action"]["counter"], "dispatch_recovery")
         self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
-                         ["exhaust_dispatch_recovery"])
+                         ["exhaust_recovery"])
         self.assertEqual(report[-1]["decision"], "dispatch failed; waiting for a human")
 
     def test_each_ended_dispatcher_run_is_decided_once(self):

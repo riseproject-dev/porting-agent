@@ -154,7 +154,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
             queue_works={work.graph_id(DEDUPE): "available"},
             now=at("2026-11-24T00:46:00+00:00"), policy=policy())
         self.assertEqual([r["kind"] for kind, r in staged if kind == "events"],
-                         ["exhaust_dispatch_recovery"])
+                         ["exhaust_recovery"])
 
     def test_the_launched_dispatcher_is_awaited(self):
         runs = self.runs + [run(45278935001, "2026-11-23T22:21:46Z", status="in_progress")]

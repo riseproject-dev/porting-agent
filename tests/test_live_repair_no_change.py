@@ -245,7 +245,9 @@ class TestLateResultOfWithdrawnWork(unittest.TestCase):
         self.assertEqual([e["kind"] for k, e in output.staged if k == "events"][:1],
                          ["record_late_effect"])
         self.assertIn(R5_ARTIFACT, result["processed_publications"])
-        self.assertEqual(result["revision"], 5)
+        # `return_for_feedback` bumps the revision (it records the pending
+        # feedback, merged with the series requirements).
+        self.assertEqual(result["revision"], 6)
         # Green CI does not nominate while actionable feedback is pending: the
         # rehearsal evidence the code before the table recorded as pending
         # feedback makes Work due again (`return_for_feedback`), and the
@@ -348,7 +350,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertEqual(output.report["observation"][0]["ci"]["state"], "passed")
         result = final(output, launched)
         self.assertEqual((result["phase"], result["activity"], result["revision"]),
-                         ("development", "agent_running", 6))
+                         ("development", "agent_running", 7))
         self.assertIsNone(result["pending_publication"])
         self.assertEqual(result["fork"]["head_sha"], HEAD)
         self.assertEqual(result["budget"]["reruns"], {"head_sha": HEAD, "flaky": 1, "interrupted": 0})

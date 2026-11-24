@@ -398,9 +398,11 @@ def _no_pending_feedback(ctx: Context) -> str | None:
     return f"actionable feedback is pending: {', '.join(pending[:4])}" if pending else None
 
 
-@_record(lc.PENDING_FEEDBACK, "pending_actionable_feedback")
-def _pending_feedback(ctx: Context) -> str | None:
-    return None if ctx.record.get("pending_feedback_evidence_ids") else "no actionable feedback is pending"
+@_record(lc.FEEDBACK_OR_UNMET, "pending_feedback_or_unmet_series_requirements")
+def _feedback_or_unmet(ctx: Context) -> str | None:
+    if ctx.record.get("pending_feedback_evidence_ids") or _asserted(ctx, "series_requirements_unmet"):
+        return None
+    return "no actionable feedback is pending and every series requirement is met"
 
 
 @_record(lc.WORK_WITHOUT_FEEDBACK, "work_without_feedback")
@@ -666,8 +668,6 @@ for _name in lc.BUDGETS:
 
 _register("work_recovery and work_total remain", "work_recovery_and_work_total_remain", "record",
           _remain("work_recovery", "work_total"))
-_register("work_recovery or work_total exhausted", "work_recovery_or_work_total_exhausted",
-          "record", _any_exhausted("work_recovery", "work_total"))
 _register(lc.REPAIR_BUDGETS_REMAIN, "repair_budgets_remain", "record",
           _remain("repair_attempts_cluster", "no_progress"))
 _register(lc.REVISION_BUDGETS_REMAIN, "revision_budgets_remain", "record",
@@ -729,12 +729,16 @@ def _upstream_unreadable(ctx: Context) -> str | None:
     return None
 
 
-@_record(lc.READS_CAUSED_WAIT, "reads_caused_wait")
-def _reads_caused_wait(ctx: Context) -> str | None:
+@_record(lc.UPSTREAM_READ_WAIT, "upstream_read_wait")
+def _upstream_read_wait(ctx: Context) -> str | None:
+    # Failed reads name the counter `source_reads`; `require_renamed_upstream`
+    # is the only row that records `upstream_unavailable` without a counter.
     pending = ctx.record.get("pending_human_action") or {}
-    if pending.get("counter") != "source_reads":
-        return "the wait was not entered because reads kept failing"
-    return None
+    if pending.get("counter") == "source_reads" or (
+            pending.get("kind") == lc.UPSTREAM_UNAVAILABLE and pending.get("counter") is None):
+        return None
+    return ("the wait was entered neither because reads kept failing nor because GitHub named "
+            "the repository otherwise")
 
 
 @_record(lc.RENAME_CAUSED_WAIT, "rename_caused_wait")
@@ -745,6 +749,39 @@ def _rename_caused_wait(ctx: Context) -> str | None:
     if pending.get("kind") != lc.UPSTREAM_UNAVAILABLE or pending.get("counter") is not None:
         return "the wait was not entered because GitHub named the repository otherwise"
     return None
+
+
+def recovery_exhaustion(ctx: Context) -> tuple[str, str] | str:
+    """The pending action and counter of ``exhaust_recovery`` for the failure
+    the caller asserts, or why the row does not apply: exactly one failure is
+    asserted, the Work or the publication it concerns is held, and one of
+    the budgets that recover it is exhausted (``work_total`` is named before
+    ``work_recovery``, so the resume starts the budget of the generation)."""
+    failures = [fact for fact in lc.RECOVERY_FAILURES if _asserted(ctx, fact)]
+    if len(failures) != 1:
+        return "the failure whose recovery is exhausted is not established"
+    budgets, kind = lc.RECOVERY_FAILURES[failures[0]]
+    if failures[0] == "publication_infrastructure_error":
+        if not publication_pending(ctx.record):
+            return "no publication is pending"
+    elif not ctx.record.get("active_work"):
+        return "no Work is requested"
+    unknown = None
+    for name in budgets:
+        left = remains(name, ctx)
+        if left is False:
+            return kind, name
+        if left is None:
+            unknown = name
+    if unknown:
+        return f"the count of {unknown} is not known"
+    return f"{' and '.join(budgets)} remain"
+
+
+@_record(lc.RECOVERY_EXHAUSTED, "recovery_exhausted")
+def _recovery_exhausted(ctx: Context) -> str | None:
+    found = recovery_exhaustion(ctx)
+    return found if isinstance(found, str) else None
 
 
 @_record(lc.PROVISIONING_NEEDS_INTERVENTION, "provisioning_needs_intervention")
@@ -807,7 +844,6 @@ for _guard, _name in (
      "development_pr_mismatch"),
     ("every required CI job executed and passed on the exact head", "ci_passed_on_head"),
     (lc.SERIES_REQUIREMENTS_MET, "series_requirements_met"),
-    (lc.SERIES_REQUIREMENTS_UNMET, "series_requirements_unmet"),
     (lc.CANDIDATE_FAILED, "candidate_head_failed"),
     (lc.CANDIDATE_NOT_FAILED, "candidate_head_not_failed"),
     ("the observed fork head differs from the candidate head", "candidate_head_changed"),
@@ -880,7 +916,7 @@ _register("for pr_closed_unmerged, the upstream PR is observed open again or mer
 
 # Facts read by a record predicate in addition to the fact predicates above.
 EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked",
-                         "upstream_repository_unread"})
+                         "upstream_repository_unread", "series_requirements_unmet"})
 FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") | EXTRA_FACTS
 # Facts that state the opposite of each other; a caller that asserts both has
 # established neither.
@@ -931,7 +967,6 @@ PIPELINE_VERBS: dict[str, str] = {
     # development PR that does not match the record.
     "record_ci_failure": "observe_ci",
     "return_for_feedback": "observe_ci",
-    "return_for_series_requirements": "observe_ci",
     "record_pr_mismatch": "observe_ci",
     # A required job that was cancelled or lost its runner: a `ci_rerun`
     # operation within `interrupted_reruns`, and the wait once it is spent.
@@ -945,7 +980,6 @@ PIPELINE_VERBS: dict[str, str] = {
     "reject_patch_proposal": "reconcile",
     "replan_development": "reconcile",
     "schedule_publish_retry": "reconcile",
-    "exhaust_publish_recovery": "reconcile",
     # A failure the repair worker reports not caused by the patch, once the
     # trusted publication job reran the failed jobs on the exact head and
     # read the new attempt back (or found nothing to rerun).
@@ -953,7 +987,10 @@ PIPELINE_VERBS: dict[str, str] = {
     # A dispatcher run that ended with the requested Work absent or
     # unclaimed, within `dispatch_recovery`.
     "retry_dispatch": "reconcile",
-    "exhaust_dispatch_recovery": "reconcile",
+    # The exhaustion of the recovery of a lost dispatch, of a terminal Work
+    # graph (also taken by `controller.terminal_work`), or of a failed
+    # publication: the wait for a human.
+    "exhaust_recovery": "reconcile",
     # A dispatch failed while the installed work-queue Policy refused every
     # dispatch, once the dispatcher has reinstalled the compiled policy.
     "rearm_dispatch": "reconcile",
@@ -975,7 +1012,6 @@ PIPELINE_VERBS: dict[str, str] = {
     # that names a spent graph), and a planning run Result without a
     # usable plan.
     "allocate_work_retry": "controller",
-    "exhaust_work_recovery": "controller",
     "reject_plan": "reconcile",
     "exhaust_planning_recovery": "reconcile",
     # The verified plan decides: development on a new fork or on the
@@ -1004,7 +1040,6 @@ PIPELINE_VERBS: dict[str, str] = {
     "resume_patch_review": "controller",
     "resume_submission_review": "controller",
     "resume_upstream_branch": "controller",
-    "resume_clean_head_ci": "controller",
     "resume_submission_preparation": "controller",
     "resume_upstream_review": "controller",
     "resume_upstream_revision": "controller",
@@ -1031,7 +1066,6 @@ PIPELINE_VERBS: dict[str, str] = {
     # and the wait a renamed repository caused once GitHub answers for it
     # under its recorded name again.
     "resume_upstream_read": "controller",
-    "resume_renamed_upstream": "controller",
     # The fork provisioning operation: its launches within `operation_launch`,
     # the wait once that budget is exhausted or the operation failed, and its
     # confirmation by the receipt and readback (rows the operation fires
@@ -1045,7 +1079,6 @@ PIPELINE_VERBS: dict[str, str] = {
     # readback (a row the operation fires through ``recovery.fire``).
     "launch_development_pr": "controller",
     "exhaust_development_pr_launches": "controller",
-    "resume_development_pr": "controller",
     "confirm_development_pr": "recovery",
     # The submission rewrite and review Work: their allocation and the
     # exhaustion of `work_total` where they are due, their Results, which the
@@ -1424,16 +1457,31 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
     pending_kind = None
     counter: Any = None
     counter_declared = False
+    exhaustion = recovery_exhaustion(ctx) if lc.RECOVERY_EXHAUSTED in t.guard else None
     for entry in e.sets:
         name, literal, value = entry.partition("=")
         if name == "pending_human_action":
-            pending_kind = value if literal else values.get(name)
+            if literal and "|" in value:
+                # One of the listed kinds, derived from the failure.
+                if not isinstance(exhaustion, tuple) or exhaustion[0] not in value.split("|"):
+                    raise TransitionError(f"{verb}: the pending action of the failure is not "
+                                          f"one of {value}")
+                pending_kind = exhaustion[0]
+            else:
+                pending_kind = value if literal else values.get(name)
             if not isinstance(pending_kind, str) or not pending_kind:
                 raise TransitionError(f"{verb} sets pending_human_action; its kind is required")
             continue
         if name == lc.PENDING_COUNTER:
             counter_declared = True
-            counter = value if literal else values.get(name)
+            if not literal and isinstance(exhaustion, tuple):
+                counter = exhaustion[1]
+            else:
+                counter = value if literal else values.get(name)
+            continue
+        if name in lc.QUALIFIED_SETS and not rec.get(name.split(".")[0]):
+            # A qualified set applies only where its condition holds: the
+            # part of a field that is not recorded is not set.
             continue
         if literal:
             _put(rec, name, value)

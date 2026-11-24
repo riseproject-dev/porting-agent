@@ -655,10 +655,10 @@ class TestHeldPatchEnds(unittest.TestCase):
         from tests.helpers import apply_command
 
         reviewing, _ = held(running())
-        for verb, facts in (("exhaust_dispatch_recovery", set()),
-                            ("exhaust_work_recovery",
+        for verb, facts in (("exhaust_recovery", {"dispatch_lost"}),
+                            ("exhaust_recovery",
                              {"work_terminal_without_result"})):
-            with self.subTest(verb=verb):
+            with self.subTest(verb=verb, facts=facts):
                 rec = dict(reviewing, active_work=dict(reviewing["active_work"], attempt=9))
                 out = engine.apply_transition(rec, verb, policy=POLICY, now=NOW, facts=facts,
                                               counts={"dispatch_recovery": 99})
@@ -815,7 +815,8 @@ class TestHeldPatchEnds(unittest.TestCase):
         # discards it restarts the count.
         waiting = engine.apply_transition(
             dict(anyway, pending_publication=dict(anyway["pending_publication"], attempts=99)),
-            "exhaust_publish_recovery", policy=POLICY, now=NOW, cause_id="x").record
+            "exhaust_recovery", policy=POLICY, now=NOW, cause_id="x",
+            facts={"publication_infrastructure_error"}).record
         self.assertEqual(waiting["budget"]["review_rejections"], 1)
         resume = commands.Command("resume", {"revision": str(waiting["revision"])})
         resumed = engine.apply_transition(waiting, "resume_development", policy=POLICY, now=NOW,

@@ -603,7 +603,7 @@ class TestLivePath(unittest.TestCase):
                     first = world.record["active_work"]["dedupe_key"]
                 # Once `work_recovery` is spent, a human resumes a fresh rewrite.
                 out = world.tick(at(3), publications=[make(verdict="maybe")])
-                self.assertEqual(world.kinds(out), ["exhaust_work_recovery"])
+                self.assertEqual(world.kinds(out), ["exhaust_recovery"])
                 self.assertEqual((world.state, world.record["pending_human_action"]["kind"]),
                                  ("handoff.waiting_human", "work_failed"))
                 revision = world.record["revision"]
@@ -1349,7 +1349,7 @@ class TestCleanHeadCi(unittest.TestCase):
         world.gh.ci_snapshot = FakeGitHub.ci_snapshot.__get__(world.gh)
         out = world.tick(at(1, "2026-11-27"), comments=[comment(
             f'/upstreaming resume revision={world.record["revision"]} reason="ran CI"', cid=991)])
-        self.assertEqual(world.kinds(out), ["resume_clean_head_ci"])
+        self.assertEqual(world.kinds(out), ["resume_ci"])
         out = world.tick(at(2, "2026-11-27"))
         self.assertEqual(world.kinds(out)[0], "accept_clean_head_ci")
         self.assertEqual(world.state, "handoff.preparing_submission")
@@ -1365,7 +1365,7 @@ class TestCleanHeadCi(unittest.TestCase):
         self.assertEqual(world.kinds(out), ["require_clean_head_ci"])
         out = world.tick(at(4 + 12 * 60), comments=[comment(
             f'/upstreaming resume revision={world.record["revision"]} reason="x"', cid=992)])
-        self.assertEqual(world.kinds(out), ["resume_clean_head_ci"])
+        self.assertEqual(world.kinds(out), ["resume_ci"])
         self.assertNotEqual(world.record["clean_head_ci_since"], since)
         self.assertEqual(world.state, "handoff.waiting_ci")
 

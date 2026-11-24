@@ -24,9 +24,8 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   ``nominate_for_handoff`` when the series meets the series requirements
   of the verified plan, or ``return_for_feedback`` to
   ``development.fix_needed`` when CI passed while actionable feedback is
-  pending, or ``return_for_series_requirements`` to
-  ``development.fix_needed`` when CI passed and a series requirement is
-  unmet (passing CI behind an open operation keeps the state);
+  pending or a series requirement is unmet (passing CI behind an open
+  operation keeps the state);
 * at ``handoff.awaiting_submission``, take the gate's rows for what is
   observed on the candidate head: ``record_head_change``,
   ``record_explanation`` for an explanation-only comment, then
@@ -645,12 +644,11 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     no actionable feedback is pending, and the series meets the series
     requirements of the verified plan (``_series_requirements``),
     ``return_for_feedback`` when every required job passed while actionable
-    feedback is pending: the passing evidence is recorded and Work carrying
-    the feedback is due again in ``development.fix_needed``, or
-    ``return_for_series_requirements`` when every required job passed
-    without pending feedback and a series requirement is unmet: the unmet
+    feedback is pending, or without pending feedback while a series
+    requirement is unmet: the passing evidence is recorded, the unmet
     requirements are recorded as ``series_requirements`` evidence, which
-    becomes the pending feedback of the Work due again. Passing CI behind
+    joins the pending feedback, and Work carrying the feedback is due again
+    in ``development.fix_needed``. Passing CI behind
     an open operation keeps the contribution in ``development.waiting_ci``,
     and a CI run that waits for approval is collector health, not a state.
 
@@ -748,8 +746,9 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
             # carries it is due again rather than the nomination waiting.
             returned = engine.apply_transition(
                 cur, "return_for_feedback", policy=policy, now=now, cause_id=ev["evidence_id"],
-                facts={"ci_passed_on_head"}, values={"last_ci_evidence_id": ev["evidence_id"]},
-                open_operations=ops,
+                facts={"ci_passed_on_head"}, open_operations=ops,
+                values={"last_ci_evidence_id": ev["evidence_id"],
+                        "pending_feedback_evidence_ids": pending},
                 details={"evidence_id": ev["evidence_id"], "head": head,
                          "feedback": pending[:8]})
             if returned.accepted:
@@ -764,7 +763,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                                                     policy=policy, now=now)
             if sev is not None:
                 returned = engine.apply_transition(
-                    cur, "return_for_series_requirements", policy=policy, now=now,
+                    cur, "return_for_feedback", policy=policy, now=now,
                     cause_id=sev["evidence_id"], open_operations=ops,
                     facts={"ci_passed_on_head", "series_requirements_unmet"},
                     values={"last_ci_evidence_id": ev["evidence_id"],

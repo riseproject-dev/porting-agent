@@ -175,7 +175,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
       table's ``retry_dispatch`` launches the dispatcher again within
       ``dispatch_recovery`` (the dispatcher never submits Work the queue
       already holds again: it dispatches the queued Work as it was first
-      submitted), and ``exhaust_dispatch_recovery`` waits for a human once
+      submitted), and ``exhaust_recovery`` waits for a human once
       that budget is spent. Its count is the number of
       dispatcher runs that ended since the request. Each
       ended run is decided once: the record names the last one it decided
@@ -188,7 +188,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     decided at all: nothing is charged and nothing is launched.
 
     A graph the queue reports completed or cancelled takes
-    ``allocate_work_retry`` or ``exhaust_work_recovery`` once it is terminal
+    ``allocate_work_retry`` or ``exhaust_recovery`` once it is terminal
     without a usable Result (``_result_missing``): a cancelled graph at
     once; a completed graph when a publication collected in this tick
     (``collected``, graph ids) names it, or once ``work_results``
@@ -206,7 +206,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     request, the dispatch is not decided: nothing is charged and nothing is
     launched, since the dispatcher defers that Work by design. After that it
     is decided as above, so a history that is never recorded ends in the
-    human wait of ``exhaust_dispatch_recovery``. Once the history is
+    human wait of ``exhaust_recovery``. Once the history is
     committed, the dispatcher runs are counted from the later of the request
     and the time the history was recorded.
 
@@ -219,7 +219,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     ``DISPATCH_LAUNCH_GRACE_MINUTES`` of it, the dispatcher is launched
     without a row and nothing is charged. A retry the queue exhausts
     cancels the Work, which ``allocate_work_retry`` or
-    ``exhaust_work_recovery`` then decides.
+    ``exhaust_recovery`` then decides.
 
     Returns (relaunch requests, staged records, report). No model is involved
     in deciding; a relaunch is an ordinary dispatcher run.
@@ -279,7 +279,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 # Result, the table allocates a fresh graph at a new revision
                 # within `work_recovery` and `work_total`
                 # (`allocate_work_retry`), and waits for a human otherwise
-                # (`exhaust_work_recovery`).
+                # (`exhaust_recovery`).
                 decided, waiting, details = _result_missing(
                     state, work.graph_id(aw["dedupe_key"]), work_results, collected, now)
                 if details.get("worker_run"):
@@ -509,7 +509,7 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
                    ) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work that a dispatcher run left absent
     or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
-    relaunches spent) remains, ``exhaust_dispatch_recovery`` once it is
+    relaunches spent) remains, ``exhaust_recovery`` once it is
     spent. ``count`` is the number of dispatcher runs since the request,
     all ended. The row records the decided run in ``dispatched_run_id``.
     ``evidence`` is the committed evidence the payload is measured from
@@ -552,7 +552,7 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
                                   details=details | {"attempt": count + 1, "limit": limit})
     if out.accepted:
         return out.record, out.event, f"relaunch: dispatch attempt {count + 1} of {limit}"
-    out = engine.apply_transition(c, "exhaust_dispatch_recovery", policy=policy, now=iso,
+    out = engine.apply_transition(c, "exhaust_recovery", policy=policy, now=iso,
                                   cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
                                   counts=counts, details=details | {"count": count, "limit": limit})
     if not out.accepted:
@@ -1018,7 +1018,7 @@ def _review_problem(rec: dict, outcome: dict, worker_run_id: str | None,
 def _unusable_submission_result(rec: dict, why: str, *, now: str,
                                 policy: dict) -> tuple[dict, list[tuple[str, dict]]]:
     """A rewrite or review Result that is not usable: Work without a usable
-    Result (``allocate_work_retry``, then ``exhaust_work_recovery``)."""
+    Result (``allocate_work_retry``, then ``exhaust_recovery``)."""
     aw = rec.get("active_work") or {}
     new, event, decision = _terminal_work(rec, aw, "result_unusable",
                                           now=datetime.fromisoformat(now), policy=policy)
@@ -1385,7 +1385,7 @@ def _fail_publication(rec: dict, run: str, reason: str, *, now: str, policy: dic
                       cause: str | None, details: dict) -> engine.Outcome:
     """A publication of the Result of ``run`` failed: ``schedule_publish_retry``
     holds the Result for a publish-only retry and charges ``publish_recovery``;
-    ``exhaust_publish_recovery`` once it is spent."""
+    ``exhaust_recovery`` once it is spent."""
     held = rec.get("pending_publication") or {}
     before = int(held.get("attempts", 0))
     pending = {"worker_run_id": run, "attempts": before + 1, "last_reason": reason[:2000],
@@ -1399,7 +1399,7 @@ def _fail_publication(rec: dict, run: str, reason: str, *, now: str, policy: dic
         details=details | {"next_attempt_at": pending["next_attempt_at"]})
     if not out.accepted:
         out = engine.apply_transition(
-            rec, "exhaust_publish_recovery", policy=policy, now=now, cause_id=cause,
+            rec, "exhaust_recovery", policy=policy, now=now, cause_id=cause,
             facts={"publication_infrastructure_error"}, details=details | {"attempts": before})
     return out
 
@@ -1629,7 +1629,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     * an infrastructure error of the publication, or an uncertain Result:
       ``schedule_publish_retry`` holds the same Result for
       a publish-only retry within ``publish_recovery``,
-      ``exhaust_publish_recovery`` once it is spent; an uncertain Result
+      ``exhaust_recovery`` once it is spent; an uncertain Result
       stores its report at the hold (``pushed_report_evidence``), as does a
       stale retry behind the operation of an earlier attempt.
 
@@ -1734,7 +1734,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         if status == "uncertain":
             # The push may have landed: the report is kept whatever ends
             # the hold (`pushed_report_evidence`).
-            holds = "exhaust_publish_recovery" if engine.refusal(
+            holds = "exhaust_recovery" if engine.refusal(
                 rec, "schedule_publish_retry", policy=policy, now=now,
                 facts={"publication_infrastructure_error"}) else "schedule_publish_retry"
             staged.extend(pushed_report_evidence(
@@ -2691,7 +2691,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # rows. A launched retry whose Result is not folded within
                 # PUBLISH_RESULT_WAIT_MINUTES is a failed publication, like
                 # a Result that reports one: `schedule_publish_retry` charges
-                # `publish_recovery` again, or `exhaust_publish_recovery`
+                # `publish_recovery` again, or `exhaust_recovery`
                 # waits for a human once it is spent.
                 if engine.state_key(c) == lifecycle.PUBLISHING \
                         and patch_review.held_patch_expired(c, now):

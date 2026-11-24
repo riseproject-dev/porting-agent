@@ -668,7 +668,7 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
                 minutes += 10
                 self.assertLess(minutes, 4000)
                 rec, verbs = step(rec, minutes=minutes, head=SHA_B)
-            self.assertEqual(verbs, ["exhaust_publish_recovery"])
+            self.assertEqual(verbs, ["exhaust_recovery"])
         elif end == "pause":
             rec = command(rec, '/upstreaming pause reason="look"', minutes + 1)
         elif end == "park":
@@ -750,10 +750,10 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
         op = dev.branch_operation(rec)
         out = dev.tick(rec, [with_report(rec, dict(dev.uncertain(rec, op), attempt=100))],
                        observe=False)
-        self.assertEqual(dev.kinds(out), ["exhaust_publish_recovery"])
+        self.assertEqual(dev.kinds(out), ["exhaust_recovery"])
         [evidence] = stored(out.staged)
         self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_candidate"]),
-                         ("exhaust_publish_recovery", SHA_B))
+                         ("exhaust_recovery", SHA_B))
         self.assertEqual(events(out.staged)[0]["details"]["report_evidence_id"],
                          evidence["evidence_id"])
 
@@ -830,7 +830,7 @@ class TestHeldRevisionReport(unittest.TestCase):
                 now += timedelta(hours=1)
                 self.assertLess(now, up.T + timedelta(days=3))
                 rec, verbs = step(rec, now=now, pr=up.pull(head=SHA_B), branch=SHA_B)
-            self.assertEqual(verbs, ["exhaust_publish_recovery"])
+            self.assertEqual(verbs, ["exhaust_recovery"])
         else:
             paused = apply_command(rec, commands.parse('/upstreaming pause reason="x"'),
                                    operations=ops, now=now.isoformat())

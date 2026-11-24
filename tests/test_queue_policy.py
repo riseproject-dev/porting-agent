@@ -267,7 +267,7 @@ class TestDispatchWhilePolicyRefuses(unittest.TestCase):
     def test_a_quiescent_queue_decides_as_before(self):
         _relaunch, staged, _report = self.recover(queue_policy.status(projection(), compiled()))
         self.assertEqual([r["kind"] for kind, r in staged if kind == "events"],
-                         ["exhaust_dispatch_recovery"])
+                         ["exhaust_recovery"])
 
 
 class TestPlanSkipsAnUnboundRecord(unittest.TestCase):

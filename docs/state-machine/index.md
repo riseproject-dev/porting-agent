@@ -128,7 +128,6 @@ flowchart TB
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
     development_waiting_ci -->|return_for_feedback| development_fix_needed
-    development_waiting_ci -->|return_for_series_requirements| development_fix_needed
     handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
     handoff_agent_running -->|accept_submission_rewrite| handoff_review_pending
@@ -243,8 +242,7 @@ flowchart TB
     planning_idle -->|dispatch_planning| planning_agent_running
     planning_agent_running -->|retry_dispatch| planning_agent_running
     planning_agent_running -->|allocate_work_retry| planning_agent_running
-    planning_agent_running -->|exhaust_dispatch_recovery| planning_waiting_human
-    planning_agent_running -->|exhaust_work_recovery| planning_waiting_human
+    planning_agent_running -->|exhaust_recovery| planning_waiting_human
     planning_idle -->|exhaust_work_total| planning_waiting_human
     planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
     planning_waiting_human -->|rearm_dispatch| planning_idle
@@ -330,8 +328,7 @@ flowchart TB
     development_fix_needed -->|request_repair| development_agent_running
     development_agent_running -->|retry_dispatch| development_agent_running
     development_agent_running -->|allocate_work_retry| development_agent_running
-    development_agent_running -->|exhaust_dispatch_recovery| development_waiting_human
-    development_agent_running -->|exhaust_work_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|rearm_dispatch| development_fix_needed
 ```
@@ -355,10 +352,10 @@ flowchart TB
     development_agent_running -->|hold_patch_for_review| development_review_pending
     development_agent_running -->|record_publish_success| development_waiting_ci
     development_agent_running -->|schedule_publish_retry| development_agent_running
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
     development_publishing -->|record_publish_success| development_waiting_ci
     development_publishing -->|schedule_publish_retry| development_publishing
-    development_publishing -->|exhaust_publish_recovery| development_waiting_human
+    development_publishing -->|exhaust_recovery| development_waiting_human
     development_publishing -->|replan_development| development_fix_needed
     development_publishing -->|reject_patch_proposal| development_fix_needed
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
@@ -382,7 +379,7 @@ flowchart TB
     development_waiting_ci -->|launch_development_pr| development_waiting_ci
     development_waiting_ci -->|confirm_development_pr| development_waiting_ci
     development_waiting_ci -->|exhaust_development_pr_launches| development_waiting_human
-    development_waiting_human -->|resume_development_pr<br/>/upstreaming resume| development_waiting_ci
+    development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
 ```
 
 A published head without a recorded development PR gets one through a trusted operation, planned and launched by the controller in `development.waiting_ci` within `operation_launch` (counted on the operation); a PR created at this head with no CI evidence gets the CI bootstrap the same way. A verified receipt with the exact readback takes `confirm_development_pr`. Launches spent without one close the operation as failed and wait for a human; the resume plans a new operation, which adopts a PR a lost launch created.
@@ -408,8 +405,7 @@ flowchart TB
     development_review_pending -->|exhaust_work_total| development_waiting_human
     development_reviewing -->|retry_dispatch| development_reviewing
     development_reviewing -->|allocate_work_retry| development_reviewing
-    development_reviewing -->|exhaust_dispatch_recovery| development_waiting_human
-    development_reviewing -->|exhaust_work_recovery| development_waiting_human
+    development_reviewing -->|exhaust_recovery| development_waiting_human
     development_reviewing -->|reject_patch_review| development_fix_needed
     development_reviewing -->|publish_after_failed_reviews| development_publishing
     development_reviewing -->|accept_patch_review| development_publishing
@@ -456,11 +452,10 @@ flowchart TB
     development_waiting_ci -->|record_head_change| development_waiting_ci
     development_fix_needed -->|record_head_change| development_waiting_ci
     development_waiting_ci -->|return_for_feedback| development_fix_needed
-    development_waiting_ci -->|return_for_series_requirements| development_fix_needed
     development_waiting_ci -->|record_pr_mismatch| development_waiting_human
 ```
 
-Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, after which the collector reruns the jobs again. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair. A push to the development branch while CI is awaited or Work is due records the new head and waits for its CI. Passing CI while feedback is pending returns to `development.fix_needed` (`return_for_feedback`), so a push while Work is due for a review never strands the review. Passing CI on a series that does not meet a series requirement of the plan (a path it must change, such as a changelog entry) returns there too (`return_for_series_requirements`), with the unmet requirements as the feedback of the next Work.
+Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, after which the collector reruns the jobs again. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair. A push to the development branch while CI is awaited or Work is due records the new head and waits for its CI. Passing CI while feedback is pending returns to `development.fix_needed` (`return_for_feedback`), so a push while Work is due for a review never strands the review. Passing CI on a series that does not meet a series requirement of the plan (a path it must change, such as a changelog entry) returns there too (`return_for_feedback`), with the unmet requirements as the feedback of the next Work.
 
 ### Failure case 5: a repair budget is exhausted
 
@@ -615,7 +610,7 @@ flowchart TB
     end
 
     start_1(( )) --> development_agent_running
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
@@ -717,35 +712,35 @@ flowchart TB
     planning_idle -->|require_upstream_access| planning_waiting_human
     planning_idle -->|require_renamed_upstream| planning_waiting_human
     planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
-    planning_waiting_human -->|resume_renamed_upstream| planning_idle
+    planning_waiting_human -->|resume_upstream_read| planning_idle
     planning_waiting_human -->|require_base_branch| planning_waiting_human
     provisioning_idle -->|require_upstream_access| provisioning_waiting_human
     provisioning_idle -->|require_renamed_upstream| provisioning_waiting_human
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
-    provisioning_waiting_human -->|resume_renamed_upstream| provisioning_idle
+    provisioning_waiting_human -->|resume_upstream_read| provisioning_idle
     provisioning_waiting_human -->|require_base_branch| provisioning_waiting_human
     development_fix_needed -->|require_upstream_access| development_waiting_human
     development_fix_needed -->|require_renamed_upstream| development_waiting_human
     development_review_pending -->|require_upstream_access| development_waiting_human
     development_review_pending -->|require_renamed_upstream| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
-    development_waiting_human -->|resume_renamed_upstream| development_fix_needed
+    development_waiting_human -->|resume_upstream_read| development_fix_needed
     development_waiting_human -->|require_base_branch| development_waiting_human
     handoff_review_due -->|require_upstream_access| handoff_waiting_human
     handoff_review_due -->|require_renamed_upstream| handoff_waiting_human
     handoff_review_pending -->|require_upstream_access| handoff_waiting_human
     handoff_review_pending -->|require_renamed_upstream| handoff_waiting_human
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
-    handoff_waiting_human -->|resume_renamed_upstream| handoff_review_due
+    handoff_waiting_human -->|resume_upstream_read| handoff_review_due
     handoff_waiting_human -->|require_base_branch| handoff_waiting_human
     upstream_fix_needed -->|require_upstream_access| upstream_waiting_human
     upstream_fix_needed -->|require_renamed_upstream| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
-    upstream_waiting_human -->|resume_renamed_upstream| upstream_fix_needed
+    upstream_waiting_human -->|resume_upstream_read| upstream_fix_needed
     upstream_waiting_human -->|require_base_branch| upstream_waiting_human
 ```
 
-When GitHub answers for the recorded repository id under another name (renamed or transferred), `require_renamed_upstream` waits at once with the pending action `upstream_unavailable` and no counter; when most failed reads of the retry window could not read the repository itself (deleted, made private, or the token lost access), the exhaustion of `source_reads`, `require_upstream_access`, leads to the same waits with the counter `source_reads`. Either wait is still read: once GitHub answers for the same repository under its recorded name again, `resume_renamed_upstream` ends the first, and once the repository can be read again, `resume_upstream_read` (drawn in failure case 2) ends the second. A resume of the first while the repository is still named otherwise waits again at once. Once GitHub answers for the same repository under its recorded name but the upstream says that the base branch is missing or was renamed, `require_base_branch` replaces the first wait with the wait of the base branch. A repository that moved is parked and abandoned, and a new request names its new name.
+When GitHub answers for the recorded repository id under another name (renamed or transferred), `require_renamed_upstream` waits at once with the pending action `upstream_unavailable` and no counter; when most failed reads of the retry window could not read the repository itself (deleted, made private, or the token lost access), the exhaustion of `source_reads`, `require_upstream_access`, leads to the same waits with the counter `source_reads`. Either wait is still read: once GitHub answers for the same repository under its recorded name again, `resume_upstream_read` ends the first, and once the repository can be read again, the same row (drawn in failure case 2) ends the second. A resume of the first while the repository is still named otherwise waits again at once. Once GitHub answers for the same repository under its recorded name but the upstream says that the base branch is missing or was renamed, `require_base_branch` replaces the first wait with the wait of the base branch. A repository that moved is parked and abandoned, and a new request names its new name.
 
 ### Failure case 4: park, then restart as a clean generation or abandon
 
@@ -885,9 +880,8 @@ flowchart TB
     start_1(( )) --> handoff_review_due
     handoff_review_due -->|exhaust_work_total| handoff_waiting_human
     handoff_agent_running -->|retry_dispatch| handoff_agent_running
-    handoff_agent_running -->|exhaust_dispatch_recovery| handoff_waiting_human
+    handoff_agent_running -->|exhaust_recovery| handoff_waiting_human
     handoff_agent_running -->|allocate_work_retry| handoff_agent_running
-    handoff_agent_running -->|exhaust_work_recovery| handoff_waiting_human
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
     handoff_waiting_human -->|rearm_dispatch| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
@@ -896,9 +890,8 @@ flowchart TB
     handoff_review_pending -->|exhaust_work_total| handoff_waiting_human
     handoff_review_pending -->|request_submission_review| handoff_reviewing
     handoff_reviewing -->|retry_dispatch| handoff_reviewing
-    handoff_reviewing -->|exhaust_dispatch_recovery| handoff_waiting_human
+    handoff_reviewing -->|exhaust_recovery| handoff_waiting_human
     handoff_reviewing -->|allocate_work_retry| handoff_reviewing
-    handoff_reviewing -->|exhaust_work_recovery| handoff_waiting_human
     handoff_reviewing -->|accept_submission_review| handoff_building_upstream_branch
     handoff_building_upstream_branch -->|expire_submission_rewrite| handoff_review_due
     handoff_building_upstream_branch -->|retry_upstream_branch| handoff_building_upstream_branch
@@ -909,7 +902,6 @@ flowchart TB
     handoff_waiting_ci -->|exhaust_interrupted_reruns| handoff_waiting_human
     handoff_waiting_human -->|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
     handoff_waiting_ci -->|require_clean_head_ci| handoff_waiting_human
-    handoff_waiting_human -->|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
     handoff_waiting_ci -->|accept_clean_head_ci| handoff_preparing_submission
     handoff_preparing_submission -->|retry_submission_comment| handoff_preparing_submission
     handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
@@ -982,9 +974,7 @@ flowchart TB
     upstream_agent_running -->|retry_dispatch| upstream_agent_running
     upstream_agent_running -->|allocate_work_retry| upstream_agent_running
     upstream_agent_running -->|schedule_publish_retry| upstream_agent_running
-    upstream_agent_running -->|exhaust_dispatch_recovery| upstream_waiting_human
-    upstream_agent_running -->|exhaust_work_recovery| upstream_waiting_human
-    upstream_agent_running -->|exhaust_publish_recovery| upstream_waiting_human
+    upstream_agent_running -->|exhaust_recovery| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
     upstream_waiting_human -->|rearm_dispatch| upstream_fix_needed
 ```
@@ -1165,9 +1155,7 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming resolve-operation` | `resolve_not_launched` | operation `planned`, operation `applying`, operation `uncertain` | operation `not_launched` |
 | `/upstreaming resume` | `resume_ci` | `development.waiting_human` | `development.waiting_ci` |
 | `/upstreaming resume` | `resume_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
-| `/upstreaming resume` | `resume_clean_head_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_development` | `development.waiting_human` | `development.fix_needed` |
-| `/upstreaming resume` | `resume_development_pr` | `development.waiting_human` | `development.waiting_ci` |
 | `/upstreaming resume` | `resume_patch_review` | `development.waiting_human` | `development.review_pending` |
 | `/upstreaming resume` | `resume_pause` | every non-terminal state | same state |
 | `/upstreaming resume` | `resume_planning` | `planning.waiting_human` | `planning.idle` |

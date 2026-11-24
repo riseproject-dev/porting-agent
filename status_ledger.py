@@ -333,7 +333,7 @@ def _observed(event: dict) -> str:
         parts.append("PyPI: " + "; ".join(
             _close_finding(name, entry) for name, entry in sorted(details["pypi"].items())
             if isinstance(entry, dict)) + ".")
-    if kind == "return_for_series_requirements" \
+    if kind == "return_for_feedback" \
             and isinstance(details.get("series_requirements_unmet"), list):
         # Ids only: they match a fixed pattern; the descriptions are planner
         # text and are not rendered.
@@ -365,7 +365,7 @@ UNAVAILABLE_KINDS = frozenset({"require_base_branch", "exhaust_source_reads",
                                "require_upstream_access", "require_renamed_upstream"})
 REPOSITORY_KINDS = frozenset({"require_upstream_access", "require_renamed_upstream"})
 RENAMED_BASE_KINDS = frozenset({"follow_renamed_base", "resume_renamed_base"})
-READ_AGAIN_KINDS = frozenset({"resume_upstream_read", "resume_renamed_upstream"})
+READ_AGAIN_KINDS = frozenset({"resume_upstream_read"})
 UNAVAILABLE_PENDING = frozenset({lifecycle.BASE_BRANCH_UNAVAILABLE, lifecycle.UPSTREAM_UNAVAILABLE})
 
 
@@ -482,7 +482,7 @@ def _review_unavailable(event: dict, record: dict) -> str | None:
     kind = lifecycle.current_name(event["kind"])
     details = event.get("details") or {}
     pending = record.get("pending_human_action") or {}
-    if kind in ("exhaust_dispatch_recovery", "exhaust_work_recovery") \
+    if kind == "exhaust_recovery" \
             and lifecycle.current_name(details.get("from_state")) == "development.reviewing":
         return "The contribution waits for a human: " + REVIEW_UNAVAILABLE_TEXT
     if kind in REMINDER_VERBS and engine.state_key(record) == "development.waiting_human" \
@@ -519,7 +519,10 @@ def plain_message(event: dict, record: dict) -> str | None:
     if kind in READ_AGAIN_KINDS:
         what = ("repository" if details.get("pending_human_action") == lifecycle.UPSTREAM_UNAVAILABLE
                 else f"base branch {_branch(details)}")
-        how = (" under its recorded name" if kind == "resume_renamed_upstream" else "")
+        # The wait a renamed repository caused (an event written before
+        # the merge of the two resumes names its own verb).
+        renamed = details.get("cause") == "renamed" or event["kind"] == "resume_renamed_upstream"
+        how = (" under its recorded name" if renamed else "")
         return (f"The upstream {what} can be read again{how}, so the wait for it ends without "
                 "a command, and the contribution continues with the step that was due.")
     if kind == "verify_upstream_pr" and details.get("renamed_to"):

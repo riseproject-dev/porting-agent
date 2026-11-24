@@ -725,7 +725,7 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
         # ends once the upstream can be read again (`resume_upstream_read`),
         # and so is the wait a renamed repository caused (no counter), which
         # ends once GitHub answers for it under its recorded name again
-        # (`resume_renamed_upstream`).
+        # (`resume_upstream_read`).
         reads_wait = pending.get("counter") == "source_reads"
         moved_wait = pending.get("kind") == lifecycle.UPSTREAM_UNAVAILABLE \
             and pending.get("counter") is None

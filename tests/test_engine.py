@@ -138,7 +138,7 @@ def scenario(state, verb, t):
         rec["last_ci_evidence_id"] = "ci-2-7-1"
     if lc.REFRESH_USED in guards:
         rec["automatic_refresh_used"] = True
-    if lc.PENDING_FEEDBACK in guards:
+    if lc.FEEDBACK_OR_UNMET in guards:
         rec["pending_feedback_evidence_ids"] = ["review-1"]
     if "exact clean head" in guards:
         rec["clean_head_sha"] = SHA_A
@@ -148,8 +148,18 @@ def scenario(state, verb, t):
         rec["refresh"] = dict(SAMPLE["refresh"])
     if "work_recovery and work_total remain" in guards:
         counts.update(work_recovery=1, work_total=0)
-    if "work_recovery or work_total exhausted" in guards:
-        counts["work_recovery"] = lc.budget_limit("work_recovery", POLICY)
+    if lc.RECOVERY_EXHAUSTED in guards:
+        # The first failure the row names: a lost dispatch, a terminal Work
+        # graph, or a failed publication.
+        kinds = next(x.partition("=")[2] for x in t.effects.sets
+                     if x.startswith("pending_human_action="))
+        failure = next((f for f, (_b, kind) in lc.RECOVERY_FAILURES.items()
+                        if kind in kinds.split("|")), "dispatch_lost")
+        facts.add(failure)
+        budget = lc.RECOVERY_FAILURES[failure][0][-1]
+        if failure != "publication_infrastructure_error":
+            rec["active_work"] = copy.deepcopy(SAMPLE["active_work"])
+        counts[budget] = lc.budget_limit(budget, POLICY)
     if guards & {lc.REPAIR_BUDGETS_REMAIN, lc.REVISION_BUDGETS_REMAIN,
                  lc.REVIEW_REVISION_BUDGETS_REMAIN}:
         counts.update(repair_attempts_cluster=0, no_progress=0, work_total=0)
@@ -158,7 +168,7 @@ def scenario(state, verb, t):
     if lc.REVISION_BUDGET_EXHAUSTED in guards:
         counts.update(repair_attempts_cluster=0, no_progress=0,
                       work_total=lc.budget_limit("work_total", POLICY))
-    if lc.READS_CAUSED_WAIT in guards:
+    if lc.UPSTREAM_READ_WAIT in guards:
         rec["pending_human_action"]["counter"] = "source_reads"
     if lc.RENAME_CAUSED_WAIT in guards:
         rec["pending_human_action"].update(kind=lc.UPSTREAM_UNAVAILABLE, counter=None)
@@ -297,7 +307,10 @@ class TestTableIsExercised(unittest.TestCase):
                     self.assertEqual(new["budget"]["reruns"], engine.fresh_reruns(new))
                 for entry in e.sets:
                     name, literal, value = entry.partition("=")
-                    if name == "pending_human_action":
+                    if name == "pending_human_action" and "|" in value:
+                        # One of the listed kinds, the one of the failure.
+                        self.assertIn(new[name]["kind"], value.split("|"))
+                    elif name == "pending_human_action":
                         self.assertEqual(new[name]["kind"], value or kwargs["values"][name])
                         self.assertEqual(new[name]["requested_at"], NOW)
                     elif literal:
@@ -319,9 +332,8 @@ class TestTableIsExercised(unittest.TestCase):
         """The nomination, the return for feedback or series requirements and
         the Work allocations of development and upstream review wait for an
         open operation, through the record and through the store."""
-        waiting = {"nominate_for_handoff", "return_for_feedback",
-                   "return_for_series_requirements", "request_patch", "request_repair",
-                   "request_upstream_revision", "request_review_revision"}
+        waiting = {"nominate_for_handoff", "return_for_feedback", "request_patch",
+                   "request_repair", "request_upstream_revision", "request_review_revision"}
         seen = set()
         for state, verb, t, _target in all_rows():
             if verb not in waiting:

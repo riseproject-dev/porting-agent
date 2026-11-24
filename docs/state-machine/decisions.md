@@ -95,7 +95,7 @@ flowchart TB
         upstream_fix_needed["upstream_review.fix_needed"]
     end
 
-    upstream_agent_running -->|exhaust_dispatch_recovery| upstream_waiting_human
+    upstream_agent_running -->|exhaust_recovery| upstream_waiting_human
     upstream_waiting_ci -->|record_pr_closed_unmerged| upstream_waiting_human
     upstream_waiting_human ==>|resume_upstream_review<br/>/upstreaming resume| upstream_waiting_ci
     upstream_waiting_human ==>|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
@@ -219,9 +219,9 @@ flowchart TB
 
 ### 9. Publication recovery exhaustion and its resume
 
-From which states `exhaust_publish_recovery` is taken, and where `resume_development` leads.
+From which states the exhaustion of `publish_recovery` (`exhaust_recovery`) is taken, and where `resume_development` leads.
 
-**Decision.** In development, `exhaust_publish_recovery` leaves only `development.agent_running`. `resume_development` leads to `development.fix_needed`, clears `pending_publication`, and requests fresh Work. Automatic publish retries still reuse the Result.
+**Decision.** In development, the exhaustion of `publish_recovery` leaves only the states that hold a publication, `development.agent_running` and `development.publishing`. `resume_development` leads to `development.fix_needed`, clears `pending_publication`, and requests fresh Work. Automatic publish retries still reuse the Result.
 
 ```mermaid
 flowchart TB
@@ -232,7 +232,7 @@ flowchart TB
     end
 
     development_agent_running -->|schedule_publish_retry| development_agent_running
-    development_agent_running ==>|exhaust_publish_recovery| development_waiting_human
+    development_agent_running ==>|exhaust_recovery| development_waiting_human
     development_waiting_human ==>|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
@@ -240,7 +240,7 @@ flowchart TB
 
 Whether dispatch exhaustion and Work exhaustion lead to the same place.
 
-**Decision.** Both wait for a human: `exhaust_work_recovery` leads to the phase's `waiting_human` in planning, development, and upstream review, like `exhaust_dispatch_recovery`. An observed development PR that does not match the record takes `record_pr_mismatch` to `development.waiting_human`.
+**Decision.** Both wait for a human: the exhaustion of `dispatch_recovery` leads to the phase's `waiting_human` in planning, development, and upstream review, like the exhaustion of `work_recovery` (one row, `exhaust_recovery`). An observed development PR that does not match the record takes `record_pr_mismatch` to `development.waiting_human`.
 
 ```mermaid
 flowchart TB
@@ -250,8 +250,7 @@ flowchart TB
         development_waiting_human["development.waiting_human"]
     end
 
-    development_agent_running -->|exhaust_dispatch_recovery| development_waiting_human
-    development_agent_running ==>|exhaust_work_recovery| development_waiting_human
+    development_agent_running ==>|exhaust_recovery| development_waiting_human
     development_waiting_ci ==>|record_pr_mismatch| development_waiting_human
 ```
 
@@ -383,7 +382,7 @@ flowchart TB
 
 What happens when revision Work in upstream review is rejected or reports no change.
 
-**Decision.** A rejected proposal takes `reject_patch_proposal` to `upstream_review.fix_needed` and charges `no_progress`. When no change is needed, `require_reviewer_answer` leads to `upstream_review.waiting_human` with a pending action to answer the reviewer. `upstream_review.agent_running` has `schedule_publish_retry` and `exhaust_publish_recovery`. Every exhaustion in upstream review leads to `upstream_review.waiting_human`.
+**Decision.** A rejected proposal takes `reject_patch_proposal` to `upstream_review.fix_needed` and charges `no_progress`. When no change is needed, `require_reviewer_answer` leads to `upstream_review.waiting_human` with a pending action to answer the reviewer. `upstream_review.agent_running` has `schedule_publish_retry` and `exhaust_recovery`. Every exhaustion in upstream review leads to `upstream_review.waiting_human`.
 
 ```mermaid
 flowchart TB
@@ -399,7 +398,7 @@ flowchart TB
     upstream_agent_running ==>|reject_patch_proposal| upstream_fix_needed
     upstream_agent_running ==>|require_reviewer_answer| upstream_waiting_human
     upstream_agent_running ==>|schedule_publish_retry| upstream_agent_running
-    upstream_agent_running ==>|exhaust_publish_recovery| upstream_waiting_human
+    upstream_agent_running ==>|exhaust_recovery| upstream_waiting_human
     upstream_fix_needed -->|exhaust_repair_attempts| upstream_waiting_human
 ```
 
@@ -492,7 +491,7 @@ flowchart TB
     planning_agent_running -->|retry_dispatch| planning_agent_running
     planning_agent_running ==>|allocate_work_retry| planning_agent_running
     planning_agent_running ==>|reject_plan| planning_idle
-    planning_agent_running -->|exhaust_dispatch_recovery| planning_waiting_human
+    planning_agent_running -->|exhaust_recovery| planning_waiting_human
     planning_waiting_human ==>|record_reminder| planning_waiting_human
 ```
 
@@ -784,7 +783,7 @@ flowchart TB
     end
 
     handoff_review_due -->|exhaust_work_total| handoff_waiting_human
-    handoff_agent_running -->|exhaust_work_recovery| handoff_waiting_human
+    handoff_agent_running -->|exhaust_recovery| handoff_waiting_human
     handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
     handoff_waiting_ci -->|exhaust_interrupted_reruns| handoff_waiting_human
     handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
@@ -953,9 +952,9 @@ flowchart TB
 
 ### O16. Exhaustion of `work_total` found while Work is running
 
-Whether the resume after `exhaust_work_recovery` starts `work_total` again when `work_total` was the exhausted budget.
+Whether the resume after `exhaust_recovery` starts `work_total` again when `work_total` was the exhausted budget.
 
-**Decision.** It does. When a Work retry cannot be allocated because `work_total` is exhausted, `exhaust_work_recovery` records `pending_human_action.counter=work_total`, and one resume starts it again, in planning, development, and upstream review. When `work_recovery` itself is exhausted, it names `work_recovery`. The slice shows planning and development; in upstream review `resume_upstream_revision` does the same.
+**Decision.** It does. When a Work retry cannot be allocated because `work_total` is exhausted, `exhaust_recovery` records `pending_human_action.counter=work_total`, and one resume starts it again, in planning, development, and upstream review. When `work_recovery` itself is exhausted, it names `work_recovery`. The slice shows planning and development; in upstream review `resume_upstream_revision` does the same.
 
 ```mermaid
 flowchart TB
@@ -970,9 +969,9 @@ flowchart TB
         development_fix_needed["development.fix_needed"]
     end
 
-    planning_agent_running ==>|exhaust_work_recovery| planning_waiting_human
+    planning_agent_running ==>|exhaust_recovery| planning_waiting_human
     planning_waiting_human ==>|resume_planning<br/>/upstreaming resume| planning_idle
-    development_agent_running ==>|exhaust_work_recovery| development_waiting_human
+    development_agent_running ==>|exhaust_recovery| development_waiting_human
     development_waiting_human ==>|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
@@ -1195,7 +1194,7 @@ flowchart TB
 
 Which credential reruns the jobs of a fork's workflow run, how a rerun is recorded, and which row applies when it fails.
 
-**Decision.** No new workflow and nothing in the dispatcher. A failure the repair worker reports not caused by the patch (`no_change`) is rerun by the trusted publication job of the worker run, or of its publish-only retry, with a token for the one verified fork that carries only `actions: write`, bound to the exact head and attempt. Interrupted CI is rerun by the development PR workflow in `development.waiting_ci`, and in `handoff.waiting_ci` by the handoff workflow, launched by the controller, with the same kind of token; each workflow executes only the reruns of its own phase. A rerun is an operation of kind `ci_rerun` whose receipt is the readback of the new run attempt; the attempt is a monotonic counter, so every retry reads it first and a rerun operation is never left `uncertain`. `request_ci_rerun` is taken only once the rerun is read back or nothing needed rerunning; a rerun that is refused or not read back, and a `no_change` Result without the receipt, is a failed publication (`schedule_publish_retry`, then `exhaust_publish_recovery`), and a moved head takes `replan_development`. A failed interrupted rerun fires no row: the next observation takes `rerun_interrupted_ci` again within `interrupted_reruns`, then `exhaust_interrupted_reruns`; a planned rerun of a paused contribution is closed the same way, since no receipt can arrive while paused. The wait after `request_ci_rerun` has no pending action and no reminder; CI ends it. `resume_ci` launches nothing: it restarts `interrupted_reruns`, and the first observation after it reruns. Interrupted means a required job that was cancelled, or a blocking job that failed with a runner-loss annotation, so a head whose CI the gate would read as failed is never nominated; `timed_out` and every other executed failure are real failures and win over a rerun. Only `development.waiting_ci` and `handoff.waiting_ci` classify lost runners. Each run is rerun with `rerun-failed-jobs`, at most 5 runs per request, and a rerun reserves no runner capacity. The repair attempt charged at allocation is not refunded.
+**Decision.** No new workflow and nothing in the dispatcher. A failure the repair worker reports not caused by the patch (`no_change`) is rerun by the trusted publication job of the worker run, or of its publish-only retry, with a token for the one verified fork that carries only `actions: write`, bound to the exact head and attempt. Interrupted CI is rerun by the development PR workflow in `development.waiting_ci`, and in `handoff.waiting_ci` by the handoff workflow, launched by the controller, with the same kind of token; each workflow executes only the reruns of its own phase. A rerun is an operation of kind `ci_rerun` whose receipt is the readback of the new run attempt; the attempt is a monotonic counter, so every retry reads it first and a rerun operation is never left `uncertain`. `request_ci_rerun` is taken only once the rerun is read back or nothing needed rerunning; a rerun that is refused or not read back, and a `no_change` Result without the receipt, is a failed publication (`schedule_publish_retry`, then `exhaust_recovery`), and a moved head takes `replan_development`. A failed interrupted rerun fires no row: the next observation takes `rerun_interrupted_ci` again within `interrupted_reruns`, then `exhaust_interrupted_reruns`; a planned rerun of a paused contribution is closed the same way, since no receipt can arrive while paused. The wait after `request_ci_rerun` has no pending action and no reminder; CI ends it. `resume_ci` launches nothing: it restarts `interrupted_reruns`, and the first observation after it reruns. Interrupted means a required job that was cancelled, or a blocking job that failed with a runner-loss annotation, so a head whose CI the gate would read as failed is never nominated; `timed_out` and every other executed failure are real failures and win over a rerun. Only `development.waiting_ci` and `handoff.waiting_ci` classify lost runners. Each run is rerun with `rerun-failed-jobs`, at most 5 runs per request, and a rerun reserves no runner capacity. The repair attempt charged at allocation is not refunded.
 
 ```mermaid
 flowchart TB
@@ -1208,7 +1207,7 @@ flowchart TB
 
     development_agent_running ==>|request_ci_rerun| development_waiting_ci
     development_agent_running -->|schedule_publish_retry| development_agent_running
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
     development_agent_running -->|replan_development| development_fix_needed
     development_waiting_ci ==>|rerun_interrupted_ci| development_waiting_ci
     development_waiting_ci ==>|exhaust_interrupted_reruns| development_waiting_human
@@ -1244,7 +1243,7 @@ flowchart TB
 
 What a Result whose push was not read back (`uncertain`) takes in `development.agent_running`.
 
-**Decision.** In development, an uncertain Result is a failed publication, exactly as in upstream review: it takes `schedule_publish_retry` (or `exhaust_publish_recovery`), which clears the Work and holds the Result, so no Work recovery takes its completed graph. `record_publish_success` is taken only when the publication is confirmed: by a `published` Result (its own operation confirmed), by the publish-only retry reading back the head the lost push left (it confirms the open operation of the earlier attempt when its Result is folded), or by the operation of an earlier attempt of the held Result being confirmed in the operation store, including a retry rejected as stale behind it. The row then names the confirmed operation, which the development PR request requires. The retry is bounded by `publish_recovery`, then `exhaust_publish_recovery` leads to `development.waiting_human` with the pending action `publication_infrastructure_failure` and the reminders of every human wait. No new state, verb, budget, flag, or record field.
+**Decision.** In development, an uncertain Result is a failed publication, exactly as in upstream review: it takes `schedule_publish_retry` (or `exhaust_recovery`), which clears the Work and holds the Result, so no Work recovery takes its completed graph. `record_publish_success` is taken only when the publication is confirmed: by a `published` Result (its own operation confirmed), by the publish-only retry reading back the head the lost push left (it confirms the open operation of the earlier attempt when its Result is folded), or by the operation of an earlier attempt of the held Result being confirmed in the operation store, including a retry rejected as stale behind it. The row then names the confirmed operation, which the development PR request requires. The retry is bounded by `publish_recovery`, then `exhaust_recovery` leads to `development.waiting_human` with the pending action `publication_infrastructure_failure` and the reminders of every human wait. No new state, verb, budget, flag, or record field.
 
 ```mermaid
 flowchart TB
@@ -1256,7 +1255,7 @@ flowchart TB
     end
 
     development_agent_running -->|schedule_publish_retry| development_agent_running
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
     development_agent_running ==>|record_publish_success| development_waiting_ci
     development_agent_running -->|replan_development| development_fix_needed
 ```
@@ -1306,7 +1305,7 @@ flowchart TB
 
 Whether a contribution-policy item of the plan that needs a change to the series (for example a changelog entry) blocks the nomination for handoff, or is requested as development Work. Before, nothing checked it until the submission rewrite and its review, which sent the series back after a human had asked for `submit-upstream`.
 
-**Decision.** It is requested as development Work. A plan of schema version 4 records its measurable items as `contribution_guidelines.series_requirements`, each a path the non-debug commits of the series must change, and each path is one of the plan's `allowed_paths`. When CI passes on the exact head without pending feedback, the observation reads the changed paths of the series once: `nominate_for_handoff` requires every requirement met (or none recorded, or a series too large to read, which the event says), and `return_for_series_requirements` leads to `development.fix_needed` otherwise. That row records the passing CI evidence, records the unmet requirements as `series_requirements` evidence, sets it as pending feedback, and bumps the revision; `request_patch` then requests a repair that carries it, and the trusted worker gate rejects a patch whose non-debug commits still do not change a matching path while the fork head is the head the evidence names. No budget is charged by the row: the Work is bounded by `no_progress` and `work_total`, then the automatic refresh, park, or a human wait. Qualitative items stay with the submission rewrite and its review (`reject_submission_rewrite`, `reject_submission_review`). A plan of an earlier version records none. The check verifies that every state that blocks a nomination on the requirements has such a row.
+**Decision.** It is requested as development Work. A plan of schema version 4 records its measurable items as `contribution_guidelines.series_requirements`, each a path the non-debug commits of the series must change, and each path is one of the plan's `allowed_paths`. When CI passes on the exact head without pending feedback, the observation reads the changed paths of the series once: `nominate_for_handoff` requires every requirement met (or none recorded, or a series too large to read, which the event says), and `return_for_feedback` leads to `development.fix_needed` otherwise. That row records the passing CI evidence, records the unmet requirements as `series_requirements` evidence, sets it as pending feedback, and bumps the revision; `request_patch` then requests a repair that carries it, and the trusted worker gate rejects a patch whose non-debug commits still do not change a matching path while the fork head is the head the evidence names. No budget is charged by the row: the Work is bounded by `no_progress` and `work_total`, then the automatic refresh, park, or a human wait. Qualitative items stay with the submission rewrite and its review (`reject_submission_rewrite`, `reject_submission_review`). A plan of an earlier version records none. The check verifies that every state that blocks a nomination on the requirements has such a row.
 
 ```mermaid
 flowchart TB
@@ -1320,8 +1319,7 @@ flowchart TB
     end
 
     development_waiting_ci ==>|nominate_for_handoff| handoff_awaiting_submission
-    development_waiting_ci ==>|return_for_series_requirements| development_fix_needed
-    development_waiting_ci -->|return_for_feedback| development_fix_needed
+    development_waiting_ci ==>|return_for_feedback| development_fix_needed
     development_fix_needed -->|request_patch| development_agent_running
     development_agent_running -->|reject_patch_proposal| development_fix_needed
     development_agent_running -->|record_publish_success| development_waiting_ci
@@ -1331,7 +1329,7 @@ flowchart TB
 
 When a Work graph that the queue reports completed is terminal without a usable Result. The graph becomes completed in the `safe_outputs` job of the worker, before its `publish` job uploads the `porting-publication` artifact, and `work_recovery` allows a single retry, so a tick between the two retried healthy Work and the Result that arrived later was recorded as late.
 
-**Decision.** A cancelled graph is terminal without a usable Result at once: the publish job runs only for a completed outcome. A completed graph is when a publication collected in the tick names the Work and left it requested, when the worker run the queue bound to it (`queue_result.work_runs`) ended or is gone without an unexpired `porting-publication` artifact, when the queue binds no run to it, or when the artifact of the ended run was not collected within 60 minutes of the end of the run. While the run has not ended, or was not read in the tick, nothing is decided and nothing is charged: the wait is derived from the queue and the run each tick, with no new state, flag, record field or deadline, and GitHub's job timeouts bound it. The event of `allocate_work_retry` or `exhaust_work_recovery` names `worker_run`, `run_conclusion` and `result`. A Result collected after the retry still takes `record_late_effect`. The same reading applies in `planning.agent_running` and `upstream_review.agent_running`.
+**Decision.** A cancelled graph is terminal without a usable Result at once: the publish job runs only for a completed outcome. A completed graph is when a publication collected in the tick names the Work and left it requested, when the worker run the queue bound to it (`queue_result.work_runs`) ended or is gone without an unexpired `porting-publication` artifact, when the queue binds no run to it, or when the artifact of the ended run was not collected within 60 minutes of the end of the run. While the run has not ended, or was not read in the tick, nothing is decided and nothing is charged: the wait is derived from the queue and the run each tick, with no new state, flag, record field or deadline, and GitHub's job timeouts bound it. The event of `allocate_work_retry` or `exhaust_recovery` names `worker_run`, `run_conclusion` and `result`. A Result collected after the retry still takes `record_late_effect`. The same reading applies in `planning.agent_running` and `upstream_review.agent_running`.
 
 ```mermaid
 flowchart TB
@@ -1346,13 +1344,13 @@ flowchart TB
     end
 
     development_agent_running ==>|allocate_work_retry| development_agent_running
-    development_agent_running ==>|exhaust_work_recovery| development_waiting_human
+    development_agent_running ==>|exhaust_recovery| development_waiting_human
     development_agent_running ==>|record_late_effect| development_agent_running
     handoff_agent_running ==>|allocate_work_retry| handoff_agent_running
-    handoff_agent_running ==>|exhaust_work_recovery| handoff_waiting_human
+    handoff_agent_running ==>|exhaust_recovery| handoff_waiting_human
     handoff_agent_running ==>|record_late_effect| handoff_agent_running
     handoff_reviewing ==>|allocate_work_retry| handoff_reviewing
-    handoff_reviewing ==>|exhaust_work_recovery| handoff_waiting_human
+    handoff_reviewing ==>|exhaust_recovery| handoff_waiting_human
     handoff_reviewing ==>|record_late_effect| handoff_reviewing
 ```
 
@@ -1360,7 +1358,7 @@ flowchart TB
 
 Which rows of the table take the operation that opens the development PR of a published head (`dev_pr_create`) and the CI bootstrap (`dev_pr_update`), and what happens when its launches never return a verified receipt.
 
-**Decision.** Four rows in `development.waiting_ci` and its wait, with no new state, budget or record field. The controller records the intent and takes `launch_development_pr` in the same tick, and again for each launch after 300 seconds without a verified receipt, charging `operation_launch` (counted on the operation, shared with fork provisioning). A verified receipt with the exact readback takes `confirm_development_pr`, which records `fork.pr_number` without a revision bump; it is also taken while paused. Launches spent without one take `exhaust_development_pr_launches` to `development.waiting_human` with `development_pr_launch_exhausted`, and the operation is closed as failed and released so that `park`, `refresh` and the stale resume apply; `resume_development_pr` returns to `development.waiting_ci` with a new revision and starts `operation_launch` again, and `resume_development` excludes this pending action. The workflow and the reconciler accept an open `riscv64-dev` PR that carries this contribution's marker of any revision or head, so a PR a lost launch left is adopted. A planned operation of a paused contribution, or one that no longer matches the record, is closed as failed and released without a row, and a receipt outside `development.waiting_ci` closes it and keeps the state. While a `Development PR <operation id>` run is queued or in progress, or the run list is unreadable, the operation is neither launched again nor exhausted, for at most 1800 seconds after its last launch.
+**Decision.** Four rows in `development.waiting_ci` and its wait, with no new state, budget or record field. The controller records the intent and takes `launch_development_pr` in the same tick, and again for each launch after 300 seconds without a verified receipt, charging `operation_launch` (counted on the operation, shared with fork provisioning). A verified receipt with the exact readback takes `confirm_development_pr`, which records `fork.pr_number` without a revision bump; it is also taken while paused. Launches spent without one take `exhaust_development_pr_launches` to `development.waiting_human` with `development_pr_launch_exhausted`, and the operation is closed as failed and released so that `park`, `refresh` and the stale resume apply; `resume_ci` returns to `development.waiting_ci` with a new revision and starts `operation_launch` again, and `resume_development` excludes this pending action. The workflow and the reconciler accept an open `riscv64-dev` PR that carries this contribution's marker of any revision or head, so a PR a lost launch left is adopted. A planned operation of a paused contribution, or one that no longer matches the record, is closed as failed and released without a row, and a receipt outside `development.waiting_ci` closes it and keeps the state. While a `Development PR <operation id>` run is queued or in progress, or the run list is unreadable, the operation is neither launched again nor exhausted, for at most 1800 seconds after its last launch.
 
 ```mermaid
 flowchart TB
@@ -1375,7 +1373,7 @@ flowchart TB
     development_waiting_ci ==>|launch_development_pr| development_waiting_ci
     development_waiting_ci ==>|confirm_development_pr| development_waiting_ci
     development_waiting_ci ==>|exhaust_development_pr_launches| development_waiting_human
-    development_waiting_human ==>|resume_development_pr<br/>/upstreaming resume| development_waiting_ci
+    development_waiting_human ==>|resume_ci<br/>/upstreaming resume| development_waiting_ci
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
@@ -1630,14 +1628,14 @@ flowchart TB
     planning_idle ==>|dispatch_planning| planning_agent_running
     planning_idle ==>|exhaust_work_total| planning_waiting_human
     planning_agent_running -->|allocate_work_retry| planning_agent_running
-    planning_agent_running ==>|exhaust_work_recovery| planning_waiting_human
+    planning_agent_running ==>|exhaust_recovery| planning_waiting_human
 ```
 
 ### No automatic park from upstream review
 
 A generation restarted after an automatic park would write the fork ref that is the upstream PR head.
 
-**Change.** `exhaust_work_recovery` and `exhaust_repair_attempts` no longer park from `upstream_review`; they wait for a human. `restart_generation` requires that no upstream PR is open.
+**Change.** `exhaust_recovery` and `exhaust_repair_attempts` no longer park from `upstream_review`; they wait for a human. `restart_generation` requires that no upstream PR is open.
 
 ```mermaid
 flowchart TB
@@ -1653,7 +1651,7 @@ flowchart TB
         queued_idle["queued.idle"]
     end
 
-    upstream_agent_running ==>|exhaust_work_recovery| upstream_waiting_human
+    upstream_agent_running ==>|exhaust_recovery| upstream_waiting_human
     upstream_fix_needed ==>|exhaust_repair_attempts| upstream_waiting_human
     upstream_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
     parked_idle ==>|restart_generation<br/>/upstreaming refresh| queued_idle
@@ -1818,7 +1816,7 @@ flowchart TB
 
 Which branches development and the upstream PR use, whether the development PR is closed at submission, and how the upstream PR follows the project's pull request template, contributing instructions, commit conventions, and reviewers.
 
-**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and worker Work, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the plan's measured commit conventions (squashing only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections: `accept_submission_rewrite` bumps the revision and leads to `handoff.review_pending`, where `request_submission_review` allocates separate uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews exactly the rewritten series and text against the template, the contributing instructions, the commit conventions, and the reviewers' expectations and can change nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check (`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a Work retry (`allocate_work_retry`, `exhaust_work_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
+**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and worker Work, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the plan's measured commit conventions (squashing only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections: `accept_submission_rewrite` bumps the revision and leads to `handoff.review_pending`, where `request_submission_review` allocates separate uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews exactly the rewritten series and text against the template, the contributing instructions, the commit conventions, and the reviewers' expectations and can change nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check (`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a Work retry (`allocate_work_retry`, `exhaust_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
 
 ```mermaid
 flowchart TB
@@ -1862,7 +1860,7 @@ flowchart TB
 
 How CI runs on a rebuilt `riscv64` head that has another tree than the candidate head, and what happens when it never runs.
 
-**Change.** The build of `riscv64` (`confirm_clean_head`) dispatches the project's required CI workflow on `riscv64` when the workflow, read as data at the clean head, accepts `workflow_dispatch` with no required input, and reads its run back by head; the fork token gains `actions: write` on the one fork for it. `confirm_clean_head` records when the wait for CI began (`clean_head_ci_since`). `require_clean_head_ci` leads from `handoff.waiting_ci` to `handoff.waiting_human` with the pending action `clean_head_ci_missing` at once when no run exists and the workflow cannot be dispatched, and in any case when CI is not complete 12 hours after the wait began; reminders apply, and `resume_clean_head_ci` returns to `handoff.waiting_ci`, observes CI again, and starts the wait again. The wait also starts again when CI is started again: on `rerun_interrupted_ci` there and on `resume_ci` from the human wait.
+**Change.** The build of `riscv64` (`confirm_clean_head`) dispatches the project's required CI workflow on `riscv64` when the workflow, read as data at the clean head, accepts `workflow_dispatch` with no required input, and reads its run back by head; the fork token gains `actions: write` on the one fork for it. `confirm_clean_head` records when the wait for CI began (`clean_head_ci_since`). `require_clean_head_ci` leads from `handoff.waiting_ci` to `handoff.waiting_human` with the pending action `clean_head_ci_missing` at once when no run exists and the workflow cannot be dispatched, and in any case when CI is not complete 12 hours after the wait began; reminders apply, and `resume_ci` returns to `handoff.waiting_ci`, observes CI again, and starts the wait again. The wait also starts again when CI is started again: on `rerun_interrupted_ci` there and on `resume_ci` from the human wait.
 
 ```mermaid
 flowchart TB
@@ -1874,7 +1872,7 @@ flowchart TB
 
     handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci ==>|require_clean_head_ci| handoff_waiting_human
-    handoff_waiting_human ==>|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
+    handoff_waiting_human ==>|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
 ```
 
 ### Head change while development Work is due
@@ -1963,7 +1961,7 @@ flowchart TB
 
 What a worker remembers of the work before it.
 
-**Change.** The owner asked that "the report generated by a successful worker must be fed to subsequent runs of the worker", "so that it remembers everything that was tried before, so it doesn't flip flop", and decided: "I want the report from a successful worker to be saved for future worker only. If a worker failed, you can just discard the report". Every patch, repair, revision, submission rewrite and submission review Work returns a report (`schemas/worker_report.schema.json`, at most 32 KiB, a limit the worker is told); a Work whose payload carries a history and returns an otherwise acceptable Result without a valid report is rejected by the trusted gate (`reject_patch_proposal`, or Work without a usable Result at submission), while a blocked Result stays `worker_blocked` whatever its report. The report is stored as `worker_report` evidence only when one of six rows folds the Result: `record_publish_success`, `record_revision_publish_success`, `accept_submission_rewrite`, `accept_submission_review`, and the two accepted no-change rows `request_ci_rerun` and `require_reviewer_answer`. Such a row never drops the report of Work that carries a history: the reconciler checks the bytes the gate checked, and a report it cannot store pauses the contribution instead of folding the Result without it. A worker counts as successful when its own Result is accepted, whatever CI says afterwards: "if the CI fails after a worker pass, the report from the worker should absolutely be used", so the CI entry of the history names the report of the head it ran on. A Result whose push may have landed (an `uncertain` Result held for a publish-only retry, or a retry rejected as stale behind the operation of an earlier attempt) stores its report when it is folded, with the commit it proposed, since its artifact is never read again whatever ends the hold; a later success fold of the same run upgrades that record. Every other fold discards the report, and the rejection reasons of a failed worker are not fed forward either; a rewrite or review with a fail verdict is a rejection, while its verdict and reasons stay recorded as submission evidence. Planning writes no report: the verified plan is its report. When Work is allocated, the tick records its history (`work_history` evidence, derived from the Work id) in the same commit: the steering of the owner and one chronological timeline of every successful report, the CI runs and reviews that followed, and the submission verdicts, all generations included. It is capped at 64 KiB and condensed deterministically, never dropped uncounted: two reports are kept longest, the newest by the Work it describes and the report of the head CI ran on (so a CI rerun or a reviewer answer, which publish nothing, never displaces the report of the worker whose head failed), with the CI linked to it; the head a report left is the commit of the confirmed operation its row names, and a report whose push was not read back records the commit it proposed, which matches only a head that is that very commit; they take a reduced form, every section kept, before any of the owner's steering is folded, and everything else gives way first, oldest first. The payload names it by pinned commit and SHA-256, and a trusted pre-agent step fetches and verifies it; the dispatcher defers Work whose history is not committed yet, and dispatch recovery charges nothing for it for two hours, after which a history never recorded ends in the human wait of `exhaust_dispatch_recovery`, whose entry says so; the tick that records a late history launches the dispatcher. No record field changes.
+**Change.** The owner asked that "the report generated by a successful worker must be fed to subsequent runs of the worker", "so that it remembers everything that was tried before, so it doesn't flip flop", and decided: "I want the report from a successful worker to be saved for future worker only. If a worker failed, you can just discard the report". Every patch, repair, revision, submission rewrite and submission review Work returns a report (`schemas/worker_report.schema.json`, at most 32 KiB, a limit the worker is told); a Work whose payload carries a history and returns an otherwise acceptable Result without a valid report is rejected by the trusted gate (`reject_patch_proposal`, or Work without a usable Result at submission), while a blocked Result stays `worker_blocked` whatever its report. The report is stored as `worker_report` evidence only when one of six rows folds the Result: `record_publish_success`, `record_revision_publish_success`, `accept_submission_rewrite`, `accept_submission_review`, and the two accepted no-change rows `request_ci_rerun` and `require_reviewer_answer`. Such a row never drops the report of Work that carries a history: the reconciler checks the bytes the gate checked, and a report it cannot store pauses the contribution instead of folding the Result without it. A worker counts as successful when its own Result is accepted, whatever CI says afterwards: "if the CI fails after a worker pass, the report from the worker should absolutely be used", so the CI entry of the history names the report of the head it ran on. A Result whose push may have landed (an `uncertain` Result held for a publish-only retry, or a retry rejected as stale behind the operation of an earlier attempt) stores its report when it is folded, with the commit it proposed, since its artifact is never read again whatever ends the hold; a later success fold of the same run upgrades that record. Every other fold discards the report, and the rejection reasons of a failed worker are not fed forward either; a rewrite or review with a fail verdict is a rejection, while its verdict and reasons stay recorded as submission evidence. Planning writes no report: the verified plan is its report. When Work is allocated, the tick records its history (`work_history` evidence, derived from the Work id) in the same commit: the steering of the owner and one chronological timeline of every successful report, the CI runs and reviews that followed, and the submission verdicts, all generations included. It is capped at 64 KiB and condensed deterministically, never dropped uncounted: two reports are kept longest, the newest by the Work it describes and the report of the head CI ran on (so a CI rerun or a reviewer answer, which publish nothing, never displaces the report of the worker whose head failed), with the CI linked to it; the head a report left is the commit of the confirmed operation its row names, and a report whose push was not read back records the commit it proposed, which matches only a head that is that very commit; they take a reduced form, every section kept, before any of the owner's steering is folded, and everything else gives way first, oldest first. The payload names it by pinned commit and SHA-256, and a trusted pre-agent step fetches and verifies it; the dispatcher defers Work whose history is not committed yet, and dispatch recovery charges nothing for it for two hours, after which a history never recorded ends in the human wait of `exhaust_recovery`, whose entry says so; the tick that records a late history launches the dispatcher. No record field changes.
 
 ```mermaid
 flowchart TB
@@ -2089,7 +2087,7 @@ flowchart TB
     end
 
     development_publishing ==>|record_publish_success| development_waiting_ci
-    development_publishing -->|exhaust_publish_recovery| development_waiting_human
+    development_publishing -->|exhaust_recovery| development_waiting_human
 ```
 
 ### The comment of a patch published anyway, from the branch
@@ -2110,7 +2108,7 @@ flowchart TB
         parked_idle["parked.idle"]
     end
 
-    development_publishing -->|exhaust_publish_recovery| development_waiting_human
+    development_publishing -->|exhaust_recovery| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
     development_fix_needed ==>|record_head_change| development_waiting_ci
@@ -2120,7 +2118,7 @@ flowchart TB
 
 Whether a Work payload that names neither `generation` nor `dedupe_key`, or requested Work recorded without a generation, is still read as generation 0.
 
-**Change.** No. A Work payload names its identity only with an integer `generation` and a string `dedupe_key`; one that lacks either, also one that names neither, names no Work identity in any generation. Its Result is late and takes `record_late_effect`, and the publisher refuses its write as stale. Requested Work whose recorded generation is absent or not the record's is never dispatched and matches no Result; the field migration carries Work recorded without a generation as generation 0. The Work such a Result leaves requested is terminal without a usable Result and is answered by `allocate_work_retry` within `work_recovery` and `work_total`, then `exhaust_work_recovery` to the human wait of the phase. This completes decision 2 (the generation fence) and decision 19 (late Results): a Result that differs in the generation, the revision, or the Work id is never folded and never published.
+**Change.** No. A Work payload names its identity only with an integer `generation` and a string `dedupe_key`; one that lacks either, also one that names neither, names no Work identity in any generation. Its Result is late and takes `record_late_effect`, and the publisher refuses its write as stale. Requested Work whose recorded generation is absent or not the record's is never dispatched and matches no Result; the field migration carries Work recorded without a generation as generation 0. The Work such a Result leaves requested is terminal without a usable Result and is answered by `allocate_work_retry` within `work_recovery` and `work_total`, then `exhaust_recovery` to the human wait of the phase. This completes decision 2 (the generation fence) and decision 19 (late Results): a Result that differs in the generation, the revision, or the Work id is never folded and never published.
 
 ```mermaid
 flowchart TB
@@ -2131,7 +2129,7 @@ flowchart TB
 
     development_agent_running ==>|record_late_effect| development_agent_running
     development_agent_running ==>|allocate_work_retry| development_agent_running
-    development_agent_running -->|exhaust_work_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
 ```
 
 ### The review fences are effects of the review row
@@ -2292,7 +2290,7 @@ flowchart TB
 
 ### The counter a failed Work recovery names
 
-Which counter `exhaust_work_recovery` names when both of its budgets are spent.
+Which counter `exhaust_recovery` names for a Work graph terminal without a usable Result when both of its budgets are spent.
 
 **Change.** `pending_human_action.counter` names `work_total` when that budget is exhausted, also when `work_recovery` is exhausted too, and `work_recovery` otherwise. A resume starts exactly the counter the wait names. `work_recovery` is counted in `active_work.attempt`, which the exhaustion clears with the Work, so the next Work starts at attempt 1 anyway; naming `work_total` is the only choice with which one resume makes Work possible again. No row, state, or record field changes.
 
@@ -2303,7 +2301,7 @@ flowchart TB
         development_waiting_human["development.waiting_human"]
     end
 
-    development_agent_running ==>|exhaust_work_recovery| development_waiting_human
+    development_agent_running ==>|exhaust_recovery| development_waiting_human
 ```
 
 ### The counter an exhausted upstream revision names
@@ -2653,7 +2651,7 @@ flowchart TB
 
 Does a held publication whose `publish_recovery` is exhausted keep the resumes of its wait from applying?
 
-**Change.** No. A held publication marked `pending_publication.exhausted` by `exhaust_publish_recovery` launches nothing more and is not a pending publication for the guard "quiescent: no open operation and no pending publication" (`engine.publication_pending`). So `resume_development`, `resume_upstream_revision`, `resume_stale`, and `refresh_planning` apply in the wait `exhaust_publish_recovery` entered, and each clears it: the refresh rows list `pending_publication` among their clears like the resumes, and `lifecycle check` verifies the rows of `development.waiting_human`. Fresh Work is requested; the held Result is never reused. A publication that is still pending refuses `resume_stale` and `refresh_planning`. This completes decision 9.
+**Change.** No. A held publication marked `pending_publication.exhausted` by `exhaust_recovery` launches nothing more and is not a pending publication for the guard "quiescent: no open operation and no pending publication" (`engine.publication_pending`). So `resume_development`, `resume_upstream_revision`, `resume_stale`, and `refresh_planning` apply in the wait `exhaust_recovery` entered, and each clears it: the refresh rows list `pending_publication` among their clears like the resumes, and `lifecycle check` verifies the rows of `development.waiting_human`. Fresh Work is requested; the held Result is never reused. A publication that is still pending refuses `resume_stale` and `refresh_planning`. This completes decision 9.
 
 ```mermaid
 flowchart TB
@@ -2666,7 +2664,7 @@ flowchart TB
         queued_idle["queued.idle"]
     end
 
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
     development_waiting_human ==>|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human ==>|resume_stale<br/>/upstreaming resume| queued_idle
 ```
@@ -2675,7 +2673,7 @@ flowchart TB
 
 Which rows clear `pending_publication` when the Result of a publish-only retry is folded?
 
-**Change.** The rows themselves. In every state that has `schedule_publish_retry` (`development.agent_running`, `development.publishing`, `upstream_review.agent_running`), every row that folds a Result lists `pending_publication` among its clears: `hold_patch_for_review`, `record_publish_success`, `reject_patch_proposal`, `replan_development`, `request_ci_rerun`, `record_revision_publish_success`, and `require_reviewer_answer`. Only `schedule_publish_retry` (which holds the Result), `exhaust_publish_recovery` (which marks it exhausted), and `record_late_effect` keep it. `lifecycle check` verifies this, and no write beside the row clears it any more; the launch of a retry (`publish_retry_launched`) is still recorded beside the table.
+**Change.** The rows themselves. In every state that has `schedule_publish_retry` (`development.agent_running`, `development.publishing`, `upstream_review.agent_running`), every row that folds a Result lists `pending_publication` among its clears: `hold_patch_for_review`, `record_publish_success`, `reject_patch_proposal`, `replan_development`, `request_ci_rerun`, `record_revision_publish_success`, and `require_reviewer_answer`. Only `schedule_publish_retry` (which holds the Result), `exhaust_recovery` (which marks it exhausted), and `record_late_effect` keep it. `lifecycle check` verifies this, and no write beside the row clears it any more; the launch of a retry (`publish_retry_launched`) is still recorded beside the table.
 
 ```mermaid
 flowchart TB
@@ -2729,7 +2727,7 @@ flowchart TB
 
 Is `publish_recovery` charged per launch of a publish-only retry, or per failed publication?
 
-**Change.** Per failed publication of the held Result (`pending_publication.attempts`), the worker's own publication being the first, each charged by `schedule_publish_retry`. The launch of a retry charges nothing (`publish_retry_launched`, beside the table). A Result is therefore published at most `retries.infrastructure_per_head_failure` plus two times (4 with the policy) before `exhaust_publish_recovery`, and the retries are launched 15, 60, then 240 minutes after each failure.
+**Change.** Per failed publication of the held Result (`pending_publication.attempts`), the worker's own publication being the first, each charged by `schedule_publish_retry`. The launch of a retry charges nothing (`publish_retry_launched`, beside the table). A Result is therefore published at most `retries.infrastructure_per_head_failure` plus two times (4 with the policy) before `exhaust_recovery`, and the retries are launched 15, 60, then 240 minutes after each failure.
 
 ```mermaid
 flowchart TB
@@ -2739,14 +2737,14 @@ flowchart TB
     end
 
     development_agent_running ==>|schedule_publish_retry| development_agent_running
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
 ```
 
 ### A publish-only retry that returns no Result
 
 What happens to a launched publish-only retry whose Result never arrives, and to its Result when it arrives late?
 
-**Change.** A launched retry whose Result is not folded within `PUBLISH_RESULT_WAIT_MINUTES` (60) of `pending_publication.launched_at` is "publication failed with an infrastructure error": `schedule_publish_retry`, or `exhaust_publish_recovery` once the budget is spent. Its Result arriving later is folded by its row while the Result is still held and no human is waited for, and takes `record_late_effect` in the wait, which is kept. An `infra_error` it reports was already charged (`reconcile._charged_launch`: its attempt is not above `attempts`, or no retry is launched) and takes `record_late_effect` without a charge.
+**Change.** A launched retry whose Result is not folded within `PUBLISH_RESULT_WAIT_MINUTES` (60) of `pending_publication.launched_at` is "publication failed with an infrastructure error": `schedule_publish_retry`, or `exhaust_recovery` once the budget is spent. Its Result arriving later is folded by its row while the Result is still held and no human is waited for, and takes `record_late_effect` in the wait, which is kept. An `infra_error` it reports was already charged (`reconcile._charged_launch`: its attempt is not above `attempts`, or no retry is launched) and takes `record_late_effect` without a charge.
 
 ```mermaid
 flowchart TB
@@ -2756,7 +2754,7 @@ flowchart TB
     end
 
     development_agent_running ==>|schedule_publish_retry| development_agent_running
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
     development_agent_running ==>|record_late_effect| development_agent_running
 ```
 
@@ -2764,7 +2762,7 @@ flowchart TB
 
 What happens when a row that keeps the revision allocates Work whose graph already returned a Result or is terminal in the queue?
 
-**Change.** That Work is "the Work graph is terminal without a usable Result": the allocation row is taken, and then `allocate_work_retry` or `exhaust_work_recovery` in the same tick. The allocation charges `work_total` (and its own budgets), and the fresh graph charges `work_recovery` and `work_total` again; the spent graph is never submitted.
+**Change.** That Work is "the Work graph is terminal without a usable Result": the allocation row is taken, and then `allocate_work_retry` or `exhaust_recovery` in the same tick. The allocation charges `work_total` (and its own budgets), and the fresh graph charges `work_recovery` and `work_total` again; the spent graph is never submitted.
 
 ```mermaid
 flowchart TB
@@ -2776,14 +2774,14 @@ flowchart TB
 
     development_fix_needed -->|request_repair| development_agent_running
     development_agent_running ==>|allocate_work_retry| development_agent_running
-    development_agent_running -->|exhaust_work_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
 ```
 
 ### What `dispatch_recovery` counts and a launch that shows no run
 
 Which dispatcher runs does `dispatch_recovery` count, and what happens to a launch that never shows up as a run?
 
-**Change.** It counts the dispatcher runs created since the Work was requested, or since its history was recorded or the queue's retry time (`retry_not_before`) when later; every counted run has ended. Each ended run is decided once: `retry_dispatch` records the run it decided in `active_work.dispatched_run_id` as an effect of the row, and `exhaust_dispatch_recovery` is taken once the count reaches the limit (`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never shows up as a run is launched again after `DISPATCH_LAUNCH_GRACE_MINUTES` (15) and then on every tick until a run shows up, without a row and without a charge, also for a queue retry (15 minutes after the retry time): such a launch is lost to the control plane, not to the Work. A Work whose `retry_not_before` is not representable is left out of the retries and reported.
+**Change.** It counts the dispatcher runs created since the Work was requested, or since its history was recorded or the queue's retry time (`retry_not_before`) when later; every counted run has ended. Each ended run is decided once: `retry_dispatch` records the run it decided in `active_work.dispatched_run_id` as an effect of the row, and `exhaust_recovery` is taken once the count reaches the limit (`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never shows up as a run is launched again after `DISPATCH_LAUNCH_GRACE_MINUTES` (15) and then on every tick until a run shows up, without a row and without a charge, also for a queue retry (15 minutes after the retry time): such a launch is lost to the control plane, not to the Work. A Work whose `retry_not_before` is not representable is left out of the retries and reported.
 
 ```mermaid
 flowchart TB
@@ -2793,7 +2791,7 @@ flowchart TB
     end
 
     development_agent_running ==>|retry_dispatch| development_agent_running
-    development_agent_running -->|exhaust_dispatch_recovery| development_waiting_human
+    development_agent_running -->|exhaust_recovery| development_waiting_human
 ```
 
 ### A review observed with a CI failure while CI is awaited
@@ -2855,7 +2853,7 @@ flowchart TB
 
 Which rows wait while an operation of the contribution is open.
 
-**Change.** Every row that allocates Work carries the guard `no open operation` (or the quiescence guard), and so does every row of `development.waiting_ci` that acts on passing CI: `nominate_for_handoff`, `return_for_feedback`, `return_for_series_requirements`, and the Work allocations `request_patch`, `request_repair`, `request_upstream_revision`, and `request_review_revision`. The observation keeps the contribution in its state and reports `handoff_deferred` naming the operation, and the engine refuses the row while an operation is open. `lifecycle check` verifies both. Rows that reallocate Work (Work recovery) do not wait.
+**Change.** Every row that allocates Work carries the guard `no open operation` (or the quiescence guard), and so does every row of `development.waiting_ci` that acts on passing CI: `nominate_for_handoff`, `return_for_feedback` (also for unmet series requirements), and the Work allocations `request_patch`, `request_repair`, `request_upstream_revision`, and `request_review_revision`. The observation keeps the contribution in its state and reports `handoff_deferred` naming the operation, and the engine refuses the row while an operation is open. `lifecycle check` verifies both. Rows that reallocate Work (Work recovery) do not wait.
 
 ```mermaid
 flowchart TB
@@ -2874,7 +2872,6 @@ flowchart TB
 
     development_waiting_ci ==>|nominate_for_handoff| handoff_awaiting_submission
     development_waiting_ci -->|return_for_feedback| development_fix_needed
-    development_waiting_ci -->|return_for_series_requirements| development_fix_needed
     development_fix_needed ==>|request_patch| development_agent_running
     development_fix_needed -->|request_repair| development_agent_running
     upstream_fix_needed -->|request_upstream_revision| upstream_agent_running
@@ -3077,7 +3074,7 @@ flowchart TB
 
     handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci ==>|require_clean_head_ci| handoff_waiting_human
-    handoff_waiting_human -->|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
+    handoff_waiting_human -->|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
     upstream_waiting_ci ==>|record_head_change| upstream_waiting_human
 ```
 
@@ -3117,4 +3114,30 @@ flowchart TB
 
     handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
     handoff_building_upstream_branch ==>|require_branch_intervention| handoff_waiting_human
+```
+
+### Seven verbs merged into three
+
+Which verbs of the table name the same transition under two names, and may be one row each (the owner's decision of 2026-11-24)?
+
+**Change.** Seven verbs are merged into three, so a caller handles one verb per transition and a failure case that an existing verb covers gets no new one. `resume_clean_head_ci` and `resume_development_pr` are `resume_ci`: in `handoff.waiting_human` it returns to `handoff.waiting_ci` after `ci_interrupted` or `clean_head_ci_missing`, in `development.waiting_human` to `development.waiting_ci` after `ci_interrupted` or `development_pr_launch_exhausted`, starting again the one counter the wait names (`interrupted_reruns` or `operation_launch`). `resume_renamed_upstream` is `resume_upstream_read`, guarded by "the wait was entered because reads kept failing, or because GitHub named the recorded repository otherwise"; the event names the cause. `exhaust_dispatch_recovery`, `exhaust_work_recovery` and `exhaust_publish_recovery` are `exhaust_recovery`, one row per state for the recovery budgets of the failures that can occur there: the caller establishes the failure (a lost dispatch, a Work graph terminal without a usable Result, a failed publication), and the engine derives the pending action and the counter from it (`engine.recovery_exhaustion`); the set `pending_human_action=a|b` names the actions it may record, and `pending_publication.exhausted` is set only while a publication is pending (`lifecycle.QUALIFIED_SETS`). It is a tick row; the exhaustion of `publish_recovery` was a Result row, and its event is now caused by the tick. `return_for_series_requirements` is `return_for_feedback`, guarded by "pending actionable feedback, or a series requirement of the verified plan is unmet on the exact head": it records the pending feedback (with the unmet requirements) and so bumps the revision also when only feedback was pending. Committed events keep the names they were written with, and every reader translates them (`lifecycle.HISTORIC_NAMES`, `lifecycle.current_name`).
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+        development_fix_needed["development.fix_needed"]
+    end
+    subgraph handoff["handoff"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+
+    development_agent_running ==>|exhaust_recovery| development_waiting_human
+    development_waiting_human ==>|resume_ci<br/>/upstreaming resume| development_waiting_ci
+    development_waiting_ci ==>|return_for_feedback| development_fix_needed
+    handoff_waiting_human ==>|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
+    development_waiting_human ==>|resume_upstream_read| development_fix_needed
 ```
