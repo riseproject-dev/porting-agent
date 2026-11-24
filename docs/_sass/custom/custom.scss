@@ -466,3 +466,473 @@ a.state {
     font-weight: 500;
   }
 }
+
+// The state graph (docs/state-machine/graph.md, assets/js/state-graph.js). The script
+// reads the --sg-* custom properties with getComputedStyle, so the graph follows the
+// color scheme this file is compiled for. The kind colors are those of the badges above.
+$graph-inbound: if($color-scheme == dark, #7ab4ff, #1558b0);
+$graph-outbound: if($color-scheme == dark, #f5a05a, #b45309);
+$graph-select: if($color-scheme == dark, #c0a8ff, $purple-100);
+
+.sg {
+  --sg-bg: #{$body-background-color};
+  --sg-text: #{$body-text-color};
+  --sg-edge: #{mix($body-text-color, $body-background-color, 55%)};
+  --sg-in: #{$graph-inbound};
+  --sg-out: #{$graph-outbound};
+  --sg-select: #{$graph-select};
+  --sg-phase: #{mix($border-color, $body-background-color, 45%)};
+  --sg-phase-text: #{mix($body-text-color, $body-background-color, 85%)};
+  --sg-kind-work: #{$blue-100};
+  --sg-kind-auto_wait: #{$grey-dk-000};
+  --sg-kind-human_wait: #{$yellow-200};
+  --sg-kind-gate: #{$purple-100};
+  --sg-kind-locked: #{$purple-100};
+  --sg-kind-generation_end: #{$red-100};
+  --sg-kind-terminal: #{$grey-dk-000};
+  --sg-kind-released: #{$green-200};
+
+  margin: $sp-4 0;
+
+  &__error {
+    padding: $sp-2 $sp-3;
+    border: $border $graph-outbound;
+    border-radius: 4px;
+  }
+
+  &__toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $sp-2 $sp-4;
+    align-items: flex-start;
+    margin-bottom: $sp-2;
+
+    @include fs-2;
+  }
+
+  &__toolbar[hidden],
+  &__states[hidden],
+  &__panel[hidden] {
+    display: none;
+  }
+
+  &__fieldset {
+    padding: 0;
+    margin: 0;
+    border: 0;
+
+    legend {
+      padding: 0;
+      font-weight: 700;
+    }
+  }
+
+  &__check {
+    display: inline-flex;
+    gap: $sp-1;
+    align-items: center;
+    margin-right: $sp-3;
+    white-space: nowrap;
+  }
+
+  &__phase-list {
+    display: flex;
+    flex-direction: column;
+    padding: $sp-2;
+    margin-top: $sp-1;
+    background: $body-background-color;
+    border: $border $border-color;
+    border-radius: 4px;
+  }
+
+  &__phases {
+    position: relative;
+
+    summary {
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .sg__phase-list {
+      position: absolute;
+      z-index: 40;
+    }
+  }
+
+  &__tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $sp-1;
+    align-items: center;
+  }
+
+  &__search {
+    width: 13rem;
+    padding: $sp-1 $sp-2;
+    color: $body-text-color;
+    background: $body-background-color;
+    border: $border $border-color;
+    border-radius: 4px;
+  }
+
+  &__button,
+  &__go,
+  &__state,
+  &__close {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    background: none;
+    border: 0;
+  }
+
+  &__button {
+    min-width: 2.2rem;
+    padding: $sp-1 $sp-2;
+    background: $body-background-color;
+    border: $border $border-color;
+    border-radius: 4px;
+
+    &:hover {
+      border-color: $graph-select;
+    }
+  }
+
+  &__hint {
+    flex-basis: 100%;
+    margin: 0;
+    color: $muted-text;
+  }
+
+  &__list {
+    margin-bottom: $sp-2;
+
+    summary {
+      cursor: pointer;
+
+      @include fs-2;
+    }
+  }
+
+  &__states {
+    padding: $sp-2 0;
+  }
+
+  &__phase {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $sp-1;
+    align-items: center;
+    margin-bottom: $sp-1;
+  }
+
+  &__phase-name {
+    min-width: 9rem;
+    font-weight: 700;
+
+    @include fs-2;
+  }
+
+  &__state {
+    padding: 0;
+  }
+
+  &__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: $sp-3;
+    align-items: start;
+  }
+
+  &--open &__body {
+    grid-template-columns: minmax(0, 1fr) minmax(22rem, 32rem);
+  }
+
+  &__canvas {
+    position: relative;
+    height: 80vh;
+    min-height: 34rem;
+    overflow: hidden;
+    background: $body-background-color;
+    border: $border $border-color;
+    border-radius: 4px;
+  }
+
+  &__panel {
+    max-height: 80vh;
+    min-height: 34rem;
+    padding: $sp-3;
+    overflow: auto;
+    background: $body-background-color;
+    border: $border $border-color;
+    border-radius: 4px;
+
+    @include fs-2;
+  }
+
+  &__handle {
+    display: none;
+  }
+
+  &__head {
+    display: flex;
+    gap: $sp-2;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+
+  &__title {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  &__close {
+    padding: 0 $sp-2;
+    font-size: 1.6rem;
+    line-height: 1;
+    border-radius: 4px;
+  }
+
+  &__summary {
+    margin: $sp-2 0;
+  }
+
+  &__links {
+    margin: 0 0 $sp-2;
+  }
+
+  &__requires {
+    margin-bottom: $sp-3;
+  }
+
+  &__group {
+    margin-bottom: $sp-3;
+
+    > summary {
+      font-weight: 700;
+      cursor: pointer;
+    }
+  }
+
+  &__sorter {
+    padding: 2px $sp-1;
+    margin: $sp-1 0;
+    font: inherit;
+    color: $body-text-color;
+    background: $body-background-color;
+    border: $border $border-color;
+    border-radius: 4px;
+  }
+
+  // Each transition is a card: the state, then the verb and trigger, what must hold
+  // below, and the context last. The header row is only for screen readers.
+  &__table {
+    display: block;
+    width: 100%;
+
+    caption,
+    thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+    }
+
+    tbody {
+      display: block;
+    }
+
+    tr {
+      display: grid;
+      grid-template-areas: "o o" "v t" "p p" "c c";
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-content: start;
+      background: transparent;
+      gap: 2px $sp-2;
+      padding: $sp-2 0;
+      border-bottom: $border rgba($border-color, 0.8);
+    }
+
+    td {
+      min-width: 0;
+      padding: 0;
+      overflow-wrap: anywhere;
+      background: transparent;
+      border: 0;
+    }
+
+    td::before {
+      display: block;
+      font-size: 0.7em;
+      font-weight: 700;
+      color: $muted-text;
+      text-transform: uppercase;
+      content: attr(data-label);
+    }
+
+    .sg__c-other {
+      grid-area: o;
+    }
+
+    .sg__c-verb {
+      grid-area: v;
+    }
+
+    .sg__c-trigger {
+      grid-area: t;
+    }
+
+    .sg__c-pre {
+      grid-area: p;
+    }
+
+    .sg__c-context {
+      grid-area: c;
+    }
+
+    .sg__flash {
+      background: rgba($graph-select, 0.18);
+    }
+
+    code {
+      display: block;
+      font-size: 0.8em;
+    }
+
+    .sg__c-verb a {
+      font-weight: 700;
+    }
+  }
+
+  &__go {
+    padding: 0;
+    text-align: left;
+  }
+
+  &__conds {
+    padding: 0;
+    margin: 0;
+    list-style: none;
+
+    li {
+      margin: 0 0 2px;
+    }
+
+    li::before {
+      content: none;
+    }
+  }
+
+  &__origin {
+    color: $muted-text;
+  }
+
+  &__legend {
+    margin-top: $sp-4;
+
+    h2 {
+      margin-top: 0;
+    }
+  }
+
+  &__edges {
+    padding: 0;
+    margin: 0;
+    list-style: none;
+
+    @include fs-2;
+
+    li::before {
+      content: none;
+    }
+  }
+
+  &__sample {
+    display: inline-block;
+    width: 2.2rem;
+    margin-right: $sp-1;
+    vertical-align: middle;
+    border-top: 2px solid $body-text-color;
+
+    &--rule {
+      border-top-style: dashed;
+    }
+
+    &--flag {
+      border-top-style: dotted;
+    }
+
+    &--in {
+      border-top: 4px solid $graph-inbound;
+    }
+  }
+
+  button:focus-visible,
+  summary:focus-visible,
+  input:focus-visible {
+    outline: 2px solid $graph-select;
+    outline-offset: 2px;
+  }
+
+  .sg__state[aria-pressed="true"] .state {
+    outline: 2px solid $graph-select;
+  }
+}
+
+// The graph is wider than the text column of the theme.
+.main:has(.sg) {
+  max-width: none;
+}
+
+// Below md the panel is a bottom sheet over the page and its tables are stacked cards,
+// so that nothing scrolls sideways.
+@media (max-width: 49.99rem) {
+  .sg__canvas {
+    height: 64vh;
+    min-height: 22rem;
+  }
+
+  .sg--open .sg__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sg__panel {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 100;
+    height: var(--sg-sheet-h, 60vh);
+    max-height: none;
+    min-height: 0;
+    padding-top: 0;
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+  }
+
+  .sg__handle {
+    display: block;
+    width: 100%;
+    height: 1.6rem;
+    padding: 0;
+    cursor: ns-resize;
+    touch-action: none;
+    background: none;
+    border: 0;
+
+    &::after {
+      display: block;
+      width: 3rem;
+      height: 5px;
+      margin: 0.5rem auto 0;
+      content: "";
+      background: $muted-text;
+      border-radius: 3px;
+    }
+  }
+
+  .sg__phase-name {
+    min-width: 100%;
+  }
+}

@@ -10,7 +10,7 @@ permalink: /state-machine/
 # Contribution state machine
 {: .no_toc }
 
-The contribution lifecycle is defined by one table in `lifecycle.py`. That table is the source of truth: every diagram on this page, the [lifecycle table]({{ '/state-machine/table/' | relative_url }}) reference, and the [decisions]({{ '/state-machine/decisions/' | relative_url }}) page are generated from it by `scripts/generate_state_machine_doc.py`, and a test fails when a page no longer matches the table.
+The contribution lifecycle is defined by one table in `lifecycle.py`. That table is the source of truth: every diagram on this page, the [lifecycle table]({{ '/state-machine/table/' | relative_url }}) reference, the [decisions]({{ '/state-machine/decisions/' | relative_url }}) page, and the [interactive graph]({{ '/state-machine/graph/' | relative_url }}) are generated from it by `scripts/generate_state_machine_doc.py`, and a test fails when a page no longer matches the table.
 
 `uv run --locked python -m lifecycle check` verifies that the table is consistent, and the Agent Validation workflow runs it on every pull request and every push to `main`. It checks the structure: every target exists, every state is reachable from `queued.idle`, an end state (kind `terminal`) is reachable from every state, end states have no exits and every other state has one that leaves it, a verb leads from a state to one target only, and every transition names its trigger and its guard (`always` when unconditional), every command transition its command and the revision it accepts. It also checks the rules of the lifecycle:
 

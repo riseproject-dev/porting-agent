@@ -252,6 +252,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `queued.idle`
 {: #state-queued-idle }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-queued-idle)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `begin_planning` | tick | `planning.idle` | not paused | none | - |
@@ -266,6 +268,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `planning.idle`
 {: #state-planning-idle }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-planning-idle)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -282,6 +286,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `planning.agent_running`
 {: #state-planning-agent_running }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-planning-agent_running)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -300,6 +306,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `planning.waiting_human`
 {: #state-planning-waiting_human }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-planning-waiting_human)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `rearm_dispatch` | tick | `planning.idle` | pending_human_action is dispatch_failed; the work-queue Policy was installed after the dispatch failed, and the compiled policy preserves it; not paused; quiescent: no open operation and no pending publication. Re-arms a dispatch that failed while the installed work-queue Policy refused every dispatch, once the dispatcher has reinstalled the compiled policy: the same transition as the resume a human would post, taken by the controller. | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `dispatch_recovery`) | - |
@@ -312,6 +320,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `provisioning.idle`
 {: #state-provisioning-idle }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-provisioning-idle)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -330,6 +340,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `provisioning.waiting_human`
 {: #state-provisioning-waiting_human }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-provisioning-waiting_human)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `resume_provisioning` | command (`/upstreaming resume`) | `provisioning.idle` | exact revision; the prerequisite is corrected; stopped for at most `refresh.stale_after_days` days. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. The authorized `/upstreaming resume` is the statement that the prerequisite is corrected: the controller establishes it for every pending action the pipeline writes in this wait, and for no other, which only `park` leaves. | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `source_reads`) | - |
@@ -342,6 +354,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `development.agent_running`
 {: #state-development-agent_running }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-development-agent_running)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -361,6 +375,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `development.review_pending`
 {: #state-development-review_pending }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-development-review_pending)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `request_patch_review` | tick | `development.reviewing` | worker slot free; work_total remains; not paused; no open operation; the publication artifact of the held patch is current; upstream identity and base bound. The uncredentialed review Work starts in a fresh context, on its own reviewer workflow and model, and can change nothing. The trusted pre-agent step downloads the held series from the publication artifact the held patch pins, checks the run that owns it and its digest, and rebuilds it on the head it was verified on, so the review reads and diffs exactly the held patch. It also reads the worker's report, the verified plan, the reason evidence of the worker's Work, and the history, which holds the owner's steering and every earlier review. It runs no reproduction. | Work: allocate | `work_total` |
@@ -378,6 +394,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `development.reviewing`
 {: #state-development-reviewing }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-development-reviewing)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_dispatch` | tick | same state | a dispatcher run ended with the requested Work absent or unclaimed; dispatch_recovery remains. Launches the dispatcher again for the same committed Work request. The row records the dispatcher run it decided in `active_work.dispatched_run_id`, so each ended run is decided once. | sets `active_work.dispatched_run_id` | `dispatch_recovery` |
@@ -392,6 +410,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `development.publishing`
 {: #state-development-publishing }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-development-publishing)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -410,6 +430,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `development.waiting_ci`
 {: #state-development-waiting_ci }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-development-waiting_ci)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -432,6 +454,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `development.fix_needed`
 {: #state-development-fix_needed }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-development-fix_needed)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -458,6 +482,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `development.waiting_human`
 {: #state-development-waiting_human }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-development-waiting_human)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `resume_ci` | command (`/upstreaming resume`) | `development.waiting_ci` | exact revision; pending_human_action is ci_interrupted or development_pr_launch_exhausted; quiescent: no open operation and no pending publication; stopped for at most `refresh.stale_after_days` days; development PR and head recorded. CI on the published head is awaited again; no fresh Work is requested. After `ci_interrupted` it starts `interrupted_reruns` (`budget.reruns.interrupted`) again for the head, and the first observation after it reruns the interrupted jobs on the exact head through `rerun_interrupted_ci`, charging the restarted counter. After `development_pr_launch_exhausted` it starts `operation_launch` again, and the next tick plans a new development PR operation for the head. A held patch, which this wait never keeps, is discarded. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. | revision +1; clears `pending_human_action`, `held_patch`; starts again the counter named in `pending_human_action.counter` (one of `interrupted_reruns`, `operation_launch`) | - |
@@ -475,6 +501,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `handoff.awaiting_submission`
 {: #state-handoff-awaiting_submission }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-awaiting_submission)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `submit_upstream` | command (`/upstreaming submit-upstream`) | `handoff.review_due` | exact revision; exact candidate head; not paused. The only submission command; it authorizes the submission review and the whole deterministic handoff preparation. The development branch `riscv64-dev` and the development PR are never changed for the submission. | sets `handoff_approval`; clears `pending_human_action` | - |
@@ -489,6 +517,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `handoff.review_due`
 {: #state-handoff-review_due }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-review_due)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -505,6 +535,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `handoff.agent_running`
 {: #state-handoff-agent_running }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-agent_running)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_dispatch` | tick | same state | a dispatcher run ended with the requested Work absent or unclaimed; dispatch_recovery remains. Launches the dispatcher again for the same committed Work request. The row records the dispatcher run it decided in `active_work.dispatched_run_id`, so each ended run is decided once. | sets `active_work.dispatched_run_id` | `dispatch_recovery` |
@@ -517,6 +549,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `handoff.review_pending`
 {: #state-handoff-review_pending }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-review_pending)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -534,6 +568,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `handoff.reviewing`
 {: #state-handoff-reviewing }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-reviewing)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_dispatch` | tick | same state | a dispatcher run ended with the requested Work absent or unclaimed; dispatch_recovery remains. Launches the dispatcher again for the same committed Work request. The row records the dispatcher run it decided in `active_work.dispatched_run_id`, so each ended run is decided once. | sets `active_work.dispatched_run_id` | `dispatch_recovery` |
@@ -546,6 +582,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `handoff.building_upstream_branch`
 {: #state-handoff-building_upstream_branch }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-building_upstream_branch)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -561,6 +599,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `handoff.waiting_ci`
 {: #state-handoff-waiting_ci }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-waiting_ci)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `accept_clean_head_ci` | observation | `handoff.preparing_submission` | every required CI job executed and passed on the clean head, or on the candidate head when the clean head has its tree. CI is a function of the tree: when the reviewed series has the tree of the candidate head (the approved series had no debug commit), the CI evidence of the candidate head is CI on the clean head. | sets `last_ci_evidence_id` | - |
@@ -574,6 +614,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `handoff.preparing_submission`
 {: #state-handoff-preparing_submission }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-preparing_submission)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_submission_comment` | operation | same state | posting the package failed; submission_comment remains | none | `submission_comment` |
@@ -585,6 +627,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `handoff.waiting_human`
 {: #state-handoff-waiting_human }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-waiting_human)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -602,6 +646,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `handoff.waiting_upstream_pr`
 {: #state-handoff-waiting_upstream_pr }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-handoff-waiting_upstream_pr)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `record_audit_observation` | observation | same state | an observation that does not satisfy verify_upstream_pr. Recorded for audit only; it never changes phase or activity. | none | - |
@@ -613,6 +659,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `upstream_review.waiting_ci`
 {: #state-upstream_review-waiting_ci }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-upstream_review-waiting_ci)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -627,6 +675,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `upstream_review.fix_needed`
 {: #state-upstream_review-fix_needed }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-upstream_review-fix_needed)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -644,6 +694,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `upstream_review.agent_running`
 {: #state-upstream_review-agent_running }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-upstream_review-agent_running)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `record_revision_publish_success` | result | `upstream_review.waiting_ci` | the revision is published to the upstream PR head. The published revision answers exactly the feedback its Work carried. `upstream_pr.head_sha` records the head the publisher read back on `riscv64` after its push. A publication whose push was not read back (`uncertain`) does not take this row: it is a failed publication (`schedule_publish_retry`), and the publish-only retry reads back the head a lost push left without pushing again. The report of the Work is stored as `worker_report` evidence. | revision +1; Work: clear; sets `proposal_artifact`, `publication_operation_id`, `upstream_pr.head_sha`; clears `carried pending_feedback_evidence_ids`, `pending_publication`, `budget.no_progress_streak`, `budget.review_rejections` | - |
@@ -657,6 +709,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `upstream_review.waiting_human`
 {: #state-upstream_review-waiting_human }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-upstream_review-waiting_human)
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
@@ -673,6 +727,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `release_wait.idle`
 {: #state-release_wait-idle }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-release_wait-idle)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `record_release_incomplete` | observation | same state | release evidence does not yet satisfy the acceptance contract | none | - |
@@ -683,6 +739,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 ### `release_wait.waiting_human`
 {: #state-release_wait-waiting_human }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-release_wait-waiting_human)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `resume_release_observation` | command (`/upstreaming resume`) | `release_wait.idle` | exact revision | revision +1; clears `pending_human_action` | - |
@@ -691,6 +749,8 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 ### `released.idle`
 {: #state-released-idle }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-released-idle)
 
 Terminal: no transition leaves this state.
 
@@ -701,6 +761,8 @@ Terminal: no transition leaves this state.
 ### `parked.idle`
 {: #state-parked-idle }
 
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-parked-idle)
+
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `restart_generation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no open upstream PR. Starts a clean generation that runs complete planning; identity, events, evidence, and replay fences are kept. An optional class and paths, given together, are stored with the reason as `admission_override`; a refresh that names only one of them is refused and changes nothing. `upstream.base_ref` is the optional `branch` of the command, else the target branch the request asked for at intake, else none (the upstream default branch is bound). Accepted while paused. | revision +1; generation +1; Work: clear; sets `admission_override`, `upstream.base_ref` | - |
@@ -709,6 +771,8 @@ Terminal: no transition leaves this state.
 
 ### `closed.idle`
 {: #state-closed-idle }
+
+[View in the graph]({{ '/state-machine/graph/' | relative_url }}#state-closed-idle)
 
 Terminal: no transition leaves this state.
 
