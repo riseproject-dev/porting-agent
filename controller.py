@@ -328,6 +328,21 @@ def _upstream_read_resume(c: dict) -> str | None:
     return None
 
 
+# The wait a renamed repository caused is not ended automatically within
+# this many minutes of its entry (the last rename wait of the record): a
+# repository that GitHub answers for under alternating names would otherwise
+# enter and leave the wait on every tick.
+RENAME_WAIT_HOLD_MINUTES = 30
+
+
+def _snapshot_of_recorded_branch(c: dict, snapshot: dict) -> bool:
+    """Whether ``snapshot`` read the branch the record names: a record that
+    names none (a request that asked for the default branch, not bound yet)
+    is read at the default branch, whatever its name."""
+    recorded = c["upstream"].get("base_ref")
+    return recorded is None or snapshot.get("base_ref") == recorded
+
+
 def _resume_upstream_read(c: dict, snapshot: dict, by_id: dict[str, dict], operations: dict,
                           res: TickResult, policy: dict, now: str) -> None:
     """End a wait that failed reads caused, or that a renamed repository
@@ -338,11 +353,20 @@ def _resume_upstream_read(c: dict, snapshot: dict, by_id: dict[str, dict], opera
     cause = _upstream_read_resume(c)
     verb = "resume_upstream_read"
     if cause is None or snapshot.get("error") or snapshot.get("repository_id") is None \
-            or snapshot.get("base_ref") != c["upstream"].get("base_ref") \
+            or not _snapshot_of_recorded_branch(c, snapshot) \
             or snapshot.get("repository_id") != c["upstream"].get("repository_id"):
         return
     ops = _open_operations(c, operations)
     pending = c["pending_human_action"]
+    if cause == "renamed":
+        entered = datetime.fromisoformat(pending["requested_at"])
+        if (datetime.fromisoformat(now) - entered).total_seconds() \
+                < RENAME_WAIT_HOLD_MINUTES * 60:
+            res.report.setdefault("deferred", []).append(
+                {"contribution": c["contribution_id"],
+                 "why": f"the rename wait is held for {RENAME_WAIT_HOLD_MINUTES} minutes "
+                        "after its entry before it ends"})
+            return
     details = {"base_ref": c["upstream"].get("base_ref"), "pending_human_action": pending["kind"],
                "repository": c["upstream"]["full_name"], "cause": cause}
     match engine.dispatch(engine.try_apply_transition(
@@ -383,9 +407,11 @@ def _replace_rename_wait(c: dict, snapshot: dict, by_id: dict[str, dict], operat
     recorded = c["upstream"].get("repository_id")
     if not snapshot.get("missing") or recorded is None \
             or snapshot.get("repository_id") != recorded \
-            or snapshot.get("base_ref") != c["upstream"].get("base_ref"):
+            or not _snapshot_of_recorded_branch(c, snapshot):
         return
-    details: dict[str, Any] = {"base_ref": snapshot["base_ref"], "why": snapshot["error"]}
+    # The repository is read under its recorded name again: the entry says so.
+    details: dict[str, Any] = {"base_ref": snapshot["base_ref"], "why": snapshot["error"],
+                               "repository_back": True}
     if snapshot.get("renamed_to"):
         details["renamed_to"] = snapshot["renamed_to"]
     match engine.dispatch(engine.try_apply_transition(

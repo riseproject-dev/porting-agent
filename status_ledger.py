@@ -397,6 +397,9 @@ def _unavailable_cause(kind: str, details: dict) -> str:
     or the record followed a renamed branch."""
     if kind in RENAMED_BASE_KINDS:
         return _renamed(details, "")
+    if details.get("repository_back") is True and kind not in REPOSITORY_KINDS:
+        return ("The upstream repository is back under its recorded name, but its base branch "
+                f"is not: {_unavailable_cause(kind, {k: v for k, v in details.items() if k != 'repository_back'})}")
     failed = ""
     if isinstance(details.get("count"), int):
         since = _quotable(details.get("since") or "", 40)

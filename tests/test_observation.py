@@ -2218,7 +2218,12 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         # GitHub answers for the same repository under its recorded name.
         api = self.Api()
         snapshot = collect.upstream_snapshots(api, [wait], [], policy())["example/proj"]
-        res = self.tick(wait, snapshot)
+        # Not within the hold after the entry of the wait: a repository that
+        # alternates between names does not enter and leave it on every tick.
+        res = self.tick(wait, snapshot, now=T + timedelta(minutes=controller.RENAME_WAIT_HOLD_MINUTES - 1))
+        self.assertEqual(self.events(res), [])
+        self.assertIn("the rename wait is held", res.report["deferred"][-1]["why"])
+        res = self.tick(wait, snapshot, now=T + timedelta(minutes=controller.RENAME_WAIT_HOLD_MINUTES))
         [event] = [e for e in self.events(res) if e["kind"] == "resume_upstream_read"]
         self.assertEqual(event["details"]["to_state"], "development.fix_needed")
         resumed = [r for k, r in res.staged if k == "contributions"
@@ -2281,7 +2286,8 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         self.assertNotIn("resume_upstream_read", kinds)
         self.assertEqual(self.final(res, wait)["upstream"]["repository_id"], 1)
         self.assertIsNone(self.final(res, wait)["upstream"]["base_sha"])
-        res = self.tick(wait, dict(self.SNAPSHOT))
+        res = self.tick(wait, dict(self.SNAPSHOT),
+                        now=T + timedelta(minutes=controller.RENAME_WAIT_HOLD_MINUTES))
         self.assertIn("resume_upstream_read", [e["kind"] for e in self.events(res)])
         healed = self.final(res, wait)
         self.assertEqual((healed["upstream"]["repository_id"], healed["upstream"]["base_sha"]),
@@ -2341,6 +2347,30 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         # Another repository under the recorded name says nothing about it.
         res = self.tick(wait, dict(self.MISSING, repository_id=9))
         self.assertNotIn("require_base_branch", [e["kind"] for e in self.events(res)])
+
+    def test_the_rename_wait_of_a_request_without_a_branch_heals_on_an_empty_repository(self):
+        # The request names no branch and the repository, read under its
+        # recorded name, has none to give: the wait of the repository is
+        # replaced by the wait of the base branch, whose entry says that the
+        # repository is back.
+        rec = self.queued(upstream={"repository_id": None, "full_name": "example/proj",
+                                    "base_ref": None, "base_sha": None})
+        wait = self.final(self.tick(rec, dict(self.MOVED, ref=None)), rec)
+        self.assertEqual(wait["pending_human_action"]["kind"], "upstream_unavailable")
+        res = self.tick(wait, dict(self.MISSING, repository_id=1, ref=None))
+        [event] = self.events(res)
+        self.assertEqual(event["kind"], "require_base_branch")
+        self.assertTrue(event["details"]["repository_back"])
+        final = self.final(res, wait)
+        self.assertEqual(final["pending_human_action"]["kind"], "base_branch_unavailable")
+        text = self.render(event, final)
+        self.assertIn("The upstream repository is back under its recorded name, but its base "
+                      "branch is not: Cause: the upstream says the base branch `main` does not "
+                      "exist.", text)
+        # The same read of a request that names a branch is of that branch only.
+        named = dict(wait, upstream=dict(wait["upstream"], base_ref="dev"))
+        res = self.tick(named, dict(self.MISSING, repository_id=1, ref=None))
+        self.assertEqual(self.events(res), [])
 
     def test_the_rename_wait_stays_while_paused_or_an_operation_is_open(self):
         rec = contribution(phase="development", activity="fix_needed")
