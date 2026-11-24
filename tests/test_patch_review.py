@@ -372,12 +372,19 @@ class TestComment(unittest.TestCase):
                 self.assertEqual(patch_review.landed_anyway(rec, heads, store), [])
         op = {"contribution_id": rec["contribution_id"], "kind": "branch_update",
               "status": "confirmed", "proposed": {"commit": "c" * 40}}
-        self.assertEqual(patch_review.confirmed_heads(rec, [op]), {"c" * 40})
+        self.assertEqual(patch_review.confirmed_heads(rec, [op]), {"c" * 40: "c" * 40})
+        # Discovery that confirmed it by its tree and parents read another
+        # commit (a signed replay): the comment names the commit on the
+        # branch, matched by the commit the review pinned.
+        replayed = patch_review.confirmed_heads(rec, [op], "e" * 40)
+        self.assertEqual(replayed, {"c" * 40: "e" * 40})
+        self.assertEqual(patch_review.landed_anyway(rec, replayed, stored),
+                         [("patch-review-x", "e" * 40)])
         for name, other in (("uncertain", dict(op, status="uncertain")),
                             ("another kind", dict(op, kind="pr_update")),
                             ("another contribution", dict(op, contribution_id="other/1"))):
             with self.subTest(name):
-                self.assertEqual(patch_review.confirmed_heads(rec, [other]), set())
+                self.assertEqual(patch_review.confirmed_heads(rec, [other]), {})
 
     def test_a_comment_due_beyond_the_record_drops_the_oldest_exhausted_one(self):
         rec = contribution(activity="fix_needed")

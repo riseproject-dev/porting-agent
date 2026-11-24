@@ -1318,6 +1318,77 @@ class TestCommentFromTheBranch(unittest.TestCase):
         self.assertIn("record_head_change", kinds(out))
         self.assert_due(rec, eid)
 
+    def test_a_human_resolution_that_confirms_the_push_makes_it_due(self):
+        # The uncertain operation of the push is never discovered: a human
+        # confirms it with `resolve-operation`, and that makes the comment
+        # due, beside the command; a comment it drops to fit the bound is
+        # alerted on.
+        rec, eid = self.publishing_anyway()
+        rec, _ = self.run_tick(rec, [self.uncertain(rec)])
+        [op] = self.operations.values()
+        self.assertEqual(op["status"], "uncertain")
+        full = [{"evidence_id": f"patch-review-old-{k:02d}", "head": CANDIDATE,
+                 "repository": rec["fork"]["name"], "pr_number": rec["fork"]["pr_number"],
+                 "attempts": 5, "next_attempt_at": NOW, "launched_at": None,
+                 "last_reason": "HTTP 404", "exhausted": True}
+                for k in range(patch_review.RECORDED_DUE_COMMENTS)]
+        rec = engine.record_beside(rec, "review_comment_due", now=NOW, review_comments=full)
+        self.evidence["ev-resolve"] = {
+            "schema_version": 1, "evidence_id": "ev-resolve", "kind": "resolution",
+            "policy_version": "p", "collected_at": NOW,
+            "summary": "the reviewed commit is on the development branch"}
+        rec, out = self.run_tick(rec, comments=[
+            f"/upstreaming resolve-operation operation={op['operation_id']} "
+            "disposition=confirmed evidence=ev-resolve"])
+        self.assertEqual([c["result"] for c in out.report["controller"]["commands"]],
+                         ["accepted"])
+        self.assertEqual([o["status"] for o in self.operations.values()], ["confirmed"])
+        self.assertIn((eid, CANDIDATE),
+                      [(d["evidence_id"], d["head"]) for d in rec["review_comments"]])
+        self.assertEqual(out.report["controller"]["comments_due"],
+                         [{"contribution": rec["contribution_id"], "review_comments_due": [eid],
+                           "review_comments_dropped": ["patch-review-old-00"]}])
+        self.assertTrue(any("patch-review-old-00" in a["alert"] and "dropped to fit" in a["alert"]
+                            for a in out.report["controller"]["alerts"]))
+
+    def late_uncertain_in_the_human_wait(self):
+        """Every publish-only retry dies before its upload until
+        `publish_recovery` is exhausted, then the `uncertain` Result of the
+        push arrives late: no operation is stored, and the human wait never
+        records the head the observation reads."""
+        rec, eid = self.publishing_anyway()
+        unc = self.uncertain(rec)
+        while engine.state_key(rec) == "development.publishing":
+            rec, _ = self.run_tick(rec, head=SHA_A, step=61)
+            self.assertLess(self.minutes, 61 * 40)
+        self.assertEqual(engine.state_key(rec), "development.waiting_human")
+        rec, out = self.run_tick(rec, [unc], head=CANDIDATE)
+        self.assertEqual(kinds(out), ["record_late_effect"])
+        rec, _ = self.run_tick(rec, head=CANDIDATE, step=3000)
+        self.assertEqual((rec["review_comments"], self.operations), ([], {}))
+        return rec, eid
+
+    def test_a_park_after_a_late_uncertain_result_makes_it_due(self):
+        rec, eid = self.late_uncertain_in_the_human_wait()
+        rec, out = self.run_tick(rec, head=CANDIDATE, comments=[
+            f'/upstreaming park revision={rec["revision"]} reason="no"'])
+        self.assertEqual(engine.state_key(rec), "parked.idle")
+        self.assert_due(rec, eid)
+        self.assertEqual([(r["evidence_id"], r["attempt"])
+                          for r in out.report["review_comment_requests"]], [(eid, 1)])
+        # A park then an abandon: the abandon finds it due already.
+        rec, out = self.run_tick(rec, head=CANDIDATE, comments=[
+            f'/upstreaming abandon revision={rec["revision"]} reason="no"'])
+        self.assertEqual(rec["phase"], "closed")
+        self.assertEqual([d["evidence_id"] for d in rec["review_comments"]], [eid])
+        self.assertNotIn("comments_due", out.report["controller"])
+
+    def test_a_command_that_keeps_the_state_makes_nothing_due(self):
+        rec, _eid = self.late_uncertain_in_the_human_wait()
+        rec, out = self.run_tick(rec, head=CANDIDATE, comments=['/upstreaming pause reason="x"'])
+        self.assertTrue(rec["paused"])
+        self.assertEqual(rec["review_comments"], [])
+
     def test_no_other_review_or_commit_makes_a_comment_due(self):
         # A head that is not the reviewed commit makes nothing due.
         rec, _eid = self.publishing_anyway()

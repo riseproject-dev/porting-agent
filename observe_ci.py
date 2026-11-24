@@ -355,8 +355,12 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                     entry["operation"] = {"id": op["operation_id"], "discovery": result}
             # A branch operation discovery confirms whose commit a
             # `publish_anyway` review pinned: the patch published anyway is
-            # on the branch, so its comment is due, in any state.
-            rec = landed_comment(obs, entry, rec, patch_review.confirmed_heads(rec, discovered),
+            # on the branch, so its comment is due, in any state. The
+            # comment names the head discovery read, which a signed replay
+            # confirmed by its tree and parents may have changed.
+            rec = landed_comment(obs, entry, rec,
+                                 patch_review.confirmed_heads(rec, discovered,
+                                                              head and head["head"]),
                                  evidence, now=now)
             if rec["phase"] == "upstream_review" and not human_wait_without_observation(rec):
                 # The upstream PR, not the branch, is what upstream review
@@ -454,7 +458,8 @@ def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, 
     return verdict, ev, next_poll_at, snap
 
 
-def landed_comment(obs: Observation, entry: dict, record: dict, heads: set[str],
+def landed_comment(obs: Observation, entry: dict, record: dict,
+                   heads: set[str] | dict[str, str],
                    evidence: dict[str, dict], *, now: str) -> dict:
     """Make due, beside the observation, the comment of every
     ``publish_anyway`` review whose pinned commit is one of ``heads``, the

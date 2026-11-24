@@ -632,9 +632,11 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             # errored: the tick is computed again without it, so nothing is
             # launched for it.
             with isolation.contribution(target, "command"):
-                receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now, policy)
+                receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now, policy,
+                                 evidence or {})
         elif d.accepted:
-            receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now, policy)
+            receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now, policy,
+                             evidence or {})
         consumed[receipt["comment_id"]] = receipt
         res.stage("commands", receipt)
         rep["commands"].append({"comment": receipt["comment_id"], "result": receipt["result"],
@@ -1927,12 +1929,15 @@ RESOLUTION_FIRES: dict[tuple[str, str], tuple[frozenset[str], dict]] = {
 
 
 def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dict,
-                       inputs: Inputs, res: TickResult, now: str, policy: dict) -> dict:
+                       inputs: Inputs, res: TickResult, now: str, policy: dict,
+                       store: dict[str, dict]) -> dict:
     """`/upstreaming resolve-operation` by the operation table: the one
     `resolve_*` row whose guards hold. The authority of the actor was checked
     at intake. An operation that reaches `confirmed` or `failed` fires its
     lifecycle row when the resolution establishes the row's guards; the
-    record's reference to the closed operation is released."""
+    record's reference to the closed operation is released. ``store`` is the
+    store's evidence by id: a branch operation confirmed at the commit a
+    ``publish_anyway`` review pinned makes its comment due."""
     op = operations.get(cmd.args["operation"])
     if op is None:
         return dict(receipt, result="rejected", reason="unknown operation")
@@ -1955,6 +1960,11 @@ def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dic
                               cause_id=receipt["command_id"],
                               open_operations=_open_operations(rec, operations))
     changed = fired.record if fired is not None and fired.accepted else recovery.release(rec, new, now)
+    # A branch operation a human confirms whose commit a `publish_anyway`
+    # review pinned: the patch published anyway is on the branch, so its
+    # comment is due, in any state.
+    changed = _landed_due(changed, patch_review.confirmed_heads(changed, [new]), store, res,
+                          now)
     if changed is not rec:
         by_id[rec["contribution_id"]] = changed
         res.stage("contributions", changed)
@@ -1966,9 +1976,10 @@ def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dic
 
 
 def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: Inputs,
-           res: TickResult, now: str, policy: dict) -> dict:
+           res: TickResult, now: str, policy: dict, evidence: dict[str, dict]) -> dict:
     if cmd.verb == "resolve-operation":
-        return _resolve_operation(cmd, receipt, by_id, operations, inputs, res, now, policy)
+        return _resolve_operation(cmd, receipt, by_id, operations, inputs, res, now, policy,
+                                  evidence)
     # The contribution is the one tracked by the issue the comment was posted on.
     rec = intake.contribution_for_issue(by_id.values(), receipt["issue_number"])
     if rec is None:
@@ -1985,12 +1996,43 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
         return dict(receipt, result="rejected", reason=str(e))
     if not out.accepted:
         return dict(receipt, result="rejected", reason=out.reason)
-    by_id[rec["contribution_id"]] = out.record
-    res.stage("contributions", out.record)
+    moved = out.record
+    if engine.state_key(moved) != engine.state_key(rec):
+        # A command that moves the record out of a state whose observation
+        # does not record the head (a human wait) when the development
+        # branch is at a head other than the recorded one: a patch
+        # published anyway that is that head makes its comment due now,
+        # since a park, an abandon or a replan never records it.
+        observed = inputs.observed_dev_heads.get(rec["contribution_id"])
+        if observed and observed != (moved.get("fork") or {}).get("head_sha"):
+            moved = _landed_due(moved, {observed}, evidence, res, now)
+    by_id[rec["contribution_id"]] = moved
+    res.stage("contributions", moved)
     if out.event:
         res.stage("events", out.event)
     _restart_launches(out, operations, res, now)
     return receipt
+
+
+def _landed_due(rec: dict, heads, evidence: dict[str, dict], res: TickResult,
+                now: str) -> dict:
+    """The record with the comment of every ``publish_anyway`` review whose
+    pinned commit is one of ``heads`` due beside the command
+    (``patch_review.landed_anyway``). The comments made due, and any dropped
+    to fit them, are named in the report (``comments_due``); the tick
+    alerts on each dropped."""
+    due, dropped = patch_review.comment_due(
+        rec, patch_review.landed_anyway(rec, heads, evidence), now=now)
+    if due == (rec.get("review_comments") or []):
+        return rec
+    before = {item["evidence_id"] for item in rec.get("review_comments") or []}
+    entry = {"contribution": rec["contribution_id"],
+             "review_comments_due": [item["evidence_id"] for item in due
+                                     if item["evidence_id"] not in before]}
+    if dropped:
+        entry["review_comments_dropped"] = [item["evidence_id"] for item in dropped]
+    res.report.setdefault("comments_due", []).append(entry)
+    return engine.record_beside(rec, "review_comment_due", now=now, review_comments=due)
 
 
 def _restart_launches(out: engine.Outcome, operations: dict, res: TickResult, now: str) -> None:

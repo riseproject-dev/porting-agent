@@ -1432,8 +1432,10 @@ LIFECYCLE: dict[str, State] = {
                             "than the recorded one, so this row records it first. A new head "
                             "that is the commit a patch published anyway was pinned to makes "
                             "the comment of that review due on the development PR, beside the "
-                            "row (`review_comments`), as does the discovery of a branch "
-                            "operation confirmed at that commit in any state."),
+                            "row (`review_comments`), as does a branch operation confirmed at "
+                            "that commit in any state (by discovery or by `resolve-operation`), "
+                            "and a command that moves the record out of a human wait while "
+                            "the branch is observed at that commit."),
             ("record_actionable_review", SELF): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),

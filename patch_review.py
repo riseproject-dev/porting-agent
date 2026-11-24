@@ -485,7 +485,7 @@ def pending_published_anyway(record: dict) -> list[tuple[str, str]]:
     return [(review["evidence_id"], (record.get("held_patch") or {}).get("candidate"))]
 
 
-def landed_anyway(record: dict, heads: set[str] | list[str],
+def landed_anyway(record: dict, heads: set[str] | list[str] | dict[str, str],
                   evidence: dict[str, dict]) -> list[tuple[str, str]]:
     """The reviews whose comment trusted branch evidence makes due, as
     ``(evidence id, head)``: every ``patch_review`` evidence of the
@@ -493,12 +493,18 @@ def landed_anyway(record: dict, heads: set[str] | list[str],
     and whose pinned commit (``patch.candidate``) is one of ``heads``, the
     commits that evidence shows on the development branch: the proposed
     commit of a branch operation of the contribution once it is
-    ``confirmed`` (by discovery or by the read-back of a publish-only
-    retry), or a fork head that ``record_head_change`` records. However the
-    Result of that publication ends (uncertain, lost, or folded after a
-    pause, a processing error or the exhaustion of ``publish_recovery``),
-    the reviewed commit on the branch is the patch published anyway."""
-    heads = {h for h in heads if isinstance(h, str) and _SHA.match(h)}
+    ``confirmed`` (by discovery, by the read-back of a publish-only retry,
+    or by a human resolution), or a fork head that ``record_head_change``
+    records, or the head observed when a command moves a record whose
+    recorded head it is not. However the Result of that publication ends
+    (uncertain, lost, or folded after a pause, a processing error or the
+    exhaustion of ``publish_recovery``), the reviewed commit on the branch
+    is the patch published anyway. ``heads`` may map each pinned commit to
+    the commit the branch holds for it (``confirmed_heads``), which the
+    comment names."""
+    heads = dict(heads) if isinstance(heads, dict) else {h: h for h in heads}
+    heads = {h: (landed if isinstance(landed, str) and _SHA.match(landed) else h)
+             for h, landed in heads.items() if isinstance(h, str) and _SHA.match(h)}
     found = []
     for eid, item in sorted(evidence.items()):
         data = item.get("data") or {}
@@ -506,16 +512,20 @@ def landed_anyway(record: dict, heads: set[str] | list[str],
         if item.get("kind") == STATUS \
                 and item.get("contribution_id") == record["contribution_id"] \
                 and data.get("disposition") == "publish_anyway" and candidate in heads:
-            found.append((eid, candidate))
+            found.append((eid, heads[candidate]))
     return found
 
 
-def confirmed_heads(record: dict, operations) -> set[str]:
+def confirmed_heads(record: dict, operations, observed: str | None = None) -> dict[str, str]:
     """The commits that the confirmed branch operations among ``operations``
     (``branch_update`` or ``branch_rewrite`` of the contribution) put on its
-    branch."""
-    return {str((op.get("proposed") or {}).get("commit"))
+    branch, by proposed commit: the proposed commit itself, or ``observed``,
+    the head the discovery that confirmed them read, which differs from it
+    when discovery confirmed the operation by its tree and parents (a signed
+    replay changes the commit)."""
+    return {str(prop.get("commit")): (observed or str(prop.get("commit")))
             for op in operations
+            for prop in [op.get("proposed") or {}]
             if op.get("contribution_id") == record["contribution_id"]
             and op.get("kind") in ("branch_update", "branch_rewrite")
             and op.get("status") == "confirmed"}
@@ -532,9 +542,9 @@ def comment_due(record: dict, reviews: list[tuple[str, str]], *,
     launched), and no attempt yet, due now. Idempotent by evidence id.
 
     The record holds ``RECORDED_DUE_COMMENTS``: beyond it the oldest
-    exhausted comments that are not launched are dropped first, then the
-    oldest that are not launched, then the oldest; each one dropped is
-    returned for the alert of the tick."""
+    exhausted comment that is not launched is dropped first, then the
+    oldest exhausted one, then the oldest that is not launched, then the
+    oldest; each one dropped is returned for the alert of the tick."""
     due = [dict(item) for item in record.get("review_comments") or []]
     fork = record.get("fork") or {}
     for eid, head in reviews:

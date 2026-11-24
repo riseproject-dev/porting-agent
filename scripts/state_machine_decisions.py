@@ -1018,11 +1018,21 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Trusted branch evidence makes the comment due too, in the same write, in any state, "
         "once per review: a branch operation of the contribution that becomes `confirmed` "
         "(by discovery, which reads the branch in a human wait and while paused too, by the "
-        "read-back of a publish-only retry, or in a Result folded or recorded late) at the "
-        "commit a `publish_anyway` review pinned, or a fork head at that commit that "
-        "`record_head_change` records. So an uncertain push, or a retry whose run died before "
-        "its upload, followed by a pause, a processing error, or the exhaustion of "
-        "`publish_recovery`, still leaves the comment due once the branch shows the commit. "
+        "read-back of a publish-only retry, in a Result folded or recorded late, or by a "
+        "human with `resolve-operation`) at the commit a `publish_anyway` review pinned, a "
+        "fork head at that commit that `record_head_change` records, or the head this tick's "
+        "observation read at that commit when a command moves the record out of a state "
+        "whose observation does not record the head (a resume, a park, or a replan from a "
+        "human wait), since that head is otherwise never recorded. So an uncertain push, or "
+        "a retry whose run died before its upload, followed by a pause, a processing error, "
+        "or the exhaustion of `publish_recovery`, still leaves the comment due once the "
+        "branch shows the commit, whether the record is resumed, parked or replanned. In a "
+        "human wait with no stored operation of that push (every retry died before its "
+        "upload, or its `uncertain` Result arrived after the wait began) the comment becomes "
+        "due only when a command moves the record: an observed head that no write records "
+        "would make it due again after every post. The comment names the commit the branch "
+        "holds, which discovery that confirmed the operation by its tree and parents may "
+        "read under another SHA than the pinned one. "
         "An `uncertain` Result alone makes nothing due, since the comment says the patch was "
         "published at that commit. A resume from a human wait requests no development Work "
         "while this tick's observation read the branch at another head than the recorded "
@@ -1031,9 +1041,10 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "beyond the 32 the record holds drops the oldest exhausted comment, else the oldest "
         "other one, each with an alert. No row, state, or budget changes.",
         ("development.publishing", "development.waiting_human", "development.fix_needed",
-         "development.waiting_ci"),
+         "development.waiting_ci", "parked.idle"),
         edges=(("development.publishing", "exhaust_publish_recovery"),
                ("development.waiting_human", "resume_development"),
+               ("development.waiting_human", "park_contribution"),
                ("development.fix_needed", "record_head_change")),
         highlighted=(("development.fix_needed", "record_head_change"),),
     ),

@@ -2763,7 +2763,7 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
     comments are dropped, each with an alert, and so is every comment this
     tick dropped to fit the comments it made due within
     ``RECORDED_DUE_COMMENTS`` (``patch_review.comment_due``), named in its
-    event or its observation."""
+    event, its observation or the report of the controller."""
     report: list[dict] = []
     out.report.setdefault("review_comment_requests", [])
     alerts = out.report["controller"]["alerts"]
@@ -2771,7 +2771,8 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
     named = [(r.get("contribution_id"), (r.get("details") or {}).get("review_comments_dropped"))
              for kind, r in out.staged if kind == "events"] + [
         (item.get("contribution"), item.get("review_comments_dropped"))
-        for item in out.report.get("observation") or []]
+        for item in (out.report.get("observation") or [])
+        + ((out.report.get("controller") or {}).get("comments_due") or [])]
     for cid, dropped in named:
         for eid in dropped or []:
             alerts.append({"contribution": cid, "alert": (
