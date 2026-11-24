@@ -441,7 +441,8 @@ class TestProcessingErrorStop(unittest.TestCase):
         out = self.take(rec)
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual(out.record, dict(rec, paused=True, paused_at=NOW, paused_by="controller",
-                                          paused_reason=self.REASON, updated_at=NOW))
+                                          paused_reason=self.REASON, paused_at_commit=None,
+                                          updated_at=NOW))
         self.assertEqual((out.event["kind"], out.event["cause"], out.event["revision_bumped"]),
                          ("pause_on_processing_error", {"type": "tick", "id": "7"}, False))
 

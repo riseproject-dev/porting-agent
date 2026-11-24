@@ -18,6 +18,7 @@ import json
 import sys
 from pathlib import Path
 
+import engine
 import lifecycle as lc
 from scripts.state_machine_decisions import (
     DECISIONS,
@@ -493,7 +494,9 @@ def contribution_schema(committed: dict) -> str:
     """The contribution record schema with the parts the table defines: the
     `phase` and `activity` enums are the phases and activities of the
     table's states, the counter a pending human action names is a budget of
-    the table, and every property of the record is required."""
+    the table, and every property of the record is required but the
+    optional ones (``engine.OPTIONAL_RECORD_FIELDS``), which no record is
+    migrated for."""
     schema = json.loads(json.dumps(committed))
     props = schema["properties"]
     for name, values in (("phase", lc.PHASES), ("activity", lc.ACTIVITIES)):
@@ -501,7 +504,7 @@ def contribution_schema(committed: dict) -> str:
     pending = next(branch for branch in props["pending_human_action"]["anyOf"]
                    if branch.get("type") == "object")
     pending["properties"]["counter"] = {"enum": [*lc.BUDGETS, None]}
-    schema["required"] = list(props)
+    schema["required"] = [name for name in props if name not in engine.OPTIONAL_RECORD_FIELDS]
     return json.dumps(schema, indent=2, ensure_ascii=False) + "\n"
 
 

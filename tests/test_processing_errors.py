@@ -952,6 +952,7 @@ class TestReconcileCommand(unittest.TestCase):
         a = json.loads(after[".state/contributions/example--proj--12.json"])
         self.assertEqual(a, dict(self.a, paused=True, paused_by="controller",
                                  paused_at=a["paused_at"], paused_reason=a["paused_reason"],
+                                 paused_at_commit=reconcile.pipeline_version(),
                                  updated_at=a["updated_at"]))
         self.assertEqual(json.loads(after[".state/events/example--proj--12/00000000.json"])["kind"],
                          VERB)

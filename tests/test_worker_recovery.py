@@ -198,6 +198,9 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
             publication = self.publication(temporary)
         record, operations, project = self.state()
         record["revision"] += 1
+        # `development.waiting_ci` requires the development PR: a record
+        # without one is healed first (``reconcile._heal_invariant``).
+        record["fork"] = dict(record["fork"], pr_number=12)
 
         def tick(record, now):
             return reconcile.tick(

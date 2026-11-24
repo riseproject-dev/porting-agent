@@ -464,7 +464,10 @@ class Flag:
     exception is ``set_moves``: setting the flag clears the requested Work,
     so a state that holds requested Work is left for the state in which that
     Work is due again. A setter that is not a command records its reason. ``mask`` says what each trigger may still do while
-    the flag is set.
+    the flag is set. ``variants`` maps a verb of ``cleared_by`` to the same
+    clear under another trigger, with its own guards (the controller's
+    resume after a processing error): the engine takes it when no command
+    is given.
     """
 
     field: str
@@ -473,6 +476,12 @@ class Flag:
     cleared_by: dict[str, Transition]
     set_moves: dict[str, str]
     mask: dict[Trigger, str]
+    variants: dict[str, Transition] = field(default_factory=dict)
+
+    def transitions(self) -> list[tuple[str, Transition]]:
+        """Every setter, clearer and variant of a clearer, as (verb,
+        transition)."""
+        return [*self.set_by.items(), *self.cleared_by.items(), *self.variants.items()]
 
 
 @dataclass(frozen=True)
@@ -651,7 +660,16 @@ _REFRESH_EFFECTS = _E(
             "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
             "pending_human_action", "publication_operation_id", "pending_publication",
             "held_patch", OVERRIDDEN_REVIEWS))
-_FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
+_FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by", "paused_at_commit")
+# The controller resumes a contribution it paused after a processing error
+# once, after the pipeline code changed (`resume_pause` from the tick):
+# `pause_on_processing_error` records the version of the pipeline code it
+# ran (`paused_at_commit`), and an absent one counts as changed. A failed
+# retry pauses again at the new version; a human `pause` takes the stop over
+# and ends the automatic resume.
+PAUSED_FOR_ERROR = "paused by the controller after a processing error"
+PIPELINE_CHANGED = "the pipeline code changed since the pause"
+PAUSE_ALLOWED = "not paused, or paused by the controller"
 # The guard of the controller's stop after a processing error, and the stops
 # set by the controller whose reason the caller states: the engine refuses
 # such a stop without one. Every other controller stop names its reason in
@@ -2735,10 +2753,13 @@ FLAGS: dict[str, Flag] = {
         {
             "pause": Transition(
                 _C, "/upstreaming pause",
-                (NOT_PAUSED, "not terminal", ANY_REVISION),
+                (PAUSE_ALLOWED, "not terminal", ANY_REVISION),
                 _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=human"),
-                  clears=_HELD),
-                description="A reason is optional; when given it is recorded in `paused_reason`."),
+                  clears=(*_HELD, "paused_at_commit")),
+                description="A reason is optional; when given it is recorded in `paused_reason`. "
+                            "A pause the controller set is taken over: the stop is then the "
+                            "human's (`paused_by` `human`), and the controller no longer resumes "
+                            "it after a change of the pipeline code."),
             "pause_on_identity_change": Transition(
                 _O, None,
                 (NOT_PAUSED, "not terminal",
@@ -2754,7 +2775,8 @@ FLAGS: dict[str, Flag] = {
             "pause_on_processing_error": Transition(
                 _K, None,
                 (NOT_PAUSED, "not terminal", PROCESSING_ERROR),
-                _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=controller"),
+                _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=controller",
+                                       "paused_at_commit"),
                   clears=_HELD),
                 description="Everything the tick staged for the contribution and every effect "
                             "it requested for it are discarded first, so the stop is taken on "
@@ -2762,7 +2784,9 @@ FLAGS: dict[str, Flag] = {
                             "states the error class, the bounded and sanitized message, and the "
                             "run id. The tick continues with the other contributions. A "
                             "contribution that is already paused is not paused again. Commands "
-                            "posted for the contribution are left unconsumed for the tick."),
+                            "posted for the contribution are left unconsumed for the tick. "
+                            "`paused_at_commit` records the version of the pipeline code that "
+                            "ran, so the controller resumes the stop once that code changed."),
         },
         {
             "resume_pause": Transition(
@@ -2801,7 +2825,22 @@ FLAGS: dict[str, Flag] = {
             _P: "Folded normally: a receipt finishes the operation in flight. The publisher's "
                 "final check reads `paused`; an effect that passed it before the pause may "
                 "finish.",
-            _K: "No launch, no Work allocation, no budget charge; reminders are suppressed.",
+            _K: "No launch, no Work allocation, no budget charge; reminders are suppressed. "
+                "The one tick row is the controller's resume of its own stop after a processing "
+                "error, once the pipeline code changed.",
+        },
+        variants={
+            "resume_pause": Transition(
+                _K, None,
+                ("paused", PAUSED_FOR_ERROR, PIPELINE_CHANGED, FLAG_NOT_STALE,
+                 "no open operation"),
+                _E(revision="bump", clears=_FLAG_FIELDS),
+                description="The controller retries a contribution it paused after a "
+                            "processing error once the pipeline code changed since the pause "
+                            "(`paused_at_commit` differs from the version that runs, or the "
+                            "pause recorded none), with no counter: a retry that fails again "
+                            "pauses at the new version and waits for the next change, or for a "
+                            "human `resume`. The effects are those of the command."),
         },
     ),
 }
@@ -4696,7 +4735,7 @@ def _check_flags(problems: list[str]) -> None:
     for name, f in FLAGS.items():
         if not f.set_by or not f.cleared_by:
             problems.append(f"flag {name}: no set or no clear transition")
-        for verb, t in (*f.set_by.items(), *f.cleared_by.items()):
+        for verb, t in f.transitions():
             where = f"flag {name} {verb}"
             if verb in table_verbs:
                 problems.append(f"{where}: is also a table verb")
@@ -4705,7 +4744,10 @@ def _check_flags(problems: list[str]) -> None:
             where = f"flag {name} {verb}"
             if f.field not in t.effects.sets:
                 problems.append(f"{where}: does not set {f.field}")
-            if NOT_PAUSED not in t.guard and name == "paused":
+            # A human pause may take over the controller's stop; every other
+            # setter applies only to a record that is not paused.
+            allowed = (NOT_PAUSED, PAUSE_ALLOWED) if t.trigger == Trigger.COMMAND else (NOT_PAUSED,)
+            if name == "paused" and not set(allowed) & set(t.guard):
                 problems.append(f"{where}: sets the flag without the guard {NOT_PAUSED!r}")
             if t.effects.work != "clear":
                 problems.append(f"{where}: setting the flag must clear the requested Work")
@@ -4737,6 +4779,17 @@ def _check_flags(problems: list[str]) -> None:
             extra = [c for c in t.effects.clears if not c.startswith(f.field)]
             if extra or t.effects.sets:
                 problems.append(f"{where}: changes more than the flag: {extra or t.effects.sets}")
+        for verb, t in f.variants.items():
+            where = f"flag {name} {verb} ({t.trigger})"
+            clear = f.cleared_by.get(verb)
+            if clear is None:
+                problems.append(f"{where}: a variant of no clear transition")
+            elif t.trigger == clear.trigger or t.command is not None:
+                problems.append(f"{where}: a variant must have another trigger and no command")
+            elif t.effects != clear.effects:
+                problems.append(f"{where}: a variant must have the effects of {verb}")
+            if t.trigger != Trigger.COMMAND and FLAG_NOT_STALE not in t.guard:
+                problems.append(f"{where}: a resume without the guard {FLAG_NOT_STALE!r}")
         holding = allocated | set(HELD_PATCH_STATES)
         if set(f.set_moves) != holding:
             problems.append(f"flag {name}: set_moves {sorted(f.set_moves)} differ from the states "
@@ -4991,7 +5044,7 @@ def _check_counter_restarts(problems: list[str]) -> None:
             problems.append(f"rule {verb}: starts {name!r} again, but no exhaustion of it names "
                             "its counter on the way into a human wait the rule resumes")
     for f in FLAGS.values():
-        for verb, t in (*f.set_by.items(), *f.cleared_by.items()):
+        for verb, t in f.transitions():
             if t.effects.restarts:
                 problems.append(f"flag {f.field} {verb}: a flag transition starts a counter again")
 
@@ -5233,7 +5286,7 @@ def requirement_edges():
                 continue
             for verb, t in flag.set_by.items():
                 yield state, verb, t, flag.set_moves.get(state, state)
-            for verb, t in flag.cleared_by.items():
+            for verb, t in (*flag.cleared_by.items(), *flag.variants.items()):
                 yield state, verb, t, state
 
 

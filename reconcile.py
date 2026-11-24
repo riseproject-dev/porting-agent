@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import traceback
 from dataclasses import dataclass, field
@@ -2074,7 +2075,8 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         outcome = None
         if record is not None:
             try:
-                outcome = pause_on_processing_error(record, description, policy=policy, now=iso)
+                outcome = pause_on_processing_error(record, description, policy=policy, now=iso,
+                                                    version=inputs.get("pipeline"))
             except Exception as error:
                 raise isolation.TickFailure(
                     f"pause_on_processing_error could not be applied to {cid} after "
@@ -2122,13 +2124,16 @@ PROCESSING_ERROR_VERB = "pause_on_processing_error"
 
 
 def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
-                              now: str) -> engine.Applied | engine.Refused:
+                              now: str, version: str | None = None
+                              ) -> engine.Applied | engine.Refused:
     """Take the table's ``pause_on_processing_error`` on the committed record.
 
     It sets ``paused`` with the error as ``paused_reason``, ``paused_by``
     ``controller`` and ``paused_at``, and clears the requested Work and the
     pending publication; from an ``agent_running`` state
-    it leads to the state in which the Work is due. The row is refused,
+    it leads to the state in which the Work is due. ``paused_at_commit``
+    records ``version``, the pipeline code that ran, so the controller
+    resumes the stop once that code changed. The row is refused,
     and nothing changes, when the contribution is already paused or
     terminal; its caller handles every refusal (``engine.HANDLING``).
     """
@@ -2137,7 +2142,9 @@ def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
     return engine.try_apply_transition(record, PROCESSING_ERROR_VERB, policy=policy, now=now,
                                        cause_id=description["run_id"],
                                        facts={"processing_error"},
-                                       values={"paused_reason": reason}, details=details)
+                                       values={"paused_reason": reason,
+                                               "paused_at_commit": version},
+                                       details=details)
 
 
 def fold_ci_rerun_receipts(api: collect.Api, receipts: list[dict], contributions: dict[str, dict],
@@ -2446,6 +2453,104 @@ def fold_provisioning_receipts(api: collect.Api, receipts: list[dict], contribut
 _FORK_PHASES = ("development", "handoff", "upstream_review", "release_wait")
 
 
+def pipeline_version(code_root: Path | None = None) -> str | None:
+    """The version of the pipeline code that runs: the SHA-256 of the
+    top-level git tree of ``HEAD`` without `.state`, so the state commit of
+    every tick does not change it and a shallow checkout reads it as well.
+    ``None`` when git cannot read it; then nothing is resumed for a code
+    change."""
+    root = code_root or Path(__file__).resolve().parent
+    try:
+        listing = subprocess.run(["git", "-C", str(root), "ls-tree", "HEAD"],
+                                 capture_output=True, check=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = [line for line in listing.splitlines() if line.partition("\t")[2] != ".state"]
+    if not lines:
+        return None
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+def _resume_after_error(record: dict, *, policy: dict, now: str,
+                        version: str | None) -> engine.Applied | None:
+    """The controller's resume of its own stop after a processing error
+    (``resume_pause`` taken by the tick): once the pipeline code changed
+    since the pause (``paused_at_commit`` differs from ``version``, or the
+    pause recorded none), while no operation is open and the stop is not
+    stale. ``None`` when the row is not taken; a retry that fails again
+    pauses at the new version."""
+    if not engine.paused_for_error(record):
+        return None
+    changed = version is not None and record.get("paused_at_commit") != version
+    match engine.dispatch(engine.try_apply_transition(
+            record, "resume_pause", policy=policy, now=now,
+            cause_id=f"pipeline:{(version or 'unknown')[:12]}",
+            facts={"pipeline_changed_since_pause"} if changed else set(),
+            details={"automatic": True, "paused_at_commit": record.get("paused_at_commit"),
+                     "pipeline_version": version,
+                     "paused_reason": str(record.get("paused_reason") or "")[:500]}),
+            ("reconcile", "_resume_after_error")):
+        case engine.Applied() as out:
+            return out
+        case engine.Skip(_refused):
+            return None
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "_resume_after_error"))
+
+
+# The row a loaded record that breaks an invariant of its state takes when
+# the invariant names none, or none leaves its state.
+DEFAULT_HEAL = "pause_on_processing_error"
+
+
+def heal_verb(record: dict, name: str) -> str:
+    """The row that heals the invariant ``name`` the record breaks: the
+    invariant's own (``Invariant.heal``) when its state has that row, else
+    the controller's stop (``DEFAULT_HEAL``)."""
+    heal = lifecycle.INVARIANTS[name].heal
+    state = engine.state_key(record)
+    if heal and any(e.verb == heal for e in lifecycle.state_edges(state)):
+        return heal
+    return DEFAULT_HEAL
+
+
+def _heal_invariant(record: dict, name: str, why: str, *, policy: dict, now: str,
+                    version: str | None) -> engine.Applied | str:
+    """Take the row that heals a loaded record that breaks the invariant
+    ``name`` of its state, never an edit by hand: the invariant's row, or
+    the controller's stop with the reason `invariant_violation: <state>
+    requires <name>`. Why not, when it is not taken: a paused record is
+    healed by the first tick after the resume, and a stopped or ended one
+    is not stopped again."""
+    state = engine.state_key(record)
+    reason = f"invariant_violation: {state} requires {name}: {why}"[:2000]
+    verb = heal_verb(record, name)
+    if verb == DEFAULT_HEAL:
+        outcome = engine.try_apply_transition(
+            record, DEFAULT_HEAL, policy=policy, now=now, cause_id=f"invariant:{name}",
+            facts={"processing_error"},
+            values={"paused_reason": reason, "paused_at_commit": version},
+            details={"invariant": name, "why": why[:500]})
+    else:
+        outcome = engine.try_apply_transition(
+            record, verb, policy=policy, now=now, cause_id=f"invariant:{name}",
+            facts=HEAL_FACTS[verb], details={"invariant": name, "mismatch": reason[:500]})
+    match engine.dispatch(outcome, ("reconcile", "_heal_invariant"), verb):
+        case engine.Applied() as out:
+            return out
+        case engine.Skip(refused):
+            return f"{verb} is refused ({refused.kind}): {refused.detail}"
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "_heal_invariant"))
+
+
+# What a heal row establishes about the record it heals: a record that names
+# no development PR cannot match one on GitHub.
+HEAL_FACTS: dict[str, set[str]] = {
+    "record_pr_mismatch": {"development_pr_mismatch"},
+}
+
+
 def development_branch_problem(record: dict) -> str | None:
     """Why a record names a development branch other than `riscv64-dev`, or
     ``None``."""
@@ -2473,7 +2578,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          development_pr_runs: dict[str, int] | None = None,
          review_comment_receipts: list[dict] | None = None,
          skip: frozenset[str] = frozenset(), pypi=None,
-         queue_policy: dict | None = None) -> TickOutput:
+         queue_policy: dict | None = None, pipeline: str | None = None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
     process. Every step that works on one contribution runs in an
     ``isolation.contribution`` block; an exception that leaves such a block
@@ -2495,6 +2600,42 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             problem = development_branch_problem(c)
             if problem:
                 raise lifecycle.TransitionError(problem)
+
+    # The controller resumes its own stop after a processing error once the
+    # pipeline code changed, and a record that breaks an invariant of its
+    # state (soft at load) takes the row that heals it; both before anything
+    # else reads the record.
+    resumed, violations, load_alerts = [], [], []
+    for key, c in list(contributions.items()):
+        cid = c["contribution_id"]
+        if cid in skip:
+            continue
+        with isolation.contribution(cid, "resume_after_error"):
+            out_resume = _resume_after_error(c, policy=policy, now=iso, version=pipeline)
+            if out_resume is not None:
+                c = contributions[key] = out_resume.record
+                out.staged.extend([("contributions", c), ("events", out_resume.event)])
+                resumed.append({"contribution": cid, "revision": c["revision"]})
+        with isolation.contribution(cid, "invariants"):
+            for name, why in engine.invariant_problems(c)[:1]:
+                healed = _heal_invariant(c, name, why, policy=policy, now=iso, version=pipeline)
+                applied = isinstance(healed, engine.Applied)
+                entry = {"contribution": cid, "state": engine.state_key(c), "invariant": name,
+                         "why": why, "heal": healed.verb if applied else None}
+                violations.append(entry)
+                load_alerts.append({
+                    "contribution": cid,
+                    "alert": (f"invariant violation: {entry['state']} requires {name}: {why}; "
+                              + (f"healed by {healed.verb}" if applied else
+                                 f"not healed in this tick: {healed}"))})
+                if applied:
+                    c = contributions[key] = healed.record
+                    out.staged.extend([("contributions", c), ("events", healed.event)])
+    # Both lists are in the report only when the tick found something.
+    if resumed:
+        out.report["resumed_after_error"] = resumed
+    if violations:
+        out.report["invariant_violations"] = violations
 
     # Trusted same-fork development PR receipts are independently read back.
     dev_pr_report = []
@@ -2771,6 +2912,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         if kind == "contributions" and r["contribution_id"] in by_cid:
             contributions[by_cid[r["contribution_id"]]] = r
     out.report["controller"] = res.report
+    res.report["alerts"][:0] = load_alerts
     out.report["requested_effects"] = res.requested_effects
     out.report["provision_requests"] = res.report["provision_requests"]
     out.report["dev_pr_requests"] = res.report["dev_pr_requests"]
@@ -3523,6 +3665,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             policy=policy,
             now=now,
             run_id=os.environ.get("GITHUB_RUN_ID"),
+            pipeline=pipeline_version(),
             publications=publications,
             pressure=observed_pressure,
             issues=issues,

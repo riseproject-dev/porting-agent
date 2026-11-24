@@ -846,13 +846,21 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertIn("paused_reason=upstream_identity_changed",
                       flag.set_by["pause_on_identity_change"].effects.sets)
         self.assertNotIn("/upstreaming block", gen.render_index())
-        for t in flag.set_by.values():
+        for verb, t in flag.set_by.items():
             fields = {f.split("=")[0] for f in t.effects.sets}
-            self.assertEqual(fields, {"paused", "paused_at", "paused_reason", "paused_by"})
+            # Only the stop after a processing error records the version of
+            # the pipeline code, which its automatic resume reads.
+            commit = {"paused_at_commit"} if verb == "pause_on_processing_error" else set()
+            self.assertEqual(fields, {"paused", "paused_at", "paused_reason", "paused_by"}
+                             | commit)
             self.assertEqual(t.effects.work, "clear")
         for t in flag.cleared_by.values():
             self.assertEqual(t.trigger, lc.Trigger.COMMAND)
             self.assertEqual(t.effects.revision, "bump")
+        self.assertEqual(set(flag.variants), {"resume_pause"})
+        self.assertEqual(flag.variants["resume_pause"].trigger, lc.Trigger.TICK)
+        self.assertEqual(flag.variants["resume_pause"].effects,
+                         flag.cleared_by["resume_pause"].effects)
         self.assertEqual(set(flag.mask), set(lc.Trigger))
         self.assertEqual(lc.resolve_node("development.agent_running", "pause")[1],
                          "development.fix_needed+paused")
@@ -1180,7 +1188,8 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertEqual((stop.trigger, stop.command), (lc.Trigger.TICK, None))
         self.assertEqual(stop.guard, (lc.NOT_PAUSED, "not terminal", lc.PROCESSING_ERROR))
         self.assertEqual(stop.effects, lc.Effects(
-            work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller"),
+            work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller",
+                            "paused_at_commit"),
             clears=(lc.HELD_RESULT, lc.HELD_PATCH, lc.OVERRIDDEN_REVIEWS)))
         self.assertEqual(lc.CALLER_REASONS, ("pause_on_processing_error",))
 

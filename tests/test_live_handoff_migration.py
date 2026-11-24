@@ -163,7 +163,11 @@ class TestRecordMigration(unittest.TestCase):
         always = {"schema_version", "contribution_id", "project_id", "revision", "phase",
                   "activity", "paused", "tracking_issue", "owners", "upstream", "budget",
                   "created_at", "updated_at"}
-        self.assertEqual(set(engine.RECORD_DEFAULTS), set(schema["properties"]) - always)
+        self.assertEqual(set(engine.RECORD_DEFAULTS), set(schema["required"]) - always)
+        # The one optional field: no record is migrated for it, and an absent
+        # one reads as unknown.
+        self.assertEqual(set(schema["properties"]) - set(schema["required"]),
+                         set(engine.OPTIONAL_RECORD_FIELDS))
         # `budget.source_unavailable` and the fields of its run are optional
         # in the strict schema: an absent count reads 0, so no record is
         # migrated for them.

@@ -1486,7 +1486,11 @@ class TestCommentHolds(unittest.TestCase):
         no_pr = dict(closed, fork=dict(closed["fork"], pr_number=None))
         _, out = self.run_tick(no_pr)
         self.assertEqual(out.report["review_comment_requests"], [])
-        self.assertIn("nothing else will post it", out.report["controller"]["alerts"][0]["alert"])
+        # A paused ended record breaks `closed.idle` and is not stopped again.
+        alerts = [a["alert"] for a in out.report["controller"]["alerts"]]
+        self.assertTrue(alerts[0].startswith("invariant violation: closed.idle requires "
+                                             "not_paused"), alerts)
+        self.assertIn("nothing else will post it", alerts[1])
         # A paused record that is not terminal is held, by the check too.
         paused = contribution(activity="waiting_ci", paused=True,
                               review_comments=[self.due(attempts=1)])

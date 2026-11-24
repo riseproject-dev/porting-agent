@@ -66,7 +66,7 @@ def _effect_fields() -> tuple[str, ...]:
     names: list[str] = []
     transitions = [e.transition for e in lc.table_edges()]
     for flag in lc.FLAGS.values():
-        transitions += [*flag.set_by.values(), *flag.cleared_by.values()]
+        transitions += [t for _verb, t in flag.transitions()]
     for t in transitions:
         if t.effects is not None:
             for entry in (*t.effects.sets, *t.effects.clears):
@@ -218,6 +218,7 @@ PREDICATE_REFUSALS: dict[str, Refusal] = {
     "exact_candidate_head": Refusal.COMMAND_MISMATCH,
     "exact_clean_head": Refusal.COMMAND_MISMATCH,
     "not_paused": Refusal.PAUSED,
+    "pause_allowed": Refusal.PAUSED,
     "no_open_operation": Refusal.FENCED,
     "quiescent": Refusal.FENCED,
     "no_requested_work": Refusal.FENCED,
@@ -330,6 +331,31 @@ def _upstream_bound(ctx: Context) -> str | None:
 @_record("paused", "paused")
 def _paused(ctx: Context) -> str | None:
     return None if ctx.record.get("paused") else "not paused"
+
+
+# The prefixes of `paused_reason` of the controller's stop after an error:
+# a processing error, and a loaded record that breaks an invariant of its
+# state with no row to heal it.
+ERROR_PAUSE_PREFIXES = ("processing_error:", "invariant_violation:")
+
+
+def paused_for_error(record: dict) -> bool:
+    """Whether the controller paused the record after a processing error."""
+    return bool(record.get("paused")) and record.get("paused_by") == "controller" \
+        and str(record.get("paused_reason") or "").startswith(ERROR_PAUSE_PREFIXES)
+
+
+@_record(lc.PAUSED_FOR_ERROR, "paused_for_error")
+def _paused_for_error(ctx: Context) -> str | None:
+    return None if paused_for_error(ctx.record) else \
+        "not paused by the controller after a processing error"
+
+
+@_record(lc.PAUSE_ALLOWED, "pause_allowed")
+def _pause_allowed(ctx: Context) -> str | None:
+    if not ctx.record.get("paused") or ctx.record.get("paused_by") == "controller":
+        return None
+    return "contribution is paused"
 
 
 @_record("not terminal", "not_terminal")
@@ -917,6 +943,7 @@ def _development_proposal_rejected(ctx: Context) -> str | None:
 for _guard, _name in (
     ("worker slot free", "worker_slot_free"),
     ("capacity available", "capacity_available"),
+    (lc.PIPELINE_CHANGED, "pipeline_changed_since_pause"),
     ("intake label removed", "intake_label_removed"),
     ("fork_provision operation planned", "fork_provision_planned"),
     (lc.DEVELOPMENT_PR_PLANNED, "development_pr_operation_planned"),
@@ -1045,7 +1072,7 @@ def table_guards() -> set[str]:
     """Every guard text of the lifecycle table and its flags."""
     guards = {g for e in lc.table_edges() for g in e.transition.guard}
     for flag in lc.FLAGS.values():
-        for t in (*flag.set_by.values(), *flag.cleared_by.values()):
+        for _verb, t in flag.transitions():
             guards.update(t.guard)
     return guards
 
@@ -1279,13 +1306,17 @@ OPEN_DECISIONS: dict[str, str] = {}
 HELD_COMMANDS: dict[str, str] = {}
 
 
-def resolve(state: str, verb: str) -> tuple[lc.Transition, str]:
-    """The transition ``verb`` from ``state`` and the state it leads to."""
+def resolve(state: str, verb: str, *, command: bool = True) -> tuple[lc.Transition, str]:
+    """The transition ``verb`` from ``state`` and the state it leads to.
+    Without a command (``command=False``) a clear of a flag that has a
+    variant under another trigger is that variant (``Flag.variants``)."""
     if state not in lc.LIFECYCLE:
         raise TransitionError(f"{state} is not a state of the lifecycle table")
     for flag in lc.FLAGS.values():
         if verb in flag.set_by:
             return flag.set_by[verb], flag.set_moves.get(state, state)
+        if not command and verb in flag.variants:
+            return flag.variants[verb], state
         if verb in flag.cleared_by:
             return flag.cleared_by[verb], state
     try:
@@ -1366,7 +1397,7 @@ def _guards(record: dict, verb: str, *, policy: dict, now: str, command: Command
     _check_facts(facts)
     state = state_key(record)
     try:
-        t, target = resolve(state, verb)
+        t, target = resolve(state, verb, command=command is not None)
     except TransitionError as error:
         if state not in lc.LIFECYCLE:
             raise
@@ -1497,7 +1528,8 @@ def _derived(name: str, ctx: Context) -> tuple[bool, Any]:
 # ``sets`` entries the engine always derives; the caller gives no value.
 ENGINE_VALUES = (lc.WORK_FEEDBACK, lc.RERUNS)
 # ``sets`` entries whose value the caller may omit.
-OPTIONAL_VALUES = frozenset({"admission_override", "paused_reason", lc.PENDING_COUNTER})
+OPTIONAL_VALUES = frozenset({"admission_override", "paused_reason", "paused_at_commit",
+                             lc.PENDING_COUNTER})
 # ``sets`` entries filled from the command's reason when no value is given.
 REASON_VALUES = frozenset({"parked_reason", "paused_reason"})
 
@@ -1736,7 +1768,8 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
             _put(rec, name, derived_value)
         elif name in REASON_VALUES and _command_arg(ctx, "reason"):
             _put(rec, name, _command_arg(ctx, "reason")[:2000])
-        elif name in OPTIONAL_VALUES and verb not in lc.CALLER_REASONS:
+        elif name in OPTIONAL_VALUES and (verb not in lc.CALLER_REASONS
+                                          or name not in REASON_VALUES):
             _put(rec, name, None)
         else:
             raise TransitionError(f"{verb} sets {name}; a value is required")
@@ -1979,6 +2012,11 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "release_acceptance": None, "pending_human_action": None, "follows": None,
     "next_poll_at": None,
 }
+# The fields of the record the strict schema does not require: an absent
+# one reads as unknown, so no record is migrated for it. `paused_at_commit`
+# is the version of the pipeline code a controller stop after a processing
+# error ran (the controller resumes the stop once that code changed).
+OPTIONAL_RECORD_FIELDS = ("paused_at_commit",)
 # The counts of `budget` a record may lack; `reruns` starts for the recorded
 # head (``fresh_reruns``), as the engine reads absent rerun counts.
 BUDGET_DEFAULTS: dict[str, Any] = {
@@ -2375,6 +2413,15 @@ handles("reconcile", "fold_patch_result",
 # The stop after a processing error is the last resort: a refusal (already
 # paused or terminal) is reported, never raised.
 handles("reconcile", "tick", "pause_on_processing_error", dict.fromkeys(Refusal, SKIP))
+# The controller's resume of its own stop waits while the code is unchanged
+# (`fact_missing`), an operation is open (`fenced`), or the stop is stale or
+# not its own (`guard_unmet`).
+handles("reconcile", "_resume_after_error", "resume_pause", D_TICK)
+# A heal is not taken from a paused record (the first tick after the resume
+# heals it), nor the stop from one that is already stopped or terminal.
+handles("reconcile", "_heal_invariant", "record_pr_mismatch", D_OBS)
+handles("reconcile", "_heal_invariant", "pause_on_processing_error", _ALL_BUG,
+        PAUSED=SKIP, GUARD_UNMET=SKIP)
 handles("reconcile", "fold_handoff_receipts", ("confirm_clean_head", "confirm_submission_package"),
         _ALL_BUG)
 handles("reconcile", "fold_provisioning_receipts",

@@ -558,7 +558,10 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                          ("development.fix_needed", 3, [999]))
 
     def test_work_state_without_recorded_work_folds_nothing(self):
-        """Without requested Work no Result matches, at any revision."""
+        """Without requested Work no Result matches, at any revision. The
+        record breaks its state (`agent_running` requires Work): the tick
+        stops it first, as the heal of a broken record, and the Result is
+        late."""
         for phase in ("development", "upstream_review"):
             record = contribution(phase=phase, activity="agent_running", revision=3,
                                   plan_evidence_id="plan-1")
@@ -570,9 +573,13 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                                   task={"contribution_id": record["contribution_id"],
                                         "revision": revision})
                     output = tick(record, [result], capacity_ok=False)
-                    self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
-                    self.assertEqual(dict(final(output, record), processed_publications=[]),
-                                     dict(record, processed_publications=[]))
+                    self.assertEqual([e["kind"] for e in events(output)],
+                                     ["pause_on_processing_error", "record_late_effect"])
+                    after = final(output, record)
+                    self.assertTrue(after["paused"])
+                    self.assertTrue(after["paused_reason"].startswith(
+                        f"invariant_violation: {phase}.agent_running requires work"))
+                    self.assertEqual(after["revision"], record["revision"])
 
 
 class TestNoReachableRecordStopsTheTick(unittest.TestCase):

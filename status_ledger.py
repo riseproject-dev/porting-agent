@@ -293,6 +293,14 @@ def _observed(event: dict) -> str:
         pr = f"[#{number}]({link})" if link else f"#{number}"
         parts.append(f"Upstream pull request {pr} by {_login(details.get('author'))} at "
                      f"{_head(details.get('head'))}.")
+    if kind == "record_pr_mismatch" and details.get("invariant") == "dev_pr":
+        parts.append("CI is awaited only on a development PR, and this contribution waited for "
+                     "CI without one. Post `/upstreaming resume` to open the development PR "
+                     "of the recorded head; CI is then awaited on it.")
+    if kind == "resume_pause" and details.get("automatic"):
+        parts.append("The controller resumed its own stop after a processing error, since the "
+                     "pipeline code changed. A new error pauses the contribution again until "
+                     "the next change; `/upstreaming pause` keeps it stopped.")
     if kind == "confirm_development_pr" and details.get("pr_number") is not None:
         parts.append(f"Development PR #{_quotable(details.get('pr_number'), 12)}.")
     if kind == "exhaust_development_pr_launches" or (

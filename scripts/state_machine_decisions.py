@@ -2049,6 +2049,58 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.waiting_ci+paused", "resume_pause"),),
     ),
     Item(
+        "The controller resumes its own stop once the pipeline code changed",
+        "How a contribution the controller paused after a processing error is retried, with "
+        "no new verb (the owner's decision D3 of 2026-11-24).",
+        "The existing `resume_pause` gets a second variant under the trigger `tick` "
+        "(`Flag.variants`), with the effects of the command and the guards \"paused\", "
+        "\"paused by the controller after a processing error\", \"the pipeline code changed "
+        "since the pause\", the guard against a stale stop, and \"no open operation\". "
+        "`pause_on_processing_error` records the version of the pipeline code that ran "
+        "(`paused_at_commit`); an absent one counts as changed. The bound is one retry per "
+        "change of the code, with no counter, budget or policy key: a retry that fails again "
+        "pauses at the new version. The version is not a commit: the controller checks out "
+        "one commit (`fetch-depth: 1`), where the last commit that touched the code cannot be "
+        "read, so it is the SHA-256 of the top-level git tree of `HEAD` without `.state` "
+        "(`reconcile.pipeline_version`), which the state commit of every tick does not change. "
+        "The field is the one optional field of the record schema "
+        "(`engine.OPTIONAL_RECORD_FIELDS`), so no record is migrated for it. The guard of "
+        "`pause` becomes \"not paused, or paused by the controller\": a human pause takes "
+        "the controller's stop over and ends the automatic resume. This replaces the parked "
+        "`resume_after_processing_error` and `take_over_pause`.",
+        ("development.waiting_ci", "development.waiting_ci+paused"),
+        edges=(("development.waiting_ci", "pause_on_processing_error"),
+               ("development.waiting_ci+paused", "resume_pause")),
+        highlighted=(("development.waiting_ci+paused", "resume_pause"),),
+    ),
+    Item(
+        "A loaded record that breaks its state is healed by a row",
+        "What the tick does with a committed record that breaks an invariant of its state "
+        "(the owner's default D6 of 2026-11-24).",
+        "The invariants are soft at load and hard at write. At the start of every tick, "
+        "after the controller's resume of its own stop, a record for which "
+        "`engine.invariant_problems` names a broken invariant is listed under "
+        "`invariant_violations` in the tick report, with an alert, and takes the row that "
+        "heals it: the existing verb the invariant names (`Invariant.heal`) when its state "
+        "has that row, else the controller's stop `pause_on_processing_error` with the reason "
+        "`invariant_violation: <state> requires <invariant>: <why>`, which the controller "
+        "resumes after the next change of the code. The development PR of "
+        "`development.waiting_ci` heals by `record_pr_mismatch`: a record that names no PR "
+        "matches none, and the wait `development_pr_mismatch` explains in plain words that "
+        "CI is awaited only on a development PR; its resume `resume_development` opens the PR "
+        "from `development.fix_needed`. A paused record is healed by the first tick after "
+        "its resume. Nothing is added to `state.validate`, so one broken record never blocks "
+        "the commit of the others; every other row refuses it (`source_invalid`). The live "
+        "record luhenry--d2vm/3 (paused by the controller in `development.waiting_ci` at "
+        "revision 4 without a PR) heals this way in its first tick, with no hand edit.",
+        ("development.waiting_ci", "development.waiting_human", "development.fix_needed"),
+        edges=(("development.waiting_ci", "record_pr_mismatch"),
+               ("development.waiting_human", "resume_development"),
+               ("development.fix_needed", "confirm_development_pr")),
+        highlighted=(("development.waiting_ci", "record_pr_mismatch"),
+                     ("development.waiting_human", "resume_development")),
+    ),
+    Item(
         "Seven verbs merged into three",
         "Which verbs of the table name the same transition under two names, and may be one row "
         "each (the owner's decision of 2026-11-24)?",
