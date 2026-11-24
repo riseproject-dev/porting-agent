@@ -525,10 +525,12 @@ class TestUncertainPublication(unittest.TestCase):
     """In development a Result whose push was not read back (`uncertain`) is
     a failed publication: it is held in `development.agent_running`
     (`schedule_publish_retry`) and `record_publish_success` is taken once
-    the publication is confirmed."""
+    the publication is confirmed. (Work dispatched before patches were
+    reviewed published its patches on the recorded development PR: a first
+    publication has its PR opened from `development.publishing`.)"""
 
     def setUp(self):
-        self.rec = running(fork=dict(record()["fork"], pr_number=None))
+        self.rec = running()
 
     def staged_ops(self, output):
         return [o for kind, o in output.staged if kind == "operations"]
@@ -563,21 +565,17 @@ class TestUncertainPublication(unittest.TestCase):
         self.assertEqual(kinds(out), [])
         self.assertEqual(engine.state_key(final(out, held)), "development.agent_running")
         ops = {op["operation_id"]: self.staged_ops(out)[0]}
-        # The retry reads the push back: the publication is confirmed, the
+        # The retry reads the push back: the publication is confirmed and the
         # head the push left is recorded by the observation of the same tick,
-        # and the development PR is requested.
+        # on the recorded development PR.
         out = tick(held, [retried(held)], head=SHA_B, operations=ops)
-        self.assertEqual(kinds(out), ["record_publish_success", "record_head_change",
-                                     "launch_development_pr"])
+        self.assertEqual(kinds(out), ["record_publish_success", "record_head_change"])
         after = final(out, held)
         self.assertEqual((engine.state_key(after), after["publication_operation_id"],
                           after["proposal_artifact"]["outcome"], after["pending_publication"],
                           after["fork"]["head_sha"]),
                          ("development.waiting_ci", op["operation_id"], "published", None, SHA_B))
         self.assertEqual(after["scope_paths"], ["a", "b"])
-        self.assertEqual([o["kind"] for o in self.staged_ops(out)], ["dev_pr_create"])
-        self.assertEqual([r["contribution_id"] for r in out.report["dev_pr_requests"]],
-                         [rec["contribution_id"]])
 
     def test_a_retry_that_reads_the_lost_push_back_confirms_the_open_operation(self):
         held, ops, op = self.hold()
@@ -591,7 +589,7 @@ class TestUncertainPublication(unittest.TestCase):
                         NOW, facts=__import__("fork_publish").PUSH_FACTS)
                     ops = {lost["operation_id"]: lost}
                 out = tick(held, [retried(held)], observe=False, operations=ops)
-                self.assertEqual(kinds(out), ["record_publish_success", "launch_development_pr"])
+                self.assertEqual(kinds(out), ["record_publish_success"])
                 self.assertEqual(out.failures, [])
                 [confirmed] = [o for o in self.staged_ops(out) if o["kind"] == "branch_update"]
                 self.assertEqual((confirmed["operation_id"], confirmed["status"]),
@@ -607,7 +605,7 @@ class TestUncertainPublication(unittest.TestCase):
         held, ops, op = self.hold()
         own = branch_operation(held, confirmed=True, attempt=2)
         out = tick(held, [retried(held, operation=own)], observe=False, operations=ops)
-        self.assertEqual(kinds(out), ["record_publish_success", "launch_development_pr"])
+        self.assertEqual(kinds(out), ["record_publish_success"])
         self.assertEqual(final(out, held)["publication_operation_id"], own["operation_id"])
         # The earlier operation is confirmed by the next branch observation.
         after = final(out, held)
@@ -623,8 +621,8 @@ class TestUncertainPublication(unittest.TestCase):
         self.assertEqual(kinds(out), ["replan_development"])
         confirmed = {op["operation_id"]: branch_operation(self.rec, confirmed=True)}
         out = tick(held, [stale], observe=False, operations=confirmed)
-        self.assertEqual(kinds(out), ["record_publish_success", "launch_development_pr"])
-        [event, _launch] = [e for kind, e in out.staged if kind == "events"]
+        self.assertEqual(kinds(out), ["record_publish_success"])
+        [event] = [e for kind, e in out.staged if kind == "events"]
         self.assertEqual(event["details"]["confirmed_by"], op["operation_id"])
         after = final(out, held)
         self.assertEqual((engine.state_key(after), after["publication_operation_id"],
@@ -693,20 +691,26 @@ class TestObservation(unittest.TestCase):
                 self.assertIn("review-2-1-77", after["active_work"]["feedback_evidence_ids"])
                 self.assertEqual(after["revision"], rec["revision"] + 1)
 
-    def test_a_review_on_a_paused_record_while_work_is_due_is_recorded(self):
-        """Observation rows are not masked by a pause: the review is recorded
-        in `development.fix_needed` and no Work is requested while paused."""
+    def test_a_review_on_a_paused_record_while_work_is_due_is_read_after_the_resume(self):
+        """While paused nothing new starts: a review that would bump the
+        revision is not recorded (its ids stay unfenced) and no Work is
+        requested; the resume reads it again and records it."""
         paused = apply_command(record("fix_needed"),
                                commands.parse('/upstreaming pause reason="hold"'))
         self.assertTrue(paused.accepted)
         rec = paused.record
         out = tick(rec, feedback=REVIEW, verdict="failed")
-        after = final(out, rec)
-        self.assertEqual(kinds(out), ["record_actionable_review"])
-        self.assertEqual((engine.state_key(after), after["paused"], after["revision"]),
-                         ("development.fix_needed", True, rec["revision"] + 1))
-        self.assertEqual(after["pending_feedback_evidence_ids"], ["review-2-1-77"])
-        self.assertIsNone(after["active_work"])
+        self.assertEqual(kinds(out), [])
+        self.assertEqual(final(out, rec), rec)
+        self.assertIn("contribution is paused",
+                      out.report["observation"][0]["review_feedback_deferred"])
+        resumed = apply_command(rec, commands.parse(
+            f'/upstreaming resume revision={rec["revision"]} reason="go"'))
+        self.assertTrue(resumed.accepted, resumed.reason)
+        out = tick(resumed.record, feedback=REVIEW, verdict="failed")
+        self.assertEqual(kinds(out)[0], "record_actionable_review")
+        self.assertEqual(final(out, resumed.record)["active_work"]["feedback_evidence_ids"],
+                         ["review-2-1-77"])
 
     def test_review_feedback_is_not_ci_evidence(self):
         rec = record(last_ci_evidence_id=None)
@@ -947,18 +951,18 @@ class TestObservation(unittest.TestCase):
     def test_passing_ci_with_pending_feedback_while_paused_requests_no_work(self):
         rec = record(pending_feedback_evidence_ids=["review-1"], paused=True,
                      paused_reason="hold", paused_by="human", paused_at=NOW)
+        # While paused the CI result is read but the record is not moved on:
+        # the resume takes the next step.
         out = tick(rec, verdict="passed")
-        self.assertEqual(kinds(out), ["return_for_feedback"])
+        self.assertEqual(kinds(out), [])
         after = final(out, rec)
         self.assertEqual((engine.state_key(after), after["active_work"]),
-                         ("development.fix_needed", None))
+                         ("development.waiting_ci", None))
         resumed = apply_command(after, commands.parse(
             f'/upstreaming resume revision={after["revision"]} reason="go"'))
         self.assertTrue(resumed.accepted, resumed.reason)
-        evidence = {e["evidence_id"]: e for k, e in out.staged if k == "evidence"}
-        out = tick(resumed.record, observe=False, now=T + timedelta(minutes=10),
-                   evidence=evidence)
-        self.assertEqual(kinds(out), ["request_patch"])
+        out = tick(resumed.record, verdict="passed", now=T + timedelta(minutes=10))
+        self.assertEqual(kinds(out), ["return_for_feedback", "request_patch"])
         self.assertEqual(final(out, resumed.record)["active_work"]["feedback_evidence_ids"],
                          ["review-1"])
 

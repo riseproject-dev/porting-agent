@@ -96,7 +96,13 @@ class TestPauseParkResume(unittest.TestCase):
         p = apply(rec, f"/upstreaming pause contribution={CID} revision=0 reason=r")
         self.assertTrue(p.accepted)
         self.assertTrue(p.record["paused"])
-        bumped = self.head_changed(p.record)
+        # While paused the head change is held back (it moves to another
+        # state); a revision bumped before the pause makes a resume stale.
+        held = take(p.record, "record_head_change", policy=policy(), now=NOW,
+                    facts={"fork_head_changed"}, values={"fork.head_sha": SHA_B})
+        self.assertEqual(held.refused.kind, engine.Refusal.PAUSED)
+        bumped = apply(self.head_changed(rec),
+                       f"/upstreaming pause contribution={CID} revision=0 reason=r").record
         stale = apply(bumped, f"/upstreaming resume contribution={CID} revision=0 reason=r")
         self.assertFalse(stale.accepted)
         ok = apply(bumped, f"/upstreaming resume contribution={CID} revision=1 reason=r")

@@ -123,40 +123,42 @@ class TestTheEngineEnforcesThem(unittest.TestCase):
         self.assertEqual(other.kind, engine.Refusal.SOURCE_INVALID)
 
     def test_a_row_that_would_break_its_target_is_refused(self):
-        # `nominate_for_handoff` needs the development PR its target requires;
-        # without the guard the record after it would break
-        # `handoff.awaiting_submission`.
-        state, verb = "development.waiting_ci", "nominate_for_handoff"
+        # A head pushed while Work is due is awaited only with the
+        # development PR `development.waiting_ci` requires; without the guard
+        # the record after the row would break it.
+        state, verb = "development.fix_needed", "record_head_change"
+        target = "development.waiting_ci"
         t = lc.find_edge(state, verb).transition
         rec, kwargs = scenario(state, verb, t)
         no_pr = dict(rec, fork=dict(rec["fork"], pr_number=None))
         out = engine.try_apply_transition(no_pr, verb, **kwargs)
-        self.assertIsInstance(out, engine.Refused)
+        self.assertEqual(out.kind, engine.Refusal.GUARD_UNMET)
         stripped = mock.patch.dict(lc.LIFECYCLE[state].transitions, {
-            (verb, "handoff.awaiting_submission"): lc.Transition(
+            (verb, target): lc.Transition(
                 t.trigger, t.command, tuple(g for g in t.guard
-                                            if g != "development PR and head recorded"),
+                                            if g != lc.DEVELOPMENT_PR_RECORDED),
                 t.effects, t.charges, t.description, t.exhausts)})
+        before = copy.deepcopy(no_pr)
         with stripped:
             out = engine.try_apply_transition(no_pr, verb, **kwargs)
         self.assertEqual(out.kind, engine.Refusal.TARGET_INVALID)
-        self.assertIn("handoff.awaiting_submission requires dev_pr", out.detail)
+        self.assertIn(f"{target} requires dev_pr", out.detail)
+        self.assertEqual(no_pr, before)
 
 
 class TestTheProof(unittest.TestCase):
     def test_the_check_fails_on_a_table_with_a_guard_removed(self):
         self.assertEqual([p for p in lc.check_table(POLICY) if "requires" in p], [])
-        state, verb = "development.waiting_ci", "nominate_for_handoff"
+        state, verb = "development.fix_needed", "record_head_change"
+        target = "development.waiting_ci"
         t = lc.find_edge(state, verb).transition
         mutated = lc.Transition(t.trigger, t.command,
-                                tuple(g for g in t.guard if g != "development PR and head recorded"),
+                                tuple(g for g in t.guard if g != lc.DEVELOPMENT_PR_RECORDED),
                                 t.effects, t.charges, t.description, t.exhausts)
-        with mock.patch.dict(lc.LIFECYCLE[state].transitions,
-                             {(verb, "handoff.awaiting_submission"): mutated}):
+        with mock.patch.dict(lc.LIFECYCLE[state].transitions, {(verb, target): mutated}):
             problems = lc.check_table(POLICY)
-        self.assertIn(f"{state} --{verb}--> handoff.awaiting_submission: nothing keeps, implies, "
-                      "or establishes 'dev_pr', which handoff.awaiting_submission requires",
-                      problems)
+        self.assertIn(f"{state} --{verb}--> {target}: nothing keeps, implies, "
+                      f"or establishes 'dev_pr', which {target} requires", problems)
 
     def test_the_check_fails_on_an_effect_that_destroys_a_requirement(self):
         state, verb = "development.waiting_human", "resume_ci"

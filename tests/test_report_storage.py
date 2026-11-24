@@ -511,7 +511,6 @@ class TestUncertainPublicationHistory(unittest.TestCase):
     def run_chain(self, *, stale):
         from datetime import timedelta
 
-        import recovery
         from tests.test_late_results import ci_snapshot
         from tests.test_work_history import _big_report, report_evidence, steer, steering_evidence
         cid = dev.running()["contribution_id"]
@@ -539,15 +538,7 @@ class TestUncertainPublicationHistory(unittest.TestCase):
                     ops[staged["operation_id"]] = staged
             return dev.final(out, rec), dev.kinds(out)
 
-        def settle(rec):
-            # The development PR operations the tick planned are carried out.
-            for key, op in list(ops.items()):
-                if op["status"] == "planned":
-                    ops[key] = recovery.record_discovery(dict(op, status="uncertain"),
-                                                         "confirmed", "done", now.isoformat())
-            return dict(rec, fork=dict(rec["fork"], pr_number=12), active_operation_id=None)
-
-        start = dev.running(fork=dict(dev.record()["fork"], pr_number=None))
+        start = dev.running()
         op = dev.branch_operation(start)
         lost = with_report(start, dev.uncertain(start, op), **_big_report("u", 0.7))
         rec, verbs = step(start, [lost], observe=False)
@@ -564,30 +555,27 @@ class TestUncertainPublicationHistory(unittest.TestCase):
             retry = dev.retried(rec)
         rec, verbs = step(rec, [with_report(start, retry, **_big_report("u", 0.7))],
                           minutes=10, head=SHA_B)
-        self.assertEqual(verbs, ["record_publish_success", "record_head_change",
-                                 "launch_development_pr"])
+        self.assertEqual(verbs, ["record_publish_success", "record_head_change"])
         [own] = [e for e in evidence.values()
                  if e["kind"] == "worker_report" and e["evidence_id"] != "report-p"]
         # The success fold stores the same evidence again, upgraded.
         self.assertEqual(own["evidence_id"], held["evidence_id"])
         self.assertEqual(own["data"]["head_after"], SHA_B)
         self.assertNotIn("head_candidate", own["data"])
-        rec, verbs = step(settle(rec), minutes=20, head=SHA_B, verdict="failed")
+        rec, verbs = step(rec, minutes=20, head=SHA_B, verdict="failed")
         self.assertEqual(verbs, ["record_ci_failure", "request_repair"])
         repair = rec
         rerun = dict(with_report(repair, dev.rerun_outcome(repair), **_big_report("r", 0.7)),
                      publication_artifact_id=1001, worker_run_id="556")
         rec, verbs = step(rec, [rerun], minutes=40, head=SHA_B)
-        self.assertEqual(verbs, ["request_ci_rerun", "launch_development_pr"])
+        self.assertEqual(verbs, ["request_ci_rerun"])
 
         def attempt(verdict):
             snapshot = ci_snapshot(SHA_B, verdict)
             snapshot.runs[0]["run_attempt"] = 2
             return snapshot
         rec, verbs = step(rec, minutes=50, head=SHA_B, ci=attempt("failed"))
-        self.assertEqual(verbs, ["record_ci_failure"])
-        rec, verbs = step(settle(rec), minutes=60, head=SHA_B, ci=attempt("failed"))
-        self.assertEqual(verbs, ["request_repair"])
+        self.assertEqual(verbs, ["record_ci_failure", "request_repair"])
         key = rec["active_work"]["dedupe_key"]
         history = evidence[work_history.evidence_id(key)]["data"]
         return own, history

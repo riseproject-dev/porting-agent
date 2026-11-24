@@ -1443,36 +1443,36 @@ class TestCommentHolds(unittest.TestCase):
                 "pr_number": None, "attempts": 0, "next_attempt_at": NOW, "launched_at": None,
                 "last_reason": "", "exhausted": False, **over}
 
-    def test_the_first_patch_published_anyway_waits_for_its_development_pr(self):
+    def test_the_first_patch_published_anyway_opens_its_development_pr_first(self):
+        # The first patch: the branch is at the base and no PR is recorded.
         rec = running(feedback=["review-1"])
         rec["fork"] = dict(rec["fork"], pr_number=None)
+        rec["upstream"] = dict(rec["upstream"], base_sha=rec["fork"]["head_sha"])
         for attempt in range(2):
             reviewing, _ = held(rec, run=str(4242 + attempt), artifact=901 + attempt)
             rec = final(tick(reviewing, [review_result(
                 reviewing, severity="major", run=str(5000 + attempt), artifact=950 + attempt)]))
-        out = tick(rec, [published(rec, run=rec["held_patch"]["worker_run_id"])])
+        result = published(rec, run=rec["held_patch"]["worker_run_id"])
+        # CI is awaited only on a development PR: the Result is not folded
+        # until the PR of the pushed head is open, which the controller opens
+        # from `development.publishing` in the same tick.
+        out = tick(rec, [result])
+        pending = final(out)
+        self.assertEqual(engine.state_key(pending), lc.PUBLISHING)
+        self.assertIn("development PR", out.report["publications"][0]["deferred"])
+        self.assertEqual(kinds(out), ["launch_development_pr"])
+        op = next(o for k, o in out.staged if k == "operations" and o["kind"] == "dev_pr_create")
+        self.assertEqual(op["target"]["expected_head"], CANDIDATE)
+        self.assertEqual(pending["review_comments"], [])
+        # Once the PR is recorded, the Result is folded and the comment of
+        # the review is launched on it at once.
+        with_pr = dict(pending, fork=dict(pending["fork"], pr_number=7), active_operation_id=None)
+        out = tick(with_pr, [result])
         done = final(out)
         self.assertEqual(engine.state_key(done), "development.waiting_ci")
         [due] = done["review_comments"]
-        self.assertEqual((due["repository"], due["pr_number"], due["attempts"]),
-                         (None, None, 0))
-        self.assertEqual(out.report["review_comment_requests"], [])
-        # Held without spending an attempt, alerted once held for the bound.
-        hours = patch_review.COMMENT_HELD_ALERT_HOURS
-        _, out = self.run_tick(done, minutes=60 * hours - 1)
-        self.assertEqual((out.report["review_comment_requests"],
-                          out.report["controller"]["alerts"]), ([], []))
-        _, out = self.run_tick(done, minutes=60 * hours)
-        self.assertIn("no development PR is recorded",
-                      out.report["controller"]["alerts"][0]["alert"])
-        # Once the development PR operation confirms the PR, attempt 1 is
-        # launched on it.
-        with_pr = dict(done, fork=dict(done["fork"], pr_number=7))
-        launched, out = self.run_tick(with_pr, minutes=60 * hours + 5)
+        self.assertEqual((due["repository"], due["pr_number"]), (done["fork"]["name"], 7))
         self.assertEqual([r["attempt"] for r in out.report["review_comment_requests"]], [1])
-        self.assertEqual((launched["review_comments"][0]["repository"],
-                          launched["review_comments"][0]["pr_number"]),
-                         (done["fork"]["name"], 7))
 
     def test_a_terminal_record_posts_whatever_its_pause(self):
         closed = contribution(phase="closed", activity="idle", paused=True,

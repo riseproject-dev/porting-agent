@@ -1,6 +1,12 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Same-fork development PR creation is exact and idempotent."""
+"""Same-fork development PR creation is exact and idempotent.
+
+A published head gets its development PR before CI is awaited:
+`development.waiting_ci` requires it. The PR of a head on the branch that no
+PR shows is opened from `development.fix_needed` (and from
+`development.publishing` for a held patch whose push landed), and the CI
+bootstrap of a recorded PR runs in `development.waiting_ci`."""
 import json
 import tempfile
 import unittest
@@ -33,7 +39,7 @@ MARKER = f"<!-- upstreaming-development:example--proj/12:r2:{SHA_B} -->"
 
 
 def records(root: Path):
-    rec = contribution(phase="development", activity="waiting_ci", revision=2,
+    rec = contribution(phase="development", activity="fix_needed", revision=2,
                        plan_evidence_id="plan-1", scope_paths=[".github/workflows/build.yml"])
     rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
     op = recovery.plan(contribution_id=rec["contribution_id"], revision=2, kind="dev_pr_create",
@@ -105,7 +111,7 @@ class FakeApi:
 
 class TestDevelopmentPR(unittest.TestCase):
     def test_controller_records_pr_intent_before_launch(self):
-        rec = contribution(phase="development", activity="waiting_ci", revision=2,
+        rec = contribution(phase="development", activity="fix_needed", revision=2,
                            plan_evidence_id="plan-1", scope_paths=[".github/workflows/build.yml"])
         rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
         rec["proposal_artifact"] = {"work_id": "w", "claim_id": "c", "artifact_id": 1, "name": "n",
@@ -143,11 +149,12 @@ class TestDevelopmentPR(unittest.TestCase):
                                     development_prs=[receipt])
             current = [value for kind, value in result.staged if kind == "contributions"][-1]
             self.assertEqual(current["fork"]["pr_number"], 4)
-            self.assertIsNone(current["active_operation_id"])
+            # The PR is open: CI is awaited on it.
+            self.assertEqual(engine.state_key(current), "development.waiting_ci")
             self.assertEqual(current["revision"], 2)
             self.assertTrue(any(kind == "operations" and value["status"] == "confirmed"
                                 for kind, value in result.staged))
-            [event] = [value for kind, value in result.staged if kind == "events"]
+            event = [value for kind, value in result.staged if kind == "events"][0]
             self.assertEqual((event["kind"], event["details"]["pr_number"]),
                              ("confirm_development_pr", 4))
 
@@ -206,9 +213,10 @@ class TestDevelopmentPR(unittest.TestCase):
 
 
 def published(**over):
-    """A record in `development.waiting_ci` whose published head has no
-    recorded development PR, with the confirmed publication operation."""
-    rec = contribution(phase="development", activity="waiting_ci", revision=2,
+    """A record in `development.fix_needed` whose head on the branch is
+    published but has no recorded development PR, with the confirmed
+    publication operation."""
+    rec = contribution(phase="development", activity="fix_needed", revision=2,
                        plan_evidence_id="plan-1", scope_paths=[".github/workflows/build.yml"])
     rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B,
                    "pr_number": None}
@@ -279,8 +287,8 @@ def fold(rec, ops, receipt, body):
 
 
 class TestDevelopmentPRRows(unittest.TestCase):
-    """The development PR operation is taken through the rows of
-    `development.waiting_ci`."""
+    """The development PR operation is taken through the rows of the state
+    the published head is in."""
 
     def exhaust(self):
         rec, ops = published()
@@ -303,7 +311,9 @@ class TestDevelopmentPRRows(unittest.TestCase):
         op = ops[current["active_operation_id"]]
         self.assertEqual((op["kind"], op["status"], recovery.launch_attempts(op)),
                          ("dev_pr_create", "planned", 1))
-        self.assertEqual(engine.state_key(current), "development.waiting_ci")
+        # No Work is requested while the PR of the head is being opened.
+        self.assertEqual(engine.state_key(current), "development.fix_needed")
+        self.assertEqual(res.requested_effects, [])
         out = take(rec, "launch_development_pr", policy=policy(), now=NOW,
                                       facts={"development_pr_operation_planned"},
                                       counts={"operation_launch": 0})
@@ -336,7 +346,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events], ["exhaust_development_pr_launches"])
         self.assertEqual(engine.state_key(rec), "development.waiting_human")
         self.assertEqual((rec["pending_human_action"]["kind"], rec["pending_human_action"]["counter"]),
-                         (controller.DEVELOPMENT_PR_LAUNCH_EXHAUSTED, "operation_launch"))
+                         (lifecycle.DEVELOPMENT_PR_NOT_OPENED, "operation_launch"))
         self.assertIsNone(rec["active_operation_id"])
         [op] = [o for o in ops.values() if o["kind"] == "dev_pr_create"]
         self.assertEqual(op["status"], "failed")
@@ -350,14 +360,14 @@ class TestDevelopmentPRRows(unittest.TestCase):
         details = controller.reminder_details(rec, ops)
         self.assertEqual((details["operation"], details["launches"]), (op["operation_id"], 3))
 
-    def test_the_resume_returns_to_the_ci_wait_and_plans_a_new_operation(self):
+    def test_the_resume_returns_to_the_state_that_opens_it_and_plans_a_new_operation(self):
         _res, rec, ops, _events = self.exhaust()
         [old] = [o for o in ops.values() if o["kind"] == "dev_pr_create"]
         out = apply_command(rec, commands.parse(
             f"/upstreaming resume revision={rec['revision']} reason=fixed"), operations=ops)
         self.assertTrue(out.accepted, out.reason)
-        self.assertEqual(out.event["kind"], "resume_ci")
-        self.assertEqual(engine.state_key(out.record), "development.waiting_ci")
+        self.assertEqual(out.event["kind"], "resume_development")
+        self.assertEqual(engine.state_key(out.record), "development.fix_needed")
         self.assertEqual(out.record["revision"], rec["revision"] + 1)
         self.assertEqual(out.restarted["counter"], "operation_launch")
         res, current, ops2, events = run(out.record, ops, 30)
@@ -368,7 +378,8 @@ class TestDevelopmentPRRows(unittest.TestCase):
 
     def test_each_resume_applies_to_its_own_pending_action(self):
         _res, rec, ops, _events = self.exhaust()
-        self.assertIsNotNone(refusal(rec, "resume_development", policy=policy(), now=NOW))
+        # No PR is open: the CI wait cannot be resumed, the development is.
+        self.assertIsNotNone(refusal(rec, "resume_ci", policy=policy(), now=NOW))
         for kind in ("ci_interrupted", "development_pr_mismatch"):
             with self.subTest(kind=kind):
                 other = dict(rec, pending_human_action=dict(rec["pending_human_action"],
@@ -400,18 +411,19 @@ class TestDevelopmentPRRows(unittest.TestCase):
                 self.assertEqual((confirmed["operation_id"], confirmed["status"]),
                                  (op["operation_id"], "confirmed"))
 
-    def test_a_receipt_outside_the_ci_wait_closes_and_keeps_the_state(self):
+    def test_a_receipt_in_a_state_without_its_row_closes_and_keeps_the_state(self):
         rec, ops = published()
         _res, rec, ops, _events = run(rec, ops)
         op = ops[rec["active_operation_id"]]
-        moved = dict(rec, activity="fix_needed", last_ci_evidence_id=None)
+        moved = dict(rec, activity="waiting_human", pending_human_action={
+            "kind": "work_failed", "requested_at": NOW, "reminded_at": None,
+            "escalated_at": None, "counter": None})
         out = fold(moved, ops, receipt_for(rec, op), dev_pr_body(rec, op))
-        # The state is kept (the controller of the same tick then requests
-        # the repair Work that is due).
         current = [v for k, v in out.staged if k == "contributions"][-1]
-        self.assertEqual((current["phase"], current["fork"]["pr_number"],
-                          current["active_operation_id"]), ("development", None, None))
-        self.assertEqual([v["kind"] for k, v in out.staged if k == "events"], ["request_patch"])
+        self.assertEqual((engine.state_key(current), current["fork"]["pr_number"],
+                          current["active_operation_id"]),
+                         ("development.waiting_human", None, None))
+        self.assertEqual([v["kind"] for k, v in out.staged if k == "events"], [])
         self.assertNotIn("confirm_development_pr",
                          [v["kind"] for k, v in out.staged if k == "events"])
         self.assertEqual([v["status"] for k, v in out.staged if k == "operations"][0],
@@ -439,7 +451,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
         changes = {
             "head": dict(rec, revision=3, fork=dict(rec["fork"], head_sha=SHA_A)),
             "pause": dict(rec, paused=True),
-            "ci failure": dict(rec, activity="fix_needed", last_ci_evidence_id="ci-2-7-1"),
+            "pr": dict(rec, fork=dict(rec["fork"], pr_number=7)),
         }
         for why, changed in changes.items():
             with self.subTest(change=why):
@@ -447,10 +459,11 @@ class TestDevelopmentPRRows(unittest.TestCase):
                 self.assertEqual(closed[oid]["status"], "failed")
                 self.assertNotEqual(current.get("active_operation_id"), oid)
                 self.assertEqual(res.report["development_pr_closures"][0]["operation_id"], oid)
-        # Work is due again once the operation is released.
-        _res, current, _ops, _events = run(changes["ci failure"], ops, 1)
+        # Work is due again once the operation is released and the PR is
+        # recorded.
+        _res, current, _ops, _events = run(changes["pr"], ops, 1)
         self.assertIsNone(current["active_operation_id"])
-        self.assertEqual(controller._actionable(current), "development_repair")
+        self.assertIn(controller._actionable(current), ("development_patch", "development_repair"))
 
     def test_a_run_in_flight_holds_the_relaunch_and_the_exhaustion(self):
         rec, ops = published()
@@ -462,7 +475,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
             with self.subTest(runs=runs):
                 res, held, _ops, events = controller_tick_with_runs(rec, ops, 20, runs)
                 self.assertEqual((events, res.report["dev_pr_requests"]), ([], []))
-                self.assertEqual(engine.state_key(held), "development.waiting_ci")
+                self.assertEqual(engine.state_key(held), "development.fix_needed")
                 # After `DEV_PR_RUN_SECONDS` the hold ends: the wait.
                 res, done, _ops, events = controller_tick_with_runs(
                     rec, ops, 12 + controller.DEV_PR_RUN_SECONDS // 60, runs)
@@ -552,10 +565,10 @@ class TestDevelopmentPRAdoption(unittest.TestCase):
                 with self.assertRaises(dev_pr.DevPRError):
                     self.publish(body, second)
 
-    def test_the_request_is_only_loaded_in_the_ci_wait(self):
+    def test_the_request_is_only_loaded_in_a_state_whose_rows_launch_it(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); rec, op = records(root)
-            moved = dict(rec, activity="fix_needed")
+            moved = dict(rec, activity="waiting_ci")
             (root / ".state/contributions/example--proj--12.json").write_text(json.dumps(moved))
             with self.assertRaises(dev_pr.DevPRError):
                 dev_pr.load_request(root, op["operation_id"])

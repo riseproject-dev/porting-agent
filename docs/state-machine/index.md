@@ -369,20 +369,28 @@ An infrastructure failure of the worker's verification, or of the publication of
 ```mermaid
 flowchart TB
     subgraph development["development"]
-        development_agent_running["development.agent_running"]
+        development_publishing["development.publishing"]
+        development_fix_needed["development.fix_needed"]
         development_waiting_ci["development.waiting_ci"]
         development_waiting_human["development.waiting_human"]
     end
 
-    start_1(( )) --> development_agent_running
-    development_agent_running -->|record_publish_success| development_waiting_ci
+    start_1(( )) --> development_publishing
+    development_publishing -->|launch_development_pr| development_publishing
+    development_publishing -->|confirm_development_pr| development_publishing
+    development_publishing -->|exhaust_development_pr_launches| development_waiting_human
+    development_publishing -->|record_publish_success| development_waiting_ci
+    development_fix_needed -->|launch_development_pr| development_fix_needed
+    development_fix_needed -->|confirm_development_pr| development_waiting_ci
+    development_fix_needed -->|exhaust_development_pr_launches| development_waiting_human
     development_waiting_ci -->|launch_development_pr| development_waiting_ci
     development_waiting_ci -->|confirm_development_pr| development_waiting_ci
     development_waiting_ci -->|exhaust_development_pr_launches| development_waiting_human
     development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
-A published head without a recorded development PR gets one through a trusted operation, planned and launched by the controller in `development.waiting_ci` within `operation_launch` (counted on the operation); a PR created at this head with no CI evidence gets the CI bootstrap the same way. A verified receipt with the exact readback takes `confirm_development_pr`. Launches spent without one close the operation as failed and wait for a human; the resume plans a new operation, which adopts a PR a lost launch created.
+CI is awaited only on a development PR: `development.waiting_ci` requires it. A published head without one gets it through a trusted operation, planned and launched by the controller within `operation_launch` (counted on the operation) in the state the head is in: in `development.publishing` once the push of the held patch is confirmed, where the Result of the publication is folded (`record_publish_success`) only once the PR is recorded, and in `development.fix_needed` for a head on the branch that no PR shows, where the verified receipt enters the CI wait. A verified receipt with the exact readback takes `confirm_development_pr`. Launches spent without one close the operation as failed and wait for a human (`development_pr_not_opened`); `resume_development` returns to `development.fix_needed`, which plans a new operation that adopts a PR a lost launch created. In `development.waiting_ci` the same rows run the CI bootstrap of a PR created at the recorded head with no CI evidence, and `resume_ci` follows the exhaustion of its launches.
 
 ### Failure case 3: the review of a held patch fails, or its Work fails
 

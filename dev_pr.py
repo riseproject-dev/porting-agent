@@ -43,6 +43,45 @@ def body(record: dict, operation: dict) -> str:
     ])
 
 
+# The states whose rows launch each kind of development PR operation: the
+# PR of a published head is opened before CI is awaited (from the state the
+# head is in), and `development.waiting_ci`, which requires the PR, runs the
+# CI bootstrap of the recorded PR.
+INTENT_STATES = {"dev_pr_create": ("development.fix_needed", "development.publishing"),
+                 "dev_pr_update": ("development.waiting_ci",)}
+
+
+def intent_problem(record: dict, op: dict) -> str | None:
+    """Why ``op`` is not the current development PR intent of ``record``,
+    or ``None``: a state whose rows launch its kind, the record's revision,
+    fork and base, and the head the intent names: the recorded head for the
+    CI bootstrap of the recorded PR; for the PR of a published head, no PR
+    recorded and a head that is not the base, which is the commit of the held
+    patch in `development.publishing`. The trusted workflow reads the branch
+    and refuses any other head."""
+    fork = record.get("fork") or {}
+    target = op.get("target") or {}
+    state = f"{record['phase']}.{record['activity']}"
+    head = target.get("expected_head")
+    if state not in INTENT_STATES.get(op["kind"], ()) or record["revision"] != op["revision"]:
+        return "the operation is not of the record's state and revision"
+    if target.get("repository") != fork.get("name") \
+            or target.get("repository_id") != fork.get("repository_id") \
+            or target.get("ref") != DEV_REF \
+            or target.get("base_sha") != record["upstream"].get("base_sha"):
+        return "the operation does not target the recorded fork and base"
+    if op["kind"] == "dev_pr_update":
+        if fork.get("pr_number") is None or head != fork.get("head_sha"):
+            return "the CI bootstrap names another head or no PR is recorded"
+        return None
+    if fork.get("pr_number") is not None or not head or head == record["upstream"].get("base_sha"):
+        return "a PR is recorded, or the head is the base"
+    if state == "development.publishing" \
+            and head != (record.get("held_patch") or {}).get("candidate"):
+        return "the head is not the commit of the held patch"
+    return None
+
+
 def load_request(root: Path, operation_id: str) -> tuple[dict, dict]:
     if not re.fullmatch(r"op-[0-9a-f]{24}", operation_id):
         raise DevPRError("invalid operation ID")
@@ -51,17 +90,12 @@ def load_request(root: Path, operation_id: str) -> tuple[dict, dict]:
     cid = contribution_file_id(op["contribution_id"])
     record = json.loads((root / ".state/contributions" / f"{cid}.json").read_text())
     schemas.validate("contribution", record)
-    fork = record.get("fork") or {}
-    # `development.waiting_ci` is the only state whose rows launch it.
-    if op["kind"] not in ("dev_pr_create", "dev_pr_update") or op["status"] != "planned" \
-            or (record["phase"], record["activity"]) != ("development", "waiting_ci") \
-            or record.get("active_operation_id") != operation_id \
-            or record["revision"] != op["revision"] or record.get("paused"):
+    if op["kind"] not in INTENT_STATES or op["status"] != "planned" \
+            or record.get("active_operation_id") != operation_id or record.get("paused"):
         raise DevPRError("operation is not the current authorized development PR intent")
-    if op["target"].get("repository") != fork.get("name") or op["target"].get("repository_id") != fork.get("repository_id") \
-            or op["target"].get("ref") != DEV_REF or op["target"].get("expected_head") != fork.get("head_sha") \
-            or op["target"].get("base_sha") != record["upstream"].get("base_sha"):
-        raise DevPRError("development PR target does not match current fork/base")
+    problem = intent_problem(record, op)
+    if problem:
+        raise DevPRError(f"development PR target does not match current fork/base: {problem}")
     return record, op
 
 

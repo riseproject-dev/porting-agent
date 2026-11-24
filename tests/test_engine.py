@@ -402,15 +402,23 @@ class TestTableIsExercised(unittest.TestCase):
                     self.assertEqual((out.accepted, out.reason), (False, reason))
 
     def test_the_paused_flag_masks_ticks_results_and_other_commands(self):
-        for state, verb, t, _target in all_rows():
+        for state, verb, t, target in all_rows():
             rec, kwargs = scenario(state, verb, t)
             if rec["paused"]:
                 continue
             paused = dict(rec, paused=True, paused_at=NOW, paused_by="human")
+            # While paused nothing new starts: a tick, a Result but the late
+            # one, a command but the stops, and an observation that would
+            # move the record on, bump the revision or launch something. A
+            # state a stop always leaves admits no paused record at all.
             masked = (t.trigger == lc.Trigger.TICK
                       or (t.trigger == lc.Trigger.RESULT and verb != "record_late_effect")
                       or (t.trigger == lc.Trigger.COMMAND and t.command not in engine.PAUSED_COMMANDS)
-                      or lc.NOT_PAUSED in t.guard)
+                      or (t.trigger == lc.Trigger.OBSERVATION
+                          and lc.masked_while_paused(verb, t, state, target))
+                      or lc.NOT_PAUSED in t.guard
+                      or ("not_paused" in lc.LIFECYCLE[state].requires
+                          and not engine.exempt_from_requirements(verb, t, "not_paused")))
             with self.subTest(state=state, verb=verb):
                 out = take(paused, verb, **kwargs)
                 self.assertEqual(out.accepted, not masked, out.reason)

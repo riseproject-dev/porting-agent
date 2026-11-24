@@ -1295,17 +1295,15 @@ def resolve(state: str, verb: str) -> tuple[lc.Transition, str]:
     return edge.transition, edge.target
 
 
-def _mask(ctx: Context, verb: str, t: lc.Transition) -> str | None:
-    """What the ``paused`` flag forbids, by trigger."""
-    if not ctx.record.get("paused"):
+def _mask(ctx: Context, verb: str, t: lc.Transition, target: str) -> str | None:
+    """What the ``paused`` flag forbids (``lifecycle.masked_while_paused``)."""
+    if not ctx.record.get("paused") or not lc.masked_while_paused(verb, t, ctx.state, target):
         return None
-    if t.trigger == lc.Trigger.COMMAND and t.command not in PAUSED_COMMANDS:
-        return "contribution is paused"
-    if t.trigger == lc.Trigger.TICK:
-        return "contribution is paused"
-    if t.trigger == lc.Trigger.RESULT and verb != "record_late_effect":
+    if t.trigger == lc.Trigger.RESULT:
         return "contribution is paused; the Result no longer matches"
-    return None
+    if t.trigger == lc.Trigger.OBSERVATION:
+        return "contribution is paused; the observation is read again after the resume"
+    return "contribution is paused"
 
 
 @dataclass
@@ -1375,7 +1373,7 @@ def _guards(record: dict, verb: str, *, policy: dict, now: str, command: Command
         return Refused(Refusal.NOT_APPLICABLE, verb, None, str(error)), None, None, None
     ctx = Context(record, state, policy, now, command, frozenset(facts), dict(counts or {}),
                   open_operations, ci_evidence)
-    masked = _mask(ctx, verb, t)
+    masked = _mask(ctx, verb, t, target)
     if masked:
         return Refused(Refusal.PAUSED, verb, None, masked), ctx, t, target
     broken = [(name, why) for name, why in invariant_problems(record)
@@ -2325,8 +2323,12 @@ handles("observe_ci", "_observe_upstream_pr", ("verify_upstream_pr", "record_aud
         _OBS_STRICT)
 handles("observe_ci", "_record_explanation", "record_explanation", _ALL_BUG)
 handles("observe_ci", "_record_review", "record_actionable_review", D_OBS, FACT_MISSING=SKIP)
-handles("observe_ci", "_observe_development",
-        ("record_head_change", "record_pr_mismatch", "record_ci_failure"), _OBS_STRICT)
+# A head that moved in `development.fix_needed` without a development PR is
+# not recorded: the controller opens its PR from there first, and the
+# observation reads it again.
+handles("observe_ci", "_observe_development", "record_head_change", D_OBS)
+handles("observe_ci", "_observe_development", ("record_pr_mismatch", "record_ci_failure"),
+        _OBS_STRICT)
 handles("observe_ci", "_observe_development", ("return_for_feedback", "nominate_for_handoff"),
         D_OBS)
 handles("observe_ci", "_rerun_interrupted", "rerun_interrupted_ci", D_OBS,
@@ -2336,8 +2338,9 @@ handles("observe_ci", "_observe_gate", ("record_head_change", "return_for_repair
 handles("observe_ci", "_observe_upstream_review",
         ("record_merge", "record_pr_closed_unmerged", "record_head_change",
          "record_upstream_ci_failure"), _OBS_STRICT)
-handles("observe_ci", "_observe_release",
-        ("record_release_incomplete", "require_release_intervention", "verify_release"), _ALL_BUG)
+handles("observe_ci", "_observe_release", "record_release_incomplete", _ALL_BUG)
+handles("observe_ci", "_observe_release", ("require_release_intervention", "verify_release"),
+        _ALL_BUG, PAUSED=SKIP)
 
 # reconcile: Results, receipts and the recovery of Work.
 handles("reconcile", "queue_policy_recovery", "rearm_dispatch", D_TICK)
@@ -2360,8 +2363,13 @@ handles("reconcile", "fold_patch_review", "publish_after_failed_reviews", _ALL_B
 handles("reconcile", "_fail_publication", "schedule_publish_retry", _ALL_BUG,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
 handles("reconcile", "_fail_publication", "exhaust_recovery", _ALL_BUG)
+# The first published patch is folded once its development PR is open
+# (`development.waiting_ci` requires it): a Result refused for want of the
+# PR is deferred in `development.publishing`, and a bug elsewhere.
+handles("reconcile", "fold_patch_result", "record_publish_success", D_RESULT,
+        GUARD_UNMET=SKIP)
 handles("reconcile", "fold_patch_result",
-        ("record_publish_success", "hold_patch_for_review", "reject_patch_proposal",
+        ("hold_patch_for_review", "reject_patch_proposal",
          "replan_development", "request_ci_rerun", "record_revision_publish_success",
          "require_reviewer_answer"), D_RESULT)
 # The stop after a processing error is the last resort: a refusal (already

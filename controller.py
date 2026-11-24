@@ -28,6 +28,7 @@ import capacity
 import ci_rerun
 import collect
 import commands
+import dev_pr
 import engine
 import handoff
 import intake
@@ -847,13 +848,17 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     f"start_operation refused for a new provisioning intent of {cid}")
 
     # A published development head gets a same-fork development PR before CI
-    # observation. Persist intent first; the trusted workflow creates/discovers
-    # exactly riscv64-dev -> the frozen upstream base ref and returns a receipt.
-    # In `development.waiting_ci` the table's rows launch it:
-    # `launch_development_pr` within `operation_launch` (counted on the
-    # operation), and `exhaust_development_pr_launches` once that budget is
-    # exhausted. A planned operation that no longer matches the record, or of
-    # a paused contribution, is closed as failed and released without a row.
+    # is awaited (`development.waiting_ci` requires it). Persist intent first;
+    # the trusted workflow creates/discovers exactly riscv64-dev -> the frozen
+    # upstream base ref at the planned head and returns a receipt. The rows
+    # of the state the head is in launch it (`development.publishing` once
+    # the push of the held patch is confirmed, `development.fix_needed` for a
+    # head on the branch that no PR shows; the CI bootstrap of a recorded PR
+    # in `development.waiting_ci`): `launch_development_pr` within
+    # `operation_launch` (counted on the operation), and
+    # `exhaust_development_pr_launches` once that budget is exhausted. A
+    # planned operation that no longer matches the record, or of a paused
+    # contribution, is closed as failed and released without a row.
     # The `ci_rerun` operation of `rerun_interrupted_ci` shares the loop: no
     # row launches it, and its launches are counted like `operation_launch`.
     res.report["dev_pr_requests"] = []
@@ -922,18 +927,19 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             continue
         with isolation.contribution(cid, "development_pr"):
             fork = c.get("fork") or {}
-            artifact = c.get("proposal_artifact") or {}
-            pubop = operations.get(c.get("publication_operation_id"))
-            if engine.state_key(c) != "development.waiting_ci" or c.get("paused") \
-                    or c.get("active_operation_id") or fork.get("pr_number") is not None \
-                    or not fork.get("repository_id") or not fork.get("head_sha") \
-                    or fork.get("head_sha") == c["upstream"].get("base_sha") \
-                    or artifact.get("outcome") != "published" or not artifact.get("result_commit") \
-                    or not c.get("plan_evidence_id") or not c.get("scope_paths") \
-                    or not pubop or pubop.get("status") != "confirmed":
+            head = published_head_without_pr(c, operations, inputs.observed_dev_heads.get(cid))
+            if head is None:
                 continue
-            marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{fork['head_sha']} -->"
-            reasons = [c["plan_evidence_id"], str(artifact["result_commit"])]
+            if c.get("paused") or c.get("active_operation_id"):
+                rep["deferred"].append({
+                    "contribution": cid,
+                    "why": (f"the development PR of {head} is opened once the contribution is "
+                            "resumed" if c.get("paused") else
+                            f"the development PR of {head} waits for the open operation "
+                            f"{c['active_operation_id']}")})
+                continue
+            marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{head} -->"
+            reasons, digest = development_pr_reasons(c, head, evidence or {})
             op = None
             for n in range(MAX_REPLANS + 1):
                 # A re-plan after a closed operation of the same intent is a
@@ -944,9 +950,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                    reason_ids=reasons + ([f"replan:{n}"] if n else []),
                                    target={"repository": fork["name"],
                                            "repository_id": fork["repository_id"],
-                                           "ref": DEV_REF, "expected_head": fork["head_sha"],
+                                           "ref": DEV_REF, "expected_head": head,
                                            "base_sha": c["upstream"]["base_sha"]},
-                                   proposed={"marker": marker, "content_digest": artifact["digest"]},
+                                   proposed={"marker": marker, "content_digest": digest},
                                    now=now)
                 prior = operations.get(op["operation_id"])
                 if prior is None or recovery.is_open(prior):
@@ -976,7 +982,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             artifact = c.get("proposal_artifact") or {}
             if engine.state_key(c) != "development.waiting_ci" or c.get("paused") \
                     or c.get("active_operation_id") or fork.get("pr_number") is None \
-                    or c.get("last_ci_evidence_id") or artifact.get("outcome") != "published":
+                    or c.get("last_ci_evidence_id"):
                 continue
             created_at_head = any(op["contribution_id"] == cid and op["kind"] == "dev_pr_create"
                                   and op["status"] == "confirmed"
@@ -999,7 +1005,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                        "ref": DEV_REF, "expected_head": fork["head_sha"],
                                        "base_sha": c["upstream"]["base_sha"]},
                                proposed={"marker": f"ci-bootstrap:{cid}:r{c['revision']}",
-                                         "content_digest": artifact["digest"]}, now=now)
+                                         "content_digest": artifact.get("digest")}, now=now)
             if op["operation_id"] in operations:
                 continue
             # The intent is recorded and launched in the same tick.
@@ -1465,7 +1471,7 @@ def reminder_details(record: dict, operations: dict | None = None,
                "previous_reminder_at": pending.get("reminded_at"),
                **({"bound_to": {"revision": record["revision"], "head": heads[state]}}
                   if state in heads else {})}
-    if pending["kind"] == DEVELOPMENT_PR_LAUNCH_EXHAUSTED:
+    if pending["kind"] in (DEVELOPMENT_PR_LAUNCH_EXHAUSTED, lifecycle.DEVELOPMENT_PR_NOT_OPENED):
         # The operation whose launches were spent: the latest development PR
         # operation closed as failed at this revision.
         spent = [op for op in (operations or {}).values()
@@ -1628,23 +1634,75 @@ def _stale_development_pr(record: dict, op: dict) -> str | None:
     """Why a planned development PR operation is closed as failed without a
     row: the contribution is paused (the workflow refuses a paused record,
     so the operation would otherwise burn its launches and fence `park` and
-    a stale `resume`), or it no longer matches the record (another state,
-    revision, fork, head or base, or a PR already recorded for a create, or
-    none for the CI bootstrap). A new one is planned when
-    `development.waiting_ci` again holds a published head without the PR."""
+    a stale `resume`), or it is no longer the record's intent
+    (``dev_pr.intent_problem``: another state, revision, fork, head or
+    base, or a PR already recorded for a create, or none for the CI
+    bootstrap). A new one is planned when a published head again has no
+    PR."""
     if record.get("paused"):
         return "the contribution is paused"
-    fork = record.get("fork") or {}
-    target = op.get("target") or {}
-    if engine.state_key(record) != "development.waiting_ci" \
-            or op["revision"] != record["revision"] \
-            or target.get("repository") != fork.get("name") \
-            or target.get("repository_id") != fork.get("repository_id") \
-            or target.get("expected_head") != fork.get("head_sha") \
-            or target.get("base_sha") != record["upstream"].get("base_sha") \
-            or (op["kind"] == "dev_pr_create") != (fork.get("pr_number") is None):
+    if dev_pr.intent_problem(record, op):
         return "the operation no longer matches the record"
     return None
+
+
+def published_head_without_pr(record: dict, operations: dict,
+                              observed: str | None) -> str | None:
+    """The published head whose development PR is opened before CI is
+    awaited, or ``None``: in `development.publishing`, the commit of the
+    held patch once a branch operation of the contribution confirmed it on
+    the branch (its Result is folded once the PR is recorded); in
+    `development.fix_needed`, the head on the branch (the observed one, else
+    the recorded one) when it is not the base. Only a record without a PR
+    has one."""
+    fork = record.get("fork") or {}
+    if fork.get("pr_number") is not None or not fork.get("repository_id"):
+        return None
+    state = engine.state_key(record)
+    base = record["upstream"].get("base_sha")
+    if state == lifecycle.PUBLISHING:
+        candidate = (record.get("held_patch") or {}).get("candidate")
+        landed = any(op["contribution_id"] == record["contribution_id"]
+                     and op["kind"] in ("branch_update", "branch_rewrite")
+                     and op["status"] == "confirmed"
+                     and (op.get("proposed") or {}).get("commit") == candidate
+                     for op in operations.values())
+        return candidate if candidate and landed else None
+    if state == "development.fix_needed":
+        head = observed or fork.get("head_sha")
+        return head if head and head != base else None
+    return None
+
+
+def development_pr_reasons(record: dict, head: str,
+                           evidence: dict[str, dict]) -> tuple[list[str], str | None]:
+    """The reason ids and content digest of the operation that opens the
+    development PR of ``head``: the verified plan, the report of the Work
+    of this generation that pushed the head (a `worker_report` whose
+    `head_after` or `head_candidate` is the head) with its digest, else the
+    head itself (a human push), and the published artifact when one is
+    recorded."""
+    reasons = [record["plan_evidence_id"]]
+    digest = None
+    generation = int(record.get("generation", 0))
+    reports = sorted((e for e in evidence.values()
+                      if e.get("kind") == "worker_report"
+                      and e.get("contribution_id") == record["contribution_id"]
+                      and int(((e.get("data") or {}).get("work") or {}).get("generation", -1))
+                      == generation
+                      and head in ((e.get("data") or {}).get("head_after"),
+                                   (e.get("data") or {}).get("head_candidate"))),
+                     key=lambda e: e.get("collected_at") or "")
+    if reports:
+        reasons.append(reports[-1]["evidence_id"])
+        digest = (reports[-1].get("digests") or {}).get("report")
+    else:
+        reasons.append(f"head:{head}")
+    artifact = record.get("proposal_artifact") or {}
+    if artifact.get("outcome") == "published" and artifact.get("result_commit"):
+        reasons.append(str(artifact["result_commit"]))
+        digest = digest or artifact.get("digest")
+    return reasons, digest
 
 
 def _close_development_pr(c: dict, operation: dict, why: str, by_id: dict, operations: dict,
@@ -1675,7 +1733,7 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
     most `DEV_PR_RUN_SECONDS` after its last launch. Returns whether a
     launch was requested."""
     cid, oid = c["contribution_id"], operation["operation_id"]
-    if engine.state_key(c) != "development.waiting_ci":
+    if engine.state_key(c) not in dev_pr.INTENT_STATES[operation["kind"]]:
         return False  # no other state has a row that launches it
     counts = recovery.launch_count(operation)
     attempts = recovery.launch_attempts(operation)

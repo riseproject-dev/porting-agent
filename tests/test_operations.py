@@ -879,10 +879,15 @@ class TestFiresBindings(unittest.TestCase):
                     self.assertIn(verb, engine.PIPELINE_VERBS)
 
     def test_the_development_pr_operation_fires_only_its_confirmation(self):
-        for kind in ("dev_pr_create", "dev_pr_update"):
-            self.assertEqual(recovery.FIRES[("development.waiting_ci", kind)],
+        # The PR of a published head is opened before CI is awaited; the CI
+        # bootstrap of a recorded PR runs in the CI wait.
+        for state, kind in (("development.fix_needed", "dev_pr_create"),
+                            ("development.publishing", "dev_pr_create"),
+                            ("development.waiting_ci", "dev_pr_update")):
+            self.assertEqual(recovery.FIRES[(state, kind)],
                              {"confirmed": ("confirm_development_pr",)})
-            self.assertNotIn(("dev_pr_create", "confirmed"), controller.RESOLUTION_FIRES)
+        self.assertNotIn(("development.waiting_ci", "dev_pr_create"), recovery.FIRES)
+        self.assertNotIn(("dev_pr_create", "confirmed"), controller.RESOLUTION_FIRES)
 
 
 # --------------------------------------------------------------------------
@@ -1063,7 +1068,10 @@ class TestResolveOperation(unittest.TestCase):
                 rec = contribution(activity="waiting_ci", active_operation_id=op["operation_id"])
                 result, receipt = self.run_resolve(rec, op, disposition=disposition)
                 self.assertEqual(receipt["result"], "accepted", receipt)
-                self.assertEqual(staged(result, "events"), [])
+                # No row is fired by the resolution (a create confirmed at
+                # the recorded head makes the CI bootstrap due in the tick).
+                self.assertNotIn("confirm_development_pr",
+                                 [e["kind"] for e in staged(result, "events")])
                 self.assertEqual(staged(result, "operations")[0]["status"], status)
                 released = staged(result, "contributions")[0]
                 self.assertEqual((engine.state_key(released), released["active_operation_id"],
@@ -1394,7 +1402,8 @@ class TestDecidedOperationRows(ReceiptWorld, unittest.TestCase):
         res, *_rest = test_dev_pr.run(rec, ops, 6)
         yield "exhaust_development_pr_launches", op, res
         rerun = operation("planned", kind="ci_rerun", cid=rec["contribution_id"])
-        rec = dict(rec, active_operation_id=rerun["operation_id"])
+        rec = dict(rec, activity="waiting_ci", fork=dict(rec["fork"], pr_number=4),
+                   active_operation_id=rerun["operation_id"])
         res, *_rest = test_dev_pr.run(rec, {rerun["operation_id"]: rerun}, 6)
         yield "a spent ci_rerun", rerun, res
 

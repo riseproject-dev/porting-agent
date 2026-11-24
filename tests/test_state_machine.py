@@ -720,7 +720,8 @@ class TestLifecycleTable(unittest.TestCase):
     def test_transitions_of_a_state_in_which_work_is_due_are_mutually_exclusive(self):
         self.assertEqual([e.verb for e in lc.due_work_edges("development.fix_needed")],
                          ["request_patch", "request_repair", "refresh_on_exhaustion",
-                          "exhaust_repair_attempts", "exhaust_work_total"])
+                          "exhaust_repair_attempts", "exhaust_work_total",
+                          "launch_development_pr", "exhaust_development_pr_launches"])
         for state in ("planning.idle", "development.fix_needed", "upstream_review.fix_needed"):
             edges = lc.due_work_edges(state)
             self.assertGreater(len(edges), 1, state)

@@ -908,6 +908,10 @@ EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((REWRITE_CURRENT,), (REWRITE_EXPIRED,)),
     ((HELD_PATCH_CURRENT,), (HELD_PATCH_EXPIRED,)),
     ((NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET), (FEEDBACK_OR_UNMET,)),
+    # Where development Work is due, the operation that opens the development
+    # PR of a published head comes first: Work waits for it.
+    (("no open operation",), ("a development PR operation is planned",)),
+    (("operation_launch remains",), ("operation_launch exhausted",)),
 )
 # States in which two observations could apply to the same input; their
 # guards are exclusive, so the order of observation never decides.
@@ -952,6 +956,48 @@ _INTERRUPTED = "a required CI job on the exact head was cancelled or lost its ru
 # action once its launches are spent without a verified receipt.
 DEVELOPMENT_PR_PLANNED = "a development PR operation is planned"
 DEVELOPMENT_PR_LAUNCH_EXHAUSTED = "development_pr_launch_exhausted"
+# The pending action once the launches of the operation that opens the
+# development PR of a published head are spent: no development PR exists,
+# so `development.waiting_ci` cannot be entered; `resume_development` asks
+# for it again from `development.fix_needed`.
+DEVELOPMENT_PR_NOT_OPENED = "development_pr_not_opened"
+DEVELOPMENT_PR_RECORDED = "development PR and head recorded"
+# The operation that opens the development PR of a published head
+# (`dev_pr_create`), taken from the state the published head is in before
+# CI is awaited (`development.fix_needed`, `development.publishing`), and
+# the CI bootstrap of a recorded PR (`dev_pr_update`) in
+# `development.waiting_ci`, which requires the PR.
+_LAUNCH_DEVELOPMENT_PR = Transition(
+    _K, None,
+    (DEVELOPMENT_PR_PLANNED, "operation_launch remains", NOT_PAUSED),
+    charges=("operation_launch",),
+    description="The controller plans a `dev_pr_create` operation for a published head that "
+                "has no development PR (in `development.publishing` once the push of the "
+                "held patch is confirmed, in `development.fix_needed` for a head on the "
+                "branch that no PR shows), and a `dev_pr_update` operation (the CI bootstrap) "
+                "in `development.waiting_ci` when the PR was created at the recorded head and "
+                "no CI evidence is recorded. It records the intent and takes this row in the "
+                "same tick, and again for each launch after `LAUNCH_INTERVAL_SECONDS` without a "
+                "verified receipt. The trusted workflow creates or adopts the same-fork PR "
+                "`riscv64-dev` -> base at exactly the planned head; it never repeats a create "
+                "without discovery.")
+_CONFIRM_DEVELOPMENT_PR = Transition(
+    _P, None,
+    ("the receipt matches the operation", "exact development PR readback"),
+    _E(sets=("fork.pr_number",)),
+    description="The verified receipt of the operation, with the exact readback of the open "
+                "same-fork PR carrying this contribution's marker, records the PR number and "
+                "releases the operation; the revision is kept.")
+_EXHAUST_DEVELOPMENT_PR_OPEN = Transition(
+    _K, None,
+    (DEVELOPMENT_PR_PLANNED, "operation_launch exhausted"),
+    _E(sets=(f"pending_human_action={DEVELOPMENT_PR_NOT_OPENED}",
+             f"{PENDING_COUNTER}=operation_launch")),
+    description="No development PR could be opened for the published head: the operation is "
+                "closed as failed and released, so the wait is quiescent, and "
+                "`resume_development` returns to `development.fix_needed`, which plans it again "
+                "(a PR that a lost launch created is adopted).",
+    exhausts=("operation_launch",))
 _RERUN_INTERRUPTED_CI = Transition(
     _O, None, (_INTERRUPTED, "interrupted_reruns remains"),
     charges=("interrupted_reruns",),
@@ -986,6 +1032,21 @@ _RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh Work is 
                    "`operation_launch` again, and the next tick plans a new development PR "
                    "operation for the head. A held patch, which this wait never keeps, is "
                    "discarded. " + _RESTART_NOTE)
+
+
+def _guarded(t: Transition, *guards: str) -> Transition:
+    """``t`` with ``guards`` added: where Work is due, a spent `work_total`
+    is exhausted first (`exhaust_work_total`)."""
+    from dataclasses import replace
+
+    return replace(t, guard=(*t.guard, *guards))
+
+
+def _replace_effects(t: Transition, **changes) -> Transition:
+    """``t`` with the effects ``changes`` replace."""
+    from dataclasses import replace
+
+    return replace(t, effects=replace(t.effects, **changes))
 
 
 def _discarding(t: Transition, why: str = "") -> Transition:
@@ -1219,7 +1280,8 @@ LIFECYCLE: dict[str, State] = {
                             "review and every later Work read it whatever the review decides."),
             ("record_publish_success", "development.waiting_ci"): Transition(
                 _R, None,
-                ("the Result is published, or uncertain and later confirmed", NO_REVIEW_CONTRACT),
+                ("the Result is published, or uncertain and later confirmed", NO_REVIEW_CONTRACT,
+                 DEVELOPMENT_PR_RECORDED),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
                   clears=(CARRIED_FEEDBACK, HELD_RESULT, *PUBLISHED_RESTARTS)),
                 description="Taken only for Work dispatched before development patches were "
@@ -1253,7 +1315,7 @@ LIFECYCLE: dict[str, State] = {
             ("request_ci_rerun", "development.waiting_ci"): Transition(
                 _R, None,
                 ("the worker reports a failure not caused by the patch", WORK_WITHOUT_FEEDBACK,
-                 "flaky_reruns remains"),
+                 "flaky_reruns remains", DEVELOPMENT_PR_RECORDED),
                 _E(work="clear", clears=("last_ci_evidence_id", HELD_RESULT)), ("flaky_reruns",),
                 "The repair worker classifies the failure; the failed jobs are rerun on the exact "
                 "head, and the head and revision are kept. A rerun answers no feedback, so Work "
@@ -1355,7 +1417,8 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("record_publish_success", "development.waiting_ci"): Transition(
                 _R, None,
-                ("the Result is published, or uncertain and later confirmed",),
+                ("the Result is published, or uncertain and later confirmed",
+                 DEVELOPMENT_PR_RECORDED),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS,
                                        REVIEW_COMMENT),
                    clears=(CARRIED_FEEDBACK, HELD_RESULT, HELD_PATCH, *PUBLISHED_RESTARTS)),
@@ -1371,6 +1434,16 @@ LIFECYCLE: dict[str, State] = {
                             "`no_progress` again."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
+            # The first published patch has no development PR yet: it is
+            # opened here, once the push is confirmed, and the Result of the
+            # publication is folded once the PR is recorded.
+            ("launch_development_pr", SELF): _LAUNCH_DEVELOPMENT_PR,
+            ("confirm_development_pr", SELF): _CONFIRM_DEVELOPMENT_PR,
+            ("exhaust_development_pr_launches", "development.waiting_human"): _discarding(
+                _replace_effects(_EXHAUST_DEVELOPMENT_PR_OPEN,
+                                 work="clear", clears=(HELD_RESULT, OVERRIDDEN_REVIEWS)),
+                "The held patch and its publication are discarded: the pushed head is on the "
+                "branch, and `development.fix_needed` opens its PR after the resume."),
             ("expire_held_patch", "development.fix_needed"): Transition(
                 _K, None, (HELD_PATCH_EXPIRED,),
                 _E(work="clear", clears=(HELD_RESULT, HELD_PATCH, OVERRIDDEN_REVIEWS)),
@@ -1412,33 +1485,16 @@ LIFECYCLE: dict[str, State] = {
                 _E(sets=("last_ci_evidence_id",))),
             ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
             ("exhaust_interrupted_reruns", "development.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
-            ("launch_development_pr", SELF): Transition(
-                _K, None,
-                (DEVELOPMENT_PR_PLANNED, "operation_launch remains", NOT_PAUSED),
-                charges=("operation_launch",),
-                description="The controller plans a `dev_pr_create` operation when the published "
-                            "head has no recorded development PR, and a `dev_pr_update` "
-                            "operation (the CI bootstrap) when the PR was created at this head "
-                            "and no CI evidence is recorded. It records the intent and takes "
-                            "this row in the same tick, and again for each launch after "
-                            "`LAUNCH_INTERVAL_SECONDS` without a verified receipt. The trusted "
-                            "workflow creates or adopts the same-fork PR `riscv64-dev` -> base; "
-                            "it never repeats a create without discovery."),
-            ("confirm_development_pr", SELF): Transition(
-                _P, None,
-                ("the receipt matches the operation", "exact development PR readback"),
-                _E(sets=("fork.pr_number",)),
-                description="The verified receipt of the operation, with the exact readback of "
-                            "the open same-fork PR carrying this contribution's marker, records "
-                            "the PR number and releases the operation; the revision is kept."),
+            ("launch_development_pr", SELF): _LAUNCH_DEVELOPMENT_PR,
+            ("confirm_development_pr", SELF): _CONFIRM_DEVELOPMENT_PR,
             ("exhaust_development_pr_launches", "development.waiting_human"): Transition(
                 _K, None,
                 (DEVELOPMENT_PR_PLANNED, "operation_launch exhausted"),
                 _E(sets=(f"pending_human_action={DEVELOPMENT_PR_LAUNCH_EXHAUSTED}",
                          f"{PENDING_COUNTER}=operation_launch")),
-                description="The operation is closed as failed and released, so the wait is "
-                            "quiescent. A PR that a lost launch created is adopted by the "
-                            "operation planned after the resume.",
+                description="The CI bootstrap of the recorded development PR could not be "
+                            "launched: the operation is closed as failed and released, so the "
+                            "wait is quiescent, and `resume_ci` plans it again.",
                 exhausts=("operation_launch",)),
             ("record_actionable_review", "development.fix_needed"): Transition(
                 _O, None,
@@ -1509,7 +1565,8 @@ LIFECYCLE: dict[str, State] = {
                 "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
             ("refresh_on_exhaustion", "queued.idle"): Transition(
                 _K, None,
-                (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_UNUSED, NOT_PAUSED),
+                (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_UNUSED, NOT_PAUSED,
+                 "no open operation"),
                 _E(revision="bump", sets=("refresh", "automatic_refresh_used"),
                   clears=(*_REFRESH_EFFECTS.clears, "budget.clusters", "budget.no_progress_streak",
                           "budget.review_rejections")),
@@ -1519,7 +1576,7 @@ LIFECYCLE: dict[str, State] = {
                 exhausts=("repair_attempts_cluster", "no_progress")),
             ("exhaust_repair_attempts", "parked.idle"): Transition(
                 _K, None,
-                (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_USED),
+                (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_USED, "no open operation"),
                 _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD),
                 description="Parks for `repair_attempts_cluster` and `no_progress` only, after "
                             "`refresh_on_exhaustion` is used. Exhaustion of `work_total` takes "
@@ -1534,7 +1591,7 @@ LIFECYCLE: dict[str, State] = {
                             "`work_total` again, and `/upstreaming park`."),
             ("record_head_change", "development.waiting_ci"): Transition(
                 _O, None,
-                ("the observed fork head differs from the recorded head",),
+                ("the observed fork head differs from the recorded head", DEVELOPMENT_PR_RECORDED),
                 _E(revision="bump", sets=("fork.head_sha", RERUNS),
                   clears=("last_ci_evidence_id",)),
                 description="A push to the development branch while Work is due (a human "
@@ -1558,6 +1615,14 @@ LIFECYCLE: dict[str, State] = {
                             "observed together with the CI failure that left the submission "
                             "gate or `development.waiting_ci`: it is recorded as pending feedback, so the Work requested "
                             "next carries it. The CI evidence is kept."),
+            # A published head on the branch that no development PR shows (a
+            # human push before the first PR, or a head the record names
+            # without one): its PR is opened before CI is awaited.
+            ("launch_development_pr", SELF): _guarded(
+                _LAUNCH_DEVELOPMENT_PR, WORK_TOTAL_REMAINS),
+            ("confirm_development_pr", "development.waiting_ci"): _CONFIRM_DEVELOPMENT_PR,
+            ("exhaust_development_pr_launches", "development.waiting_human"): _guarded(
+                _EXHAUST_DEVELOPMENT_PR_OPEN, WORK_TOTAL_REMAINS),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.waiting_human": State(
@@ -1570,7 +1635,7 @@ LIFECYCLE: dict[str, State] = {
             ("resume_ci", "development.waiting_ci"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, pending_is("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
-                 QUIESCENT, NOT_STALE),
+                 QUIESCENT, NOT_STALE, DEVELOPMENT_PR_RECORDED),
                 _RESUME_CI, description=_RESUME_CI_NOTE),
             ("rearm_dispatch", "development.fix_needed"): _discarding(
                 _REARM_DISPATCH, "A held patch, which this wait never keeps, is discarded."),
@@ -1593,7 +1658,7 @@ LIFECYCLE: dict[str, State] = {
                  QUIESCENT, NOT_STALE),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery",
-                            "source_reads")),
+                            "source_reads", "operation_launch")),
                 description="Fresh Work is requested; a Result held for publication and a "
                             "patch held for its review are not reused. The pending feedback is "
                             "kept. " + _RESTART_NOTE),
@@ -2600,7 +2665,7 @@ REQUIRES: dict[str, tuple[str, ...]] = {
     "development.review_pending": (*_DEV, "no_pending", "not_paused"),
     "development.reviewing": (*_DEV, "work", "no_pending", "not_paused"),
     "development.publishing": (*_DEV, "no_pending", "not_paused"),
-    "development.waiting_ci": (*_DEV, "no_held_patch", "no_pending"),
+    "development.waiting_ci": (*_DEV, "dev_pr", "no_held_patch", "no_pending"),
     "development.waiting_human": (*_DEV, "pending"),
     "handoff.awaiting_submission": (*_HANDOFF, "candidate", "pending"),
     "handoff.review_due": (*_HANDOFF, "no_pending"),
@@ -2726,11 +2791,16 @@ FLAGS: dict[str, Flag] = {
                 "apply; other commands are rejected. `resume` clears the flag first: it takes "
                 "`resume_pause` or `resume_stale`. In a human wait a second `resume` then leaves "
                 "the wait.",
-            _O: "Folded normally, including CI on the exact head.",
+            _O: "An observation that keeps the state and the revision is folded and saved (an "
+                "explanation, a review comment fence); one that would move the record to "
+                "another state (but one that ends it), bump the revision, or charge a budget is "
+                "refused and read again after the resume, which takes the next step from what "
+                "was saved.",
             _R: "The requested Work and the pending publication were cleared, so a Result takes "
                 "`record_late_effect`; nothing is published.",
-            _P: "Folded normally. The publisher's final check reads `paused`; an effect that "
-                "passed it before the pause may finish.",
+            _P: "Folded normally: a receipt finishes the operation in flight. The publisher's "
+                "final check reads `paused`; an effect that passed it before the pause may "
+                "finish.",
             _K: "No launch, no Work allocation, no budget charge; reminders are suppressed.",
         },
     ),
@@ -3262,22 +3332,37 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "publishes its Result in `development.agent_running`."),
             Diagram(
                 "The development PR operation",
-                ("development.agent_running", "development.waiting_ci",
+                ("development.publishing", "development.fix_needed", "development.waiting_ci",
                  "development.waiting_human"),
-                (("development.agent_running", "record_publish_success"),
+                (("development.publishing", "launch_development_pr"),
+                 ("development.publishing", "confirm_development_pr"),
+                 ("development.publishing", "exhaust_development_pr_launches"),
+                 ("development.publishing", "record_publish_success"),
+                 ("development.fix_needed", "launch_development_pr"),
+                 ("development.fix_needed", "confirm_development_pr"),
+                 ("development.fix_needed", "exhaust_development_pr_launches"),
                  ("development.waiting_ci", "launch_development_pr"),
                  ("development.waiting_ci", "confirm_development_pr"),
                  ("development.waiting_ci", "exhaust_development_pr_launches"),
-                 ("development.waiting_human", "resume_ci")),
-                start="development.agent_running",
-                text="A published head without a recorded development PR gets one through a "
-                     "trusted operation, planned and launched by the controller in "
-                     "`development.waiting_ci` within `operation_launch` (counted on the "
-                     "operation); a PR created at this head with no CI evidence gets the CI "
-                     "bootstrap the same way. A verified receipt with the exact readback takes "
-                     "`confirm_development_pr`. Launches spent without one close the operation "
-                     "as failed and wait for a human; the resume plans a new operation, which "
-                     "adopts a PR a lost launch created."),
+                 ("development.waiting_human", "resume_ci"),
+                 ("development.waiting_human", "resume_development")),
+                start="development.publishing",
+                text="CI is awaited only on a development PR: `development.waiting_ci` requires "
+                     "it. A published head without one gets it through a trusted operation, "
+                     "planned and launched by the controller within `operation_launch` (counted "
+                     "on the operation) in the state the head is in: in "
+                     "`development.publishing` once the push of the held patch is confirmed, "
+                     "where the Result of the publication is folded "
+                     "(`record_publish_success`) only once the PR is recorded, and in "
+                     "`development.fix_needed` for a head on the branch that no PR shows, where "
+                     "the verified receipt enters the CI wait. A verified receipt with the "
+                     "exact readback takes `confirm_development_pr`. Launches spent without one "
+                     "close the operation as failed and wait for a human "
+                     "(`development_pr_not_opened`); `resume_development` returns to "
+                     "`development.fix_needed`, which plans a new operation that adopts a PR a "
+                     "lost launch created. In `development.waiting_ci` the same rows run the CI "
+                     "bootstrap of a PR created at the recorded head with no CI evidence, and "
+                     "`resume_ci` follows the exhaustion of its launches."),
             Diagram(
                 "Failure case 3: the review of a held patch fails, or its Work fails",
                 ("development.fix_needed", "development.agent_running",
@@ -5111,14 +5196,29 @@ PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
     "resume", "park", "refresh", "retract-pr", "abandon", "resolve-operation"))
 
 
-def masked_while_paused(verb: str, t: Transition) -> bool:
+def masked_while_paused(verb: str, t: Transition, source: str, target: str) -> bool:
     """Whether the mask of the ``paused`` flag refuses the row: then the
-    row is taken only from a record that is not paused."""
+    row is taken only from a record that is not paused. While paused,
+    convergence still runs but nothing new starts: a command other than the
+    stops, a tick row, and a Result row other than ``record_late_effect``
+    are refused, and so is an observation that moves the record to another
+    state (but one that ends the contribution), bumps the revision, or
+    charges a budget (a launch); an observation that keeps the state and the
+    revision is folded and saved, and an operation receipt finishes the
+    operation in flight. The resume takes the next step from what was
+    saved."""
+    if any(verb in flag.set_by or verb in flag.cleared_by for flag in FLAGS.values()):
+        return False
     if t.trigger == Trigger.COMMAND:
         return t.command not in PAUSED_COMMANDS
     if t.trigger == Trigger.TICK:
         return True
-    return t.trigger == Trigger.RESULT and verb != "record_late_effect"
+    if t.trigger == Trigger.RESULT:
+        return verb != "record_late_effect"
+    if t.trigger == Trigger.OBSERVATION:
+        moves = target != source and LIFECYCLE[target].kind != "terminal"
+        return moves or t.effects.revision == "bump" or bool(t.charges)
+    return False
 
 
 def requirement_edges():
@@ -5151,7 +5251,7 @@ def requirement_reason(source: str, verb: str, t: Transition, target: str,
         return "implied"
     if invariant.establish(t, verb):
         return "established"
-    if name == "not_paused" and masked_while_paused(verb, t) \
+    if name == "not_paused" and masked_while_paused(verb, t, source, target) \
             and not invariant.destroy(t, verb):
         return "masked"
     return None
@@ -5192,7 +5292,7 @@ def _check_always_rows(problems: list[str]) -> None:
         if t.guard != (ALWAYS,):
             continue
         where = f"{source} --{verb}--> {target}"
-        if masked_while_paused(verb, t):
+        if masked_while_paused(verb, t, source, target):
             problems.append(f"{where}: an `always` row is refused while paused")
         for name in LIFECYCLE[target].requires:
             if name not in LIFECYCLE[source].requires or INVARIANTS[name].destroy(t, verb):

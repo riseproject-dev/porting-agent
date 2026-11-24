@@ -1534,8 +1534,16 @@ class TestLockedWait(unittest.TestCase):
         out = world.tick(at(30), comments=[comment('/upstreaming pause reason="away"', cid=972)])
         self.assertEqual((world.kinds(out), world.state), (["pause"], "handoff.waiting_upstream_pr"))
         self.assertNotIn("reminders", world.tick(at(0, "2026-12-03")).report["controller"])
+        # While paused the opened PR is read but not verified (that moves the
+        # record on); the resume takes the next step.
         world.gh.upstream = [upstream_pr()]
         out = world.tick(at(1, "2026-12-03"))
+        self.assertEqual(world.kinds(out), [])
+        revision = world.record["revision"]
+        out = world.tick(at(2, "2026-12-03"), comments=[comment(
+            f'/upstreaming resume revision={revision} reason="back"', cid=973)])
+        self.assertEqual(world.kinds(out)[0], "resume_pause")
+        out = world.tick(at(3, "2026-12-03"))
         self.assertEqual(world.kinds(out), ["verify_upstream_pr"])
 
 

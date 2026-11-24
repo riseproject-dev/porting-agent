@@ -71,8 +71,14 @@ DECISIONS: tuple[Item, ...] = (
         "A Result held for publication is invalidated: it is not published, and no publish "
         "retry is launched while paused. `resume_pause` bumps the "
         "revision, so a Result that lands during the pause no longer matches and takes "
-        "`record_late_effect`. Observations, including CI on the exact head, still fold. The "
-        "publisher's final check reads `paused`.",
+        "`record_late_effect`. While paused, observations and receipts still converge, but "
+        "nothing outward starts and nothing moves the record to its next state: an "
+        "observation that keeps the state and the revision (an explanation, a review comment "
+        "fence) is folded and saved, an operation receipt finishes the operation in flight, "
+        "and an observation that would move the record to another state (but one that ends "
+        "it), bump the revision, or charge a budget is read again after the resume (see "
+        "\"A pause holds back what would move the record\"). The publisher's final check reads "
+        "`paused`.",
         ("development.agent_running", "development.fix_needed+paused", "development.fix_needed",
          "development.waiting_ci", "development.waiting_ci+paused"),
         edges=(("development.agent_running", "pause"),
@@ -1981,6 +1987,66 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.waiting_ci", "nominate_for_handoff"),
                      ("development.waiting_human", "resume_patch_review"),
                      ("development.waiting_human", "resume_ci")),
+    ),
+    Item(
+        "CI is awaited only on a development PR",
+        "Which state opens the development PR of a published head, now that "
+        "`development.waiting_ci` requires one (the owner's decision D1 of 2026-11-24).",
+        "`development.waiting_ci` requires an existing development PR (the invariant "
+        "`dev_pr`), so the PR of a published head is opened from the state the head is in, "
+        "before CI is awaited, by the rows the CI wait already had: `launch_development_pr`, "
+        "`confirm_development_pr` and `exhaust_development_pr_launches`, with no new verb. In "
+        "`development.publishing` the controller plans the `dev_pr_create` operation once a "
+        "branch operation confirmed the push of the held patch; the Result of the publication "
+        "is folded by `record_publish_success` only once the PR is recorded (until then the "
+        "reconciler defers it and reads it again, and no publish-only retry is launched). In "
+        "`development.fix_needed`, a head on the branch that no PR shows (a human push before "
+        "the first PR, or a record that names a head without one) gets its PR first, and the "
+        "receipt takes `confirm_development_pr` to `development.waiting_ci`; Work and the "
+        "exhaustion rows there wait while the operation is open. The rows that entered the CI "
+        "wait without a PR (`record_publish_success`, `request_ci_rerun`, `record_head_change` "
+        "of `development.fix_needed`, `resume_ci` of `development.waiting_human`) are guarded "
+        "by \"development PR and head recorded\". Launches spent without a PR wait for a "
+        "human with the new pending action `development_pr_not_opened`; `resume_development` "
+        "returns to `development.fix_needed`, which plans the operation again and adopts a PR "
+        "a lost launch created. `development.waiting_ci` keeps only the CI bootstrap of a PR "
+        "created at the recorded head. A first publication by Work dispatched before the "
+        "review of development patches is a known gap.",
+        ("development.publishing", "development.fix_needed", "development.waiting_ci",
+         "development.waiting_human"),
+        edges=(("development.publishing", "launch_development_pr"),
+               ("development.publishing", "confirm_development_pr"),
+               ("development.publishing", "record_publish_success"),
+               ("development.publishing", "exhaust_development_pr_launches"),
+               ("development.fix_needed", "launch_development_pr"),
+               ("development.fix_needed", "confirm_development_pr"),
+               ("development.fix_needed", "exhaust_development_pr_launches"),
+               ("development.waiting_human", "resume_development")),
+        highlighted=(("development.publishing", "launch_development_pr"),
+                     ("development.fix_needed", "confirm_development_pr"),
+                     ("development.fix_needed", "exhaust_development_pr_launches")),
+    ),
+    Item(
+        "A pause holds back what would move the record",
+        "What still runs while a contribution is paused (the owner's decision D2 of "
+        "2026-11-24).",
+        "While paused, observations and receipts still converge, but nothing outward starts "
+        "and nothing moves the record to its next state; the resume takes that step. The mask "
+        "of the flag (`lifecycle.masked_while_paused`) refuses, besides the commands other "
+        "than the stops, the tick rows and the Result rows other than `record_late_effect`, "
+        "an observation that would move the record to another state (but one that ends the "
+        "contribution), bump the revision, or charge a budget; it is read again after the "
+        "resume. An observation that keeps the state and the revision is folded and saved, "
+        "and an operation receipt finishes the operation in flight, also when its row enters "
+        "the CI wait. A head pushed during the pause, CI that fails or passes, and actionable "
+        "review feedback are therefore recorded by the first observation after the resume, "
+        "and the revision a resume names is the revision the pause saw unless a stop or a "
+        "receipt changed it.",
+        ("development.waiting_ci", "development.waiting_ci+paused", "development.fix_needed"),
+        edges=(("development.waiting_ci", "pause"),
+               ("development.waiting_ci+paused", "resume_pause"),
+               ("development.waiting_ci", "record_ci_failure")),
+        highlighted=(("development.waiting_ci+paused", "resume_pause"),),
     ),
     Item(
         "Seven verbs merged into three",

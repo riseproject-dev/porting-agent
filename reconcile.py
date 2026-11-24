@@ -733,6 +733,20 @@ def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str,
                  **(extra or {})})
 
 
+class ResultDeferred(Exception):
+    """The published Result of a held patch whose development PR is not
+    open yet is not folded in this tick: ``development.waiting_ci``
+    requires the PR, which the controller opens from
+    ``development.publishing`` once the push is confirmed. The Result is
+    read again until the PR is recorded; ``staged`` holds the branch
+    operation it confirmed."""
+
+    def __init__(self, reason: str, staged: list[tuple[str, dict]]):
+        super().__init__(reason)
+        self.reason = reason
+        self.staged = staged
+
+
 def late_fold(rec: dict, outcome: dict, refused: engine.Refused | engine.Refusals, *, now: str,
               policy: dict, worker_run_id: str | None,
               staged: list[tuple[str, dict]]) -> tuple[dict, list[tuple[str, dict]]]:
@@ -1931,6 +1945,16 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 details=details), ("reconcile", "fold_patch_result")):
             case engine.Applied() as out:
                 pass
+            case engine.Skip(refused) if engine.state_key(rec) == lifecycle.PUBLISHING:
+                # The first published patch: its development PR is opened
+                # before CI is awaited, and the Result is folded then.
+                raise ResultDeferred(
+                    f"the Result is folded once the development PR is open: {refused.detail}",
+                    [item for item in staged if item[0] == "operations"])
+            case engine.Skip(refused):
+                # Work dispatched before patches were reviewed published its
+                # first patch from its own run; nothing opens its PR here.
+                raise engine.TransitionRefused(refused, ("reconcile", "fold_patch_result"))
             case engine.LateEffect(refused):
                 return late_fold(rec, outcome, refused, now=now, policy=policy,
                                  worker_run_id=worker_run_id, staged=staged)
@@ -2515,15 +2539,16 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 detail=f"development PR {pr['number']} verified", now=iso)
             snap.operations[op["operation_id"]] = new_op
             out.staged.append(("operations", new_op))
-            if engine.state_key(c) != "development.waiting_ci":
-                # A receipt that arrives in another development state closes
-                # the operation and keeps the state; the PR is not recorded,
-                # and the next create adopts it.
+            if not recovery.fired_verbs(c, new_op):
+                # A receipt that arrives in a state without a row for the
+                # operation closes it and keeps the state; the PR is not
+                # recorded, and the next create adopts it.
                 new = recovery.release(c, new_op, iso)
                 if new is not c:
                     contributions[key] = new
                     out.staged.append(("contributions", new))
-                dev_pr_report.append({"contribution": cid, "status": "closed outside the CI wait",
+                dev_pr_report.append({"contribution": cid,
+                                      "status": "closed in a state without its row",
                                       "pr_number": pr["number"]})
                 continue
             outcome = recovery.fire(c, new_op, policy=policy, now=iso,
@@ -2600,6 +2625,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # Without an artifact id there is nothing to record it once by.
                 pubs_report.append({"contribution": cid, "ignored": "superseded publication artifact"})
                 continue
+            before = rec
             if pid:
                 rec = dict(rec, processed_publications=(
                     (rec.get("processed_publications") or []) + [pid])[-PROCESSED_PUBLICATIONS:])
@@ -2634,10 +2660,20 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     rec, pub, unrequested, policy=policy, now=iso, extra=extra))])
                 pubs_report.append({"contribution": cid, "ignored": unrequested})
                 continue
-            rec, staged = apply_publication(rec, pub, now=iso, policy=policy,
-                                            worker_run_id=pub.get("worker_run_id"),
-                                            evidence=snap.evidence, pypi=pypi,
-                                            operations=snap.operations)
+            try:
+                rec, staged = apply_publication(rec, pub, now=iso, policy=policy,
+                                                worker_run_id=pub.get("worker_run_id"),
+                                                evidence=snap.evidence, pypi=pypi,
+                                                operations=snap.operations)
+            except ResultDeferred as deferred:
+                # Not folded: the artifact is read again in a later tick.
+                contributions[key] = before
+                out.staged.extend(deferred.staged)
+                for _kind, r in deferred.staged:
+                    snap.operations[r["operation_id"]] = r
+                pubs_report.append({"contribution": cid, "status": pub.get("status"),
+                                    "deferred": deferred.reason[:500]})
+                continue
             contributions[key] = rec
             out.staged.extend(staged)
             for kind, r in staged:
@@ -2746,6 +2782,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             continue
         with isolation.contribution(c["contribution_id"], "publication_retry"):
             pp = c.get("pending_publication")
+            if pp and controller.published_head_without_pr(c, snap.operations, None):
+                # The push of the held patch landed and its development PR
+                # is being opened: its Result is folded once the PR is
+                # recorded, so nothing is retried or expired meanwhile.
+                continue
             if pp and not pp.get("exhausted") and not engine.stopped(c) \
                     and engine.state_key(c) in WORK_RESULT_STATES \
                     and datetime.fromisoformat(pp["next_attempt_at"]) <= now:

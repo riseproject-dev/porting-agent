@@ -1324,10 +1324,16 @@ def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict,
         obs.staged.append(("evidence", ev))
         values["release_acceptance"] = {"evidence_id": eid, "as_of": now, "complete": True}
         cause = eid
-    cur = _stage(obs, engine.applied(engine.try_apply_transition(
-        rec, decision.verb, policy=policy, now=now, cause_id=cause, facts=decision.facts,
-        values=values, details=decision.details), ("observe_ci", "_observe_release")))
-    _poll(obs, cur, None)
+    match engine.dispatch(engine.try_apply_transition(
+            rec, decision.verb, policy=policy, now=now, cause_id=cause, facts=decision.facts,
+            values=values, details=decision.details), ("observe_ci", "_observe_release")):
+        case engine.Applied() as out:
+            _poll(obs, _stage(obs, out), None)
+        case engine.Skip(refused):
+            # Paused: the release is read again after the resume.
+            _deferred(entry, refused)
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("observe_ci", "_observe_release"))
 
 
 def dedupe(staged: list[tuple[str, dict]]) -> list[tuple[str, dict]]:

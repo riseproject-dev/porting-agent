@@ -297,7 +297,8 @@ def _observed(event: dict) -> str:
         parts.append(f"Development PR #{_quotable(details.get('pr_number'), 12)}.")
     if kind == "exhaust_development_pr_launches" or (
             kind == "record_reminder"
-            and details.get("pending_human_action") == lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED):
+            and details.get("pending_human_action") in (lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED,
+                                                        lifecycle.DEVELOPMENT_PR_NOT_OPENED)):
         parts.append(_development_pr_guidance(details))
     if (kind == "require_provisioning_intervention"
             and ("launches" in details or "replans" in details)
