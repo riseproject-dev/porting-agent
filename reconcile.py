@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import re
@@ -1607,6 +1608,16 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     if outcome.get("reason"):
         details["reason"] = str(outcome["reason"])[:500]
     failed = status in rows["failed"]
+    if status == "verified" and "verified" in rows \
+            and outcome.get("publication_series_digest") != outcome.get("patch_digest"):
+        # The patch is held by the artifact that carries the verified
+        # series, which the review reads by its run and id; an artifact
+        # without it (a retry of older trusted code) is a failed
+        # publication, verified again by the next publish-only retry.
+        failed = True
+        outcome = dict(outcome, reason="the publication artifact does not carry the verified "
+                                       "series")
+        details["reason"] = outcome["reason"]
     rerun_missing = None
     if status == "no_change" and "no_change" not in rows and not engine.refusal(
             rec, "request_ci_rerun", policy=policy, now=now,
@@ -2820,6 +2831,15 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
         artifact_id = path.parent / "artifact-id"
         outcome["publication_artifact_id"] = (
             int(artifact_id.read_text().strip()) if artifact_id.exists() else None
+        )
+        # The run that owns the artifact (the directory is named by it): the
+        # worker run, or the publish-only retry that wrote it. A held patch
+        # is pinned to it, with the digest of the series it carries.
+        outcome["publication_run_id"] = path.parent.name
+        series = path.parent / "patches.mbox"
+        outcome["publication_series_digest"] = (
+            hashlib.sha256(series.read_bytes()).hexdigest()
+            if series.is_file() and not series.is_symlink() else None
         )
         # The worker's report (untrusted): the bytes of the file, read as the
         # gate read them, checked again and stored only when a success row

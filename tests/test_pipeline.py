@@ -259,7 +259,8 @@ class TestPipeline(unittest.TestCase):
                "patch_digest": verified.patch_digest, "changed_files": verified.report["delta"],
                "operation_kind": "append", "expected_head": task["expected_head"],
                "artifact": art.__dict__, "task": task, "worker_run_id": "4242",
-               "publication_artifact_id": 901}
+               "publication_artifact_id": 901, "publication_run_id": "4242",
+               "publication_series_digest": verified.patch_digest}
         snap = reconcile.Snapshot(contributions={"c": claimed}, operations={}, consumed={},
                                   projects={}, evidence={})
         tick = reconcile.tick(api, snap, policy=pol, now=self.now, publications=[pub],
@@ -280,7 +281,7 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(review_task["context"]["patch"]["patch_digest"], verified.patch_digest)
         review = {"schema_version": 1, "contribution_id": review_task["contribution_id"],
                   "expected_revision": review_task["revision"],
-                  "expected_head": review_task["expected_head"],
+                  "expected_head": review_task["context"]["patch"]["expected_head"],
                   "patch_digest": verified.patch_digest, "candidate": verified.candidate,
                   "verdict": "pass", "summary": "The riscv64 row follows the project's matrix.",
                   "findings": [{"id": "f1", "severity": "nit", "category": "upstream_convention",

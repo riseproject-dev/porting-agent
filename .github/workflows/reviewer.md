@@ -167,29 +167,12 @@ pre-agent-steps:
       if jq -e '.context.report != null' "$task" >/dev/null; then
         fetch_evidence .context.report worker_report /tmp/gh-aw/agent/report.json
       fi
-      # The held patch: the series of the worker run's trusted publication
-      # artifact, downloaded with this job's read token and checked against
-      # the digest the held patch pins.
-      artifact=$(jq -r '.context.patch.artifact_id' "$task")
-      run=$(jq -r '.context.patch.worker_run_id' "$task")
-      digest=$(jq -r '.context.patch.patch_digest' "$task")
-      [[ "$artifact" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "bad patch artifact"; exit 1; }
-      [[ "$run" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "bad worker run"; exit 1; }
-      [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { echo "bad patch digest"; exit 1; }
-      patch=/tmp/gh-aw/agent/patch
-      mkdir -p "$patch"
-      gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" > "$RUNNER_TEMP/patch-artifact.json"
-      jq -e --arg run "$run" '.name == "porting-publication" and (.expired | not)
-        and ((.workflow_run.id | tostring) == $run)' "$RUNNER_TEMP/patch-artifact.json" >/dev/null \
-        || { echo "the artifact is not the held patch's"; exit 1; }
-      gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/patch.zip"
-      unzip -q -o -j "$RUNNER_TEMP/patch.zip" patches.mbox proposal.json -d "$patch"
-      [ -f "$patch/patches.mbox" ] && [ ! -L "$patch/patches.mbox" ] \
-        && [ -f "$patch/proposal.json" ] && [ ! -L "$patch/proposal.json" ] \
-        || { echo "the held patch is incomplete"; exit 1; }
-      [ "$(sha256sum "$patch/patches.mbox" | cut -d' ' -f1)" = "$digest" ] \
-        || { echo "held patch digest mismatch"; exit 1; }
-      echo "verified held patch $digest at $patch"
+      # The held patch: the series of the trusted publication artifact the
+      # held patch pins (of the worker run, or of the publish-only retry
+      # that verified it again), downloaded with this job's read token and
+      # checked against the run that owns it and the digest it pins.
+      python3 scripts/held_patch.py --task "$task" --key patch \
+        --out /tmp/gh-aw/agent/patch --required
   # No token in this step: it fetches the public fork and upstream and
   # rebuilds the held series, writing only objects.
   - name: Check out the fork and rebuild the held patch (read-only)
@@ -199,7 +182,9 @@ pre-agent-steps:
       patch=/tmp/gh-aw/agent/patch
       fork=$(jq -r '.fork' "$task")
       upstream=$(jq -r '.upstream' "$task")
-      head=$(jq -r '.expected_head' "$task")
+      # The head the patch was verified on: the fork may have moved since,
+      # and then the publication of the patch replans it.
+      head=$(jq -r '.context.patch.expected_head' "$task")
       base=$(jq -r '.base_sha' "$task")
       operation=$(jq -r '.context.patch.operation' "$task")
       tree=$(jq -r '.context.patch.tree' "$task")
@@ -368,8 +353,9 @@ The trusted pre-agent steps wrote the immutable task to
 the task names:
 
 - `./fork`, a Git repository with the branches `base` (the frozen upstream
-  base, `base_sha`), `head` (the development branch at `expected_head`, the
-  head the patch was written on) and `patch` (the held patch rebuilt on it,
+  base, `base_sha`), `head` (the development branch at
+  `context.patch.expected_head`, the head the patch was written and verified
+  on) and `patch` (the held patch rebuilt on it,
   checked out). Use `git -C fork diff head patch`, `git -C fork log head..patch`
   and `git -C fork diff base patch` freely;
 - `/tmp/gh-aw/agent/patch/`: `patches.mbox` (the held series),
@@ -441,8 +427,9 @@ worker amends the patch from your findings.
 
 Write `porting-out/proposal.json` matching `schemas/patch_review.schema.json`
 in the control repository: `schema_version` 1, `contribution_id`,
-`expected_revision` (the task's `revision`) and `expected_head` copied from the
-task; `patch_digest` and `candidate` copied from `task.context.patch`;
+`expected_revision` (the task's `revision`) copied from the task;
+`expected_head`, `patch_digest` and `candidate` copied from
+`task.context.patch`;
 `verdict` (`fail` exactly when a finding is a blocker or major), a `summary`
 of the review, `findings` (at most 30), `previous_findings`, `checked` (what
 you checked) and `limitations` (what you could not check). Keep it under

@@ -603,10 +603,11 @@ def held_patch_reference(record: dict) -> dict:
     ``ValueError`` when the record holds none."""
     held = record.get("held_patch") or {}
     if not held or not re.fullmatch(r"[1-9][0-9]{0,19}", str(held.get("worker_run_id"))) \
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", str(held.get("artifact_run_id"))) \
             or not isinstance(held.get("artifact_id"), int):
         raise ValueError("the review Work names no held patch")
     return {key: held.get(key) for key in (
-        "worker_run_id", "artifact_id", "work", "revision", "patch_digest", "candidate", "tree",
+        "worker_run_id", "artifact_run_id", "artifact_id", "work", "revision", "patch_digest", "candidate", "tree",
         "expected_head", "operation", "changed_files", "report_evidence_id")}
 
 

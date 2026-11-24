@@ -633,12 +633,15 @@ class TestWorkflowContracts(unittest.TestCase):
             )
             for script in run_scripts(data):
                 joined = script.replace("\\\n", " ")
-                direct = re.search(r"(?:^|[\n;&|])\s*python(?:3)?(?:\s|$)", joined)
-                if direct is not None:
+                for direct in re.finditer(r"(?:^|[\n;&|])\s*(python(?:3)?(?:\s|$)[^\n]*)",
+                                          joined):
+                    # Only the standard-library pre-agent scripts of the agent
+                    # workflows run on the runner's python3.
                     self.assertIn(path.name, ("worker.md", "reviewer.md"))
-                    self.assertEqual(
-                        script,
-                        'python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"',
+                    self.assertRegex(
+                        direct.group(1).strip(),
+                        r'^python3 scripts/(pi_provider_credential\.py "\$RUNNER_TEMP/gh-aw/actions"'
+                        r'|held_patch\.py --task "\$task" --key (patch|previous_patch) )',
                     )
 
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):

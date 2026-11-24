@@ -54,7 +54,7 @@ SAMPLE = {
                           "digest": "sha256:" + "0" * 64, "run_id": "1"},
     "pending_publication": {"worker_run_id": "1", "attempts": 1, "last_reason": "push failed",
                             "next_attempt_at": NOW, "exhausted": False},
-    "held_patch": {"worker_run_id": "1", "artifact_id": 1, "work": "example--proj/12@g0.r0:development_patch",
+    "held_patch": {"worker_run_id": "1", "artifact_run_id": "1", "artifact_id": 1, "work": "example--proj/12@g0.r0:development_patch",
                    "generation": 0, "revision": 0, "patch_digest": "a" * 64, "candidate": SHA_C,
                    "tree": SHA_B, "expected_head": SHA_A, "operation": "append",
                    "changed_files": ["pyproject.toml"], "reason_ids": [], "feedback_evidence_ids": [],

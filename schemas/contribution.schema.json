@@ -1198,6 +1198,7 @@
           "additionalProperties": false,
           "required": [
             "worker_run_id",
+            "artifact_run_id",
             "artifact_id",
             "work",
             "generation",
@@ -1215,6 +1216,10 @@
           ],
           "properties": {
             "worker_run_id": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,19}$"
+            },
+            "artifact_run_id": {
               "type": "string",
               "pattern": "^[1-9][0-9]{0,19}$"
             },

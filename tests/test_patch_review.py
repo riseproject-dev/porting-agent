@@ -70,7 +70,7 @@ class TestCheck(unittest.TestCase):
                             (dict(candidate="0" * 40), "another patch"),
                             (dict(expected_revision=3), "expected_revision"),
                             (dict(contribution_id="other/1"), "contribution_id"),
-                            (dict(expected_head=SHA_B), "expected_head")):
+                            (dict(expected_head=SHA_B), "another patch")):
             with self.subTest(change=change):
                 out = patch_review.check(TASK, review(**change))
                 self.assertEqual(out["status"], "rejected")
@@ -114,7 +114,7 @@ class TestCheck(unittest.TestCase):
 
 
 def held(**over):
-    value = {"worker_run_id": "11", "artifact_id": 21,
+    value = {"worker_run_id": "11", "artifact_run_id": "11", "artifact_id": 21,
              "work": "example--proj/12@g0.r3:development_patch", "generation": 0, "revision": 3,
              "patch_digest": DIGEST, "candidate": "c" * 40, "tree": "e" * 40,
              "expected_head": SHA_A, "operation": "append",
@@ -136,12 +136,14 @@ class TestHeldPatch(unittest.TestCase):
         rec = contribution(activity="agent_running")
         outcome = {"status": "verified", "candidate": "c" * 40, "tree": "e" * 40,
                    "patch_digest": DIGEST, "operation_kind": "append", "changed_files": [],
-                   "publication_artifact_id": 21,
+                   "publication_artifact_id": 21, "publication_run_id": "12",
+                   "publication_series_digest": DIGEST,
                    "task": {"dedupe_key": "w", "revision": 0, "expected_head": SHA_A}}
         self.assertEqual(patch_review.held_patch(rec, outcome, run="11", now=NOW,
                                                  report_evidence_id=None)["candidate"], "c" * 40)
         for broken in ({"publication_artifact_id": None}, {"patch_digest": None},
-                       {"operation_kind": "none"}, {"candidate": "x"}):
+                       {"operation_kind": "none"}, {"candidate": "x"},
+                       {"publication_run_id": None}, {"publication_series_digest": "f" * 64}):
             with self.subTest(broken=broken):
                 with self.assertRaises(ValueError):
                     patch_review.held_patch(rec, dict(outcome, **broken), run="11", now=NOW,

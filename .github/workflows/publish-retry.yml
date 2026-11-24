@@ -15,7 +15,8 @@
 # that already landed is read back instead of being requested again.
 # A development patch is reviewed before it is published: while its Work is
 # still the one that wrote it, a retry only verifies it again without a fork
-# token; once its review is done (`development.publishing`), the patch is
+# token, and its artifact carries the verified series (`patches.mbox`), which
+# the held patch then pins by this run and the artifact's id; once its review is done (`development.publishing`), the patch is
 # pushed only when the series has the held digest and rebuilds to exactly the
 # reviewed commit. A patch published after successive failed reviews then gets
 # the latest review, and why it failed, posted on the development PR.
@@ -226,6 +227,7 @@ jobs:
             in/rerun.json
             in/outcome.json
             in/proposal.json
+            in/patches.mbox
             in/plan.json
             in/report.json
             in/review-comment.json

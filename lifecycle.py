@@ -751,8 +751,9 @@ NO_REVIEW_CONTRACT = ("the Work carries no review contract (it was dispatched be
 PATCH_REVIEW_PASSED = ("the review of exactly the held patch passes: it names no blocker or "
                        "major finding")
 PATCH_REVIEW_FAILED = "the review of exactly the held patch names a blocker or major finding"
-# The held patch lives in the worker run's publication artifact, which
-# GitHub keeps 30 days.
+# The held patch lives in the publication artifact that carries the verified
+# series (of the worker run, or of the publish-only retry that verified it
+# again), which GitHub keeps 30 days.
 HELD_PATCH_EXPIRED = "the publication artifact of the held patch expired or expires within a day"
 HELD_PATCH_CURRENT = "the publication artifact of the held patch is current"
 HELD_PATCH_REJECTED = ("the held patch no longer rebuilds to the reviewed commit, or the trusted "
@@ -1050,9 +1051,12 @@ LIFECYCLE: dict[str, State] = {
                 _E(revision="bump", work="clear", sets=(HELD_PATCH,)),
                 description="The worker's trusted publication job rebuilt the series on the "
                             "expected head and validated it without a token, and published "
-                            "nothing. The patch is held, pinned to the worker run, its "
-                            "publication artifact, the Work, the digest of the series, and the "
-                            "commit it rebuilds to; it carries the feedback its Work carried. "
+                            "nothing. The patch is held, pinned to the worker run, the "
+                            "publication artifact that carries the verified series and the run "
+                            "that owns it (the worker run, or the publish-only retry that "
+                            "verified it again), the Work, the digest of the series, and the "
+                            "commit it rebuilds to; an artifact without the series is a failed "
+                            "publication; it carries the feedback its Work carried. "
                             "The revision is bumped: the review Work is new Work of the next "
                             "revision. The report of the Work is stored as `worker_report` "
                             "evidence with the commit it proposed (`head_candidate`), so the "
@@ -1115,8 +1119,9 @@ LIFECYCLE: dict[str, State] = {
                 _E(work="allocate"), ("work_total",),
                 "The uncredentialed review Work starts in a fresh context, on its own reviewer "
                 "workflow and model, and can change nothing. The trusted pre-agent step "
-                "downloads the held series from the worker run's publication artifact, checks "
-                "its digest, and rebuilds it on the expected head, so the review reads and "
+                "downloads the held series from the publication artifact the held patch pins, "
+                "checks the run that owns it and its digest, and rebuilds it on the head it "
+                "was verified on, so the review reads and "
                 "diffs exactly the held patch. It also reads the worker's report, the verified "
                 "plan, the reason evidence of the worker's Work, and the history, which holds "
                 "the owner's steering and every earlier review. It runs no reproduction."),

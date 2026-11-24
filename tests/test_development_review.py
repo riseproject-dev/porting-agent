@@ -68,7 +68,8 @@ def verified(rec, *, run="4242", artifact=901, history=False):
     task = worker_task(rec, history=history)
     out = {"status": "verified", "candidate": CANDIDATE, "tree": TREE, "patch_digest": DIGEST,
            "changed_files": CHANGED, "operation_kind": "append", "expected_head": SHA_A,
-           "task": task, "worker_run_id": run, "publication_artifact_id": artifact}
+           "task": task, "worker_run_id": run, "publication_artifact_id": artifact,
+           "publication_run_id": run, "publication_series_digest": DIGEST}
     if history:
         out["worker_report"] = report(contribution_id=rec["contribution_id"],
                                       expected_revision=task["revision"], task=task["task"])
@@ -110,8 +111,8 @@ def review_result(rec, *, severity=None, run="5000", artifact=902, evidence=None
         "id": "f1", "severity": severity, "category": "tests", "file": CHANGED[0], "line": 3,
         "title": "Tests are skipped", "detail": "The riscv64 job skips the test suite."}]
     value = {"schema_version": 1, "contribution_id": rec["contribution_id"],
-             "expected_revision": task["revision"], "expected_head": task["expected_head"],
-             "patch_digest": DIGEST, "candidate": CANDIDATE,
+             "expected_revision": task["revision"],
+             "expected_head": task["context"]["patch"]["expected_head"], "patch_digest": DIGEST, "candidate": CANDIDATE,
              "verdict": "fail" if severity in patch_review.BLOCKING else "pass",
              "summary": "The patch adds the riscv64 row.", "findings": findings}
     out = patch_review.check(task, value)
@@ -208,12 +209,91 @@ class TestHold(unittest.TestCase):
         retry = final(tick(rec, [pub]))
         self.assertEqual((engine.state_key(retry), retry["pending_publication"]["attempts"]),
                          ("development.agent_running", 1))
-        # The retry verifies again; its Result is held like the worker's.
-        new = final(tick(retry, [verified(rec, artifact=905)],
-                         now=datetime.fromisoformat(NOW) + timedelta(minutes=1)))
+        # The retry verifies again; its Result is held like the worker's,
+        # pinned to the artifact of the retry run that carries the series.
+        later = datetime.fromisoformat(NOW) + timedelta(minutes=1)
+        new = final(tick(retry, [dict(verified(rec, artifact=905), publication_run_id="7777")],
+                         now=later))
         self.assertEqual(engine.state_key(new), "development.reviewing")
         self.assertIsNone(new["pending_publication"])
-        self.assertEqual(new["held_patch"]["artifact_id"], 905)
+        self.assertEqual({k: new["held_patch"][k] for k in ("worker_run_id", "artifact_run_id",
+                                                            "artifact_id")},
+                         {"worker_run_id": "4242", "artifact_run_id": "7777", "artifact_id": 905})
+        # An artifact without the verified series is not held: the
+        # publish-only retry verifies the patch again.
+        out = tick(rec, [dict(verified(rec), publication_series_digest=None)])
+        self.assertEqual(kinds(out), ["schedule_publish_retry"])
+        self.assertIsNone(final(out)["held_patch"])
+
+    def test_the_reviewer_reads_the_series_a_retry_held(self):
+        """The trusted pre-agent step of the reviewer reads the series of a
+        patch held after a verification retry, by the run that owns its
+        artifact, end to end from the fold of the retry's Result."""
+        import hashlib
+        import io
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        from scripts import held_patch
+
+        mbox = b"From 0 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] riscv64\n\n---\n"
+        digest = hashlib.sha256(mbox).hexdigest()
+        rec = running()
+        failed = dict(verified(rec), status="infra_error", failure_class="infrastructure",
+                      reason="could not fetch", patch_digest=digest)
+        retry = final(tick(rec, [failed]))
+        later = datetime.fromisoformat(NOW) + timedelta(minutes=1)
+        # The Result of the publish-only retry: the controller names it by
+        # the worker run it publishes, and by the run and the series of the
+        # artifact it collected.
+        reviewing = final(tick(retry, [dict(verified(rec, artifact=905), patch_digest=digest,
+                                            publication_run_id="7777",
+                                            publication_series_digest=digest)], now=later))
+        self.assertEqual(engine.state_key(reviewing), "development.reviewing")
+        task = review_task(reviewing)
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("patches.mbox", mbox)
+            z.writestr("proposal.json", "{}")
+            z.writestr("outcome.json", "{}")
+        worker_artifact = io.BytesIO()
+        with zipfile.ZipFile(worker_artifact, "w") as z:
+            # The worker's own artifact: the verification failed, so it
+            # carries no series.
+            z.writestr("outcome.json", "{}")
+        artifacts = {901: ("4242", worker_artifact.getvalue()), 905: ("7777", archive.getvalue())}
+
+        def get(path):
+            ident = int(path.split("/artifacts/")[1].split("/")[0])
+            run, data = artifacts[ident]
+            if path.endswith("/zip"):
+                return data
+            return json.dumps({"id": ident, "name": "porting-publication", "expired": False,
+                               "workflow_run": {"id": int(run)}}).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = held_patch.fetch(task, "patch", Path(tmp), repository="o/r", get=get,
+                                      required=True)
+            self.assertEqual((status["status"], status["artifact_run_id"]), ("verified", "7777"))
+            self.assertEqual((Path(tmp) / "patches.mbox").read_bytes(), mbox)
+            # The pin of the review rejected before: the retry's artifact
+            # with the worker run, or the worker's artifact without a series.
+            for wrong in ({"artifact_run_id": "4242"},
+                          {"artifact_id": 901, "artifact_run_id": "4242"}):
+                bad = dict(task, context=dict(task["context"],
+                                              patch=dict(task["context"]["patch"], **wrong)))
+                with self.subTest(wrong=wrong), self.assertRaises(held_patch.HeldPatchError):
+                    held_patch.fetch(bad, "patch", Path(tmp), repository="o/r", get=get,
+                                     required=True)
+            other = io.BytesIO()
+            with zipfile.ZipFile(other, "w") as z:
+                z.writestr("patches.mbox", mbox.replace(b"riscv64", b"riscv32"))
+                z.writestr("proposal.json", "{}")
+            artifacts[905] = ("7777", other.getvalue())
+            with self.assertRaises(held_patch.HeldPatchError):
+                held_patch.fetch(task, "patch", Path(tmp), repository="o/r", get=get,
+                                 required=True)
 
 
 class TestVerdicts(unittest.TestCase):
@@ -505,9 +585,6 @@ class TestLiveRecords(unittest.TestCase):
                     self.assertIn(lc.NO_REVIEW_CONTRACT, edge.transition.guard)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestWorkflows(unittest.TestCase):
     """The reviewer workflow writes nothing; the worker verifies instead of
@@ -537,9 +614,11 @@ class TestWorkflows(unittest.TestCase):
                        "reproduction-image", "id: fork-token", "permission-contents: write"):
             self.assertFalse(absent in text, absent)
         steps = "\n".join(step.get("run", "") for step in source["pre-agent-steps"])
-        for check in ('"held patch digest mismatch"', '"the held series does not rebuild to the verified tree"',
-                      "fetch_evidence .context.report worker_report", "fetch_evidence .context.history work_history",
-                      ".name == \"porting-publication\" and (.expired | not)"):
+        for check in ("python3 scripts/held_patch.py --task \"$task\" --key patch",
+                      "--out /tmp/gh-aw/agent/patch --required",
+                      '"the held series does not rebuild to the verified tree"',
+                      "head=$(jq -r '.context.patch.expected_head' \"$task\")",
+                      "fetch_evidence .context.report worker_report", "fetch_evidence .context.history work_history"):
             self.assertIn(check, steps)
         publish = source["jobs"]["publish"]
         self.assertEqual(publish["permissions"], {"contents": "read", "actions": "read"})
@@ -568,6 +647,10 @@ class TestWorkflows(unittest.TestCase):
         steps = retry["jobs"]["publish"]["steps"]
         result = next(step for step in steps if step.get("id") == "result")
         self.assertIn("python -m fork_publish verify", result["run"])
+        upload = next(step for step in steps
+                      if str(step.get("uses", "")).startswith("actions/upload-artifact"))
+        # The series a verification retry verified, which a held patch pins.
+        self.assertIn("in/patches.mbox", upload["with"]["path"].split())
         comment = next(step for step in steps
                        if step.get("name", "").startswith("Post the latest review"))
         self.assertEqual(comment["if"], "steps.result.outputs.publish == 'true'")
@@ -589,3 +672,7 @@ class TestWorkflows(unittest.TestCase):
         self.assertEqual(dispatcher["safe-outputs"]["dispatch-workflow"]["workflows"],
                          ["planner", "worker", "reviewer"])
         self.assertEqual(work.PROFILE_WORKFLOWS["reviewer"], ".github/workflows/reviewer.lock.yml")
+
+
+if __name__ == "__main__":
+    unittest.main()

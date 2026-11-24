@@ -170,7 +170,8 @@ jobs:
               # A retry's Result is the Result of the worker run it publishes.
               # Only a publish-only retry names another run: a planner,
               # worker, or reviewer artifact is the Result of its own run,
-              # whatever it holds.
+              # whatever it holds. The directory stays named by the run that
+              # owns the artifact, to which a held patch is pinned.
               worker_run=$run
               if [ "$workflow" = publish-retry.yml ]; then
                 worker_run=$(cat "publications/$run/worker-run-id" 2>/dev/null || true)

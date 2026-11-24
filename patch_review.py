@@ -114,7 +114,7 @@ def check(task: dict, review: Any) -> dict:
     verdict; anything else is ``unusable``."""
     patch = pin(task)
     if task.get("task") != TASK or patch is None \
-            or not _SHA.match(str(task.get("expected_head") or "")):
+            or not _SHA.match(str(patch.get("expected_head") or "")):
         return unusable("the Work is not a review of a held development patch")
     if not isinstance(review, dict):
         return unusable("the review is not a JSON object")
@@ -123,11 +123,13 @@ def check(task: dict, review: Any) -> dict:
     except schemas.SchemaError as error:
         return unusable(f"the review is malformed: {str(error)[:1500]}")
     for result_key, task_key in (("contribution_id", "contribution_id"),
-                                 ("expected_revision", "revision"),
-                                 ("expected_head", "expected_head")):
+                                 ("expected_revision", "revision")):
         if review.get(result_key) != task.get(task_key):
             return unusable(f"the review's {result_key} does not answer the Work")
-    if review["patch_digest"] != patch["patch_digest"] or review["candidate"] != patch["candidate"]:
+    # The held patch, on the head it was verified on: the fork may have
+    # moved since the patch was held, and then its publication replans it.
+    if review["patch_digest"] != patch["patch_digest"] or review["candidate"] != patch["candidate"] \
+            or review.get("expected_head") != patch["expected_head"]:
         return unusable("the review names another patch than the held patch it was given")
     changed = set(patch["changed_files"])
     outside = sorted({f["file"] for f in review["findings"]
@@ -183,7 +185,10 @@ def held_patch(record: dict, outcome: dict, *, run: str, now: str,
     work = record.get("active_work") or {}
     artifact = outcome.get("publication_artifact_id")
     values = {
-        "worker_run_id": str(run), "artifact_id": artifact,
+        # The run that owns the artifact: the worker run, or the publish-only
+        # retry of it that verified the patch again and carries the series.
+        "worker_run_id": str(run), "artifact_run_id": str(outcome.get("publication_run_id") or ""),
+        "artifact_id": artifact,
         "work": task.get("dedupe_key"), "generation": int(task.get("generation", 0)),
         "revision": task.get("revision"), "patch_digest": outcome.get("patch_digest"),
         "candidate": outcome.get("candidate"), "tree": outcome.get("tree"),
@@ -198,6 +203,10 @@ def held_patch(record: dict, outcome: dict, *, run: str, now: str,
         problems.append("no publication artifact")
     if not re.fullmatch(r"[1-9][0-9]{0,19}", values["worker_run_id"]):
         problems.append("no worker run")
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", values["artifact_run_id"]):
+        problems.append("no run that owns the publication artifact")
+    elif outcome.get("publication_series_digest") != values["patch_digest"]:
+        problems.append("the publication artifact does not carry the verified series")
     for key in ("candidate", "tree", "expected_head"):
         if not _SHA.match(str(values[key] or "")):
             problems.append(f"no {key}")
@@ -237,8 +246,9 @@ def evidence(record: dict, outcome: dict, *, now: str, policy: dict, run: str,
         "previous_findings": outcome.get("previous_findings") or [],
         "checked": outcome.get("checked") or [], "limitations": outcome.get("limitations") or [],
         "patch": {key: held.get(key) for key in (
-            "worker_run_id", "artifact_id", "work", "revision", "patch_digest", "candidate",
-            "expected_head", "changed_files")},
+            "worker_run_id", "artifact_run_id", "artifact_id", "work", "revision",
+            "patch_digest", "candidate", "tree", "expected_head", "operation", "changed_files",
+            "held_at")},
         "report_evidence_id": held.get("report_evidence_id"),
         "review_work": (outcome.get("task") or {}).get("dedupe_key"),
         "review_artifact": {"run_id": str(run),
