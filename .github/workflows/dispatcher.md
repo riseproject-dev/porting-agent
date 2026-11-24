@@ -19,8 +19,9 @@ network:
   allowed: []
 tools:
   work-queue: true
-  bash:
-    - cat /tmp/gh-aw/agent/porting-plan.json
+  bash: false
+  edit: false
+  cli-proxy: false
 safe-outputs:
   threat-detection: false
   dispatch-workflow:
@@ -82,9 +83,8 @@ steps:
         python -m work plan --out /tmp/gh-aw/agent/porting-plan.json \
           --control-repo-id "$CONTROL_REPO_ID"
   # The step after the agent loads the intent check from this copy: the
-  # agent can write the workspace but not ${RUNNER_TEMP}/gh-aw, which its
-  # sandbox mounts read-only, so no code or git runs from a path the agent
-  # could have changed.
+  # sandbox mounts the workspace read-write but ${RUNNER_TEMP}/gh-aw
+  # read-only, so the check never loads code from the workspace.
   - name: Copy the trusted intent check out of the agent's reach
     run: |
       set -euo pipefail
@@ -112,26 +112,41 @@ steps:
                      planPath: file,
                      intentsPath: path.join(process.env.RUNNER_TEMP, "gh-aw/safeoutputs/work-queue/work-queue.intents.jsonl"),
                      run: { id: String(context.runId), attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1) } });
-# The agent's work-queue tools append to the intent file the stage wrote,
-# and gh-aw rejects extra intents only in a batch with plan intents. After
-# the agent, the collected files are first set aside out of the uploaded
-# paths, then the check copied before the agent writes back exactly the
-# intents of the stage's output (none without a plan); every other intent
-# is dropped and reported. When the check cannot run or fails, no intent
-# is uploaded. Neither step runs git or loads code from the workspace.
-post-steps:
-  - name: Set the collected intents aside for the trusted check
-    if: always()
+# AWF 0.29.11 bind-mounts these directories of the runner's home into the
+# agent's sandbox read-write (its sandbox-mount-policy.json), and the
+# rootless install put awf in ~/.local/bin and ~/.local/lib/awf with
+# ~/.local/bin first on PATH; ~/.cargo/bin and ~/.config/composer/vendor/bin
+# are on the runner's PATH too. A file planted there would run on the
+# runner after the agent: awf at its teardown and in "Print firewall logs",
+# and any command a later step finds on PATH. Owned by root, none of them
+# can be changed by the sandbox's user. The agent has no shell and no file
+# writes either (`bash: false`, `edit: false`); this keeps the host safe if
+# a tool that writes is ever given back. ~/.copilot is left as it is: the
+# MCP gateway writes it, nothing runs from it, and it is not on PATH.
+pre-agent-steps:
+  - name: Make the home directories the sandbox mounts read-only to the agent
     run: |
-      set -uo pipefail
-      held="${RUNNER_TEMP}/gh-aw/trusted-intent-check/collected"
-      rm -rf -- "$held" && mkdir -p -- "$held" || held=""
-      for name in work-queue.intents.jsonl work-queue.finish.jsonl; do
-        file="/tmp/gh-aw/$name"
-        if [ -e "$file" ] || [ -L "$file" ]; then
-          { [ -n "$held" ] && mv -T -- "$file" "$held/$name"; } || rm -rf -- "$file"
+      set -euo pipefail
+      for dir in .cache .config .local/bin .local/lib .local/lib64 .local/share \
+        .local/pipx .azure .anthropic .claude .cargo .rustup .npm .nvm; do
+        mkdir -p -- "$HOME/$dir"
+        sudo chown -R root:root -- "$HOME/$dir"
+        sudo chmod -R go-w -- "$HOME/$dir"
+        if [ -n "$(find "$HOME/$dir" \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
+          echo "$HOME/$dir is still writable by the agent's user" >&2
+          exit 1
         fi
       done
+# The agent's work-queue tools append to the intent file the stage wrote,
+# and gh-aw rejects extra intents only in a batch with plan intents. After
+# the agent, one step loads the check copied before the agent and writes
+# back exactly the intents of the stage's output (none without a plan); it
+# drops and reports every other intent. It runs no command from PATH and
+# no git, loads no code from the workspace, and follows no link the agent
+# left. When it cannot run or fails, it plants a link out of /tmp/gh-aw,
+# which makes gh-aw's final recovery check fail, and that check gates
+# both agent artifact uploads, so nothing unchecked is uploaded.
+post-steps:
   - name: Keep only the intents the trusted stage wrote
     if: always()
     uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
@@ -141,18 +156,21 @@ post-steps:
       script: |
         const fs = require("node:fs");
         const path = require("node:path");
-        const check = path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check");
         const intentsPath = "/tmp/gh-aw/work-queue.intents.jsonl";
         const finishPath = "/tmp/gh-aw/work-queue.finish.jsonl";
         try {
-          const { enforce } = require(path.join(check, "work_queue_stage.cjs"));
+          const { enforce } = require(path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check/work_queue_stage.cjs"));
           enforce({ core, actionsDir: path.join(process.env.RUNNER_TEMP, "gh-aw/actions"),
-                    trusted: process.env.TRUSTED_INTENTS, intentsPath, finishPath,
-                    heldIntentsPath: path.join(check, "collected/work-queue.intents.jsonl"),
-                    heldFinishPath: path.join(check, "collected/work-queue.finish.jsonl") });
+                    trusted: process.env.TRUSTED_INTENTS, intentsPath, finishPath });
         } catch (error) {
-          for (const file of [intentsPath, finishPath]) fs.rmSync(file, { force: true, recursive: true });
-          core.setFailed(`The collected work-queue intents could not be checked (${error && error.message ? error.message : error}); none are kept.`);
+          const tripwire = "/tmp/gh-aw/work-queue.unchecked";
+          try { fs.chmodSync("/tmp/gh-aw", 0o755); } catch {}
+          try { fs.rmSync(tripwire, { force: true, recursive: true }); } catch {}
+          try { fs.symlinkSync("/", tripwire); } catch {}
+          for (const file of [intentsPath, finishPath]) {
+            try { fs.rmSync(file, { force: true, recursive: true }); } catch {}
+          }
+          core.setFailed(`The collected work-queue intents could not be checked (${error && error.message ? error.message : error}); none are uploaded.`);
         }
 jobs:
   continuation:

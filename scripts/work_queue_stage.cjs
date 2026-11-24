@@ -144,22 +144,141 @@ function describe(line) {
   return `intent ${field(intent && intent.intent_id)} (${field(intent && intent.kind)})`;
 }
 
-// Keep exactly the `expected` intents in one collected intent file
-// (`target`), reading what was collected from `source`: the target itself,
-// or the place a step before set it aside so that nothing unchecked stays
-// at the uploaded path when this check cannot run.
-function enforceFile(lib, source, target, expected) {
+// The collected files are read and replaced without following a link and
+// without any command found on PATH. The agent ran as the runner's user,
+// so it may have left the directory or a file read-only (`chmod 555`), a
+// directory tree with unreadable children, or a link in place of a file.
+// This step runs as the same user: it makes the parent writable again,
+// unlocks a tree before removing it, and when an entry still cannot be
+// unlinked, empties a regular file in place. It then checks the final
+// state, and any other outcome throws, so the step fails (and the caller
+// keeps the agent's artifacts from being uploaded).
+const MAX_COLLECTED_BYTES = 8 * 1024 * 1024;
+
+function lstatOrNull(file) {
+  try {
+    return fs.lstatSync(file);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function tryChmod(file, mode) {
+  try {
+    fs.chmodSync(file, mode);
+  } catch {
+    // Best effort: the removal below and the check of the final state decide.
+  }
+}
+
+// Make every directory of a tree the agent left searchable and writable,
+// without following links, so that it can be removed.
+function unlockTree(root) {
+  const pending = [root];
+  while (pending.length) {
+    const dir = pending.pop();
+    tryChmod(dir, 0o700);
+    let entries;
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const child = path.join(dir, entry);
+      const stat = lstatOrNull(child);
+      if (stat && stat.isDirectory()) pending.push(child);
+    }
+  }
+}
+
+function truncateInPlace(file) {
+  tryChmod(file, 0o600);
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error(`${file} is not a regular file`);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Remove whatever is at `file`. Returns "absent" when nothing is left, and
+// "empty" when a regular file could not be unlinked and was emptied instead.
+function clear(file) {
+  tryChmod(path.dirname(file), 0o755);
+  let stat = lstatOrNull(file);
+  if (!stat) return "absent";
+  if (stat.isDirectory()) unlockTree(file);
+  try {
+    fs.rmSync(file, { force: true, recursive: true });
+  } catch {
+    // Checked below.
+  }
+  stat = lstatOrNull(file);
+  if (!stat) return "absent";
+  if (stat.isFile()) {
+    truncateInPlace(file);
+    stat = lstatOrNull(file);
+    if (stat && stat.isFile() && stat.size === 0) return "empty";
+  }
+  throw new Error(`${file} could not be removed`);
+}
+
+// Read a collected file the agent may have planted: only a regular file,
+// never through a link, and bounded.
+function readCollected(file) {
+  const stat = lstatOrNull(file);
+  if (!stat) return { content: undefined, dropped: [] };
+  if (!stat.isFile()) return { content: undefined, dropped: ["a non-file entry"] };
+  if (stat.size > MAX_COLLECTED_BYTES) return { content: undefined, dropped: ["an oversized file"] };
+  tryChmod(file, 0o600);
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch {
+    return { content: undefined, dropped: ["an unreadable file"] };
+  }
+  try {
+    if (!fs.fstatSync(fd).isFile()) return { content: undefined, dropped: ["a non-file entry"] };
+    return { content: fs.readFileSync(fd, "utf8"), dropped: [] };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function writeExactly(file, content) {
+  if (clear(file) === "absent") {
+    fs.writeFileSync(file, content, { mode: 0o644, flag: "wx" });
+  } else {
+    const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW);
+    try {
+      fs.writeSync(fd, content);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+}
+
+// The final state of one collected file: exactly `content`, or no intent
+// at all (absent, or an empty regular file).
+function verify(file, content) {
+  const stat = lstatOrNull(file);
+  if (content === undefined) {
+    if (!stat || (stat.isFile() && stat.size === 0)) return;
+    throw new Error(`${file} still holds collected intents`);
+  }
+  const read = stat && stat.isFile() ? readCollected(file) : { content: undefined };
+  if (read.content !== content) throw new Error(`${file} does not hold exactly the staged intents`);
+}
+
+// Keep exactly the `expected` intents in one collected intent file.
+function enforceFile(lib, file, expected) {
   const wanted = expected.map(intent => lib.codec.canonical(intent));
   const content = wanted.length ? `${wanted.join("\n")}\n` : undefined;
-  let stat;
-  try {
-    stat = fs.lstatSync(source);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  const current = stat && stat.isFile() ? fs.readFileSync(source, "utf8") : undefined;
-  const dropped = stat && !stat.isFile() ? ["a non-file entry"] : [];
-  for (const line of (current || "").split("\n").filter(text => text.trim())) {
+  const current = readCollected(file);
+  const dropped = [...current.dropped];
+  for (const line of (current.content || "").split("\n").filter(text => text.trim())) {
     let kept = false;
     try {
       kept = wanted.includes(lib.codec.canonical(JSON.parse(line)));
@@ -168,27 +287,25 @@ function enforceFile(lib, source, target, expected) {
     }
     if (!kept) dropped.push(describe(line));
   }
-  if (source === target && current === content && !dropped.length) return { dropped };
-  fs.rmSync(target, { force: true, recursive: true });
-  if (content !== undefined) fs.writeFileSync(target, content, { mode: 0o644, flag: "wx" });
+  if (!(current.content === content && !dropped.length)) {
+    if (content === undefined) clear(file);
+    else writeExactly(file, content);
+  }
+  verify(file, content);
   return { dropped };
 }
 
 // The step after the agent: the collected intent file holds exactly the
 // intents the trusted stage wrote (`trusted`, its `intents` output; empty
-// when no plan was staged), and the finish file holds none. The collected
-// files are read from `heldIntentsPath` and `heldFinishPath` when a step
-// before set them aside, and from the target paths otherwise. Every other
-// intent is dropped and reported.
+// when no plan was staged), and the finish file holds none. Every other
+// intent is dropped and reported. Any failure throws.
 function enforce(options) {
   const lib = options.lib || library(options.actionsDir);
   const core = options.core;
   const trusted = options.trusted ? JSON.parse(options.trusted) : [];
   if (!Array.isArray(trusted)) throw new TypeError("the trusted intents are not a list");
-  const intents = enforceFile(lib, options.heldIntentsPath || options.intentsPath, options.intentsPath, trusted);
-  const finish = options.finishPath
-    ? enforceFile(lib, options.heldFinishPath || options.finishPath, options.finishPath, [])
-    : { dropped: [] };
+  const intents = enforceFile(lib, options.intentsPath, trusted);
+  const finish = options.finishPath ? enforceFile(lib, options.finishPath, []) : { dropped: [] };
   const dropped = [...intents.dropped, ...finish.dropped];
   if (dropped.length) {
     core.warning(
@@ -200,4 +317,4 @@ function enforce(options) {
   return { kept: trusted.length, dropped: dropped.length };
 }
 
-module.exports = { dispatchIntent, enforce, main, partition, stage };
+module.exports = { clear, dispatchIntent, enforce, main, partition, stage };

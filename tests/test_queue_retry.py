@@ -5,6 +5,10 @@ retry, which dispatch recovery neither charges nor mistakes for a lost
 dispatch (luhenry--d2vm/3, worker run 45257915183 stopped by its timeout)."""
 
 import copy
+import json
+import os
+import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -200,7 +204,6 @@ class TestDispatcherStaging(unittest.TestCase):
         copy_step = steps[at("Copy the trusted intent check out of the agent's reach")]
         stage = steps[at("Stage the plan as trusted queue intents")]
         agent = at("Execute Pi CLI")
-        aside = at("Set the collected intents aside for the trusted check")
         keep = at("Keep only the intents the trusted stage wrote")
         uploads = [i for i, step in enumerate(steps) if "upload-artifact" in step.get("uses", "")]
         check = '"${RUNNER_TEMP}/gh-aw/trusted-intent-check/work_queue_stage.cjs"'
@@ -218,26 +221,27 @@ class TestDispatcherStaging(unittest.TestCase):
         loaded = 'require(path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check/work_queue_stage.cjs"))'
         self.assertIn(loaded, stage["with"]["script"])
         script = steps[keep]["with"]["script"]
-        self.assertIn('path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check")', script)
-        self.assertIn('require(path.join(check, "work_queue_stage.cjs"))', script)
-        self.assertIn('collected/work-queue.intents.jsonl', script)
+        self.assertIn(loaded, script)
         self.assertEqual(steps[keep]["env"]["TRUSTED_INTENTS"], "${{ steps.stage.outputs.intents }}")
-        # The collected files leave the uploaded paths before the check, so
-        # nothing unchecked is uploaded when the check cannot run; both steps
-        # run after every step that collects intents and before every upload.
-        held = '"${RUNNER_TEMP}/gh-aw/trusted-intent-check/collected"'
-        self.assertIn(held, steps[aside]["run"])
-        self.assertIn('mv -T -- "$file" "$held/$name"', steps[aside]["run"])
-        self.assertIn('|| rm -rf -- "$file"', steps[aside]["run"])
+        # One github-script step, after every step that collects intents
+        # and before every upload, runs the check; it runs no shell, so no
+        # command is looked up on PATH.
         collected = [at("Collect work queue intents"), at("Copy work queue claim finish intent")]
-        self.assertLess(max([agent, *collected]), aside)
-        self.assertEqual(keep, aside + 1)
+        self.assertLess(max([agent, *collected]), keep)
         self.assertTrue(uploads)
         self.assertLess(keep, min(uploads))
-        for i in (aside, keep):
-            with self.subTest(step=names[i]):
-                self.assertEqual(steps[i]["if"], "always()")
-                self.assertNotIn("continue-on-error", steps[i])
+        self.assertEqual(steps[keep]["if"], "always()")
+        self.assertNotIn("continue-on-error", steps[keep])
+        self.assertNotIn("run", steps[keep])
+        # The uploads are gated by gh-aw's final recovery check, which runs
+        # after the check and refuses a link out of /tmp/gh-aw: the tripwire
+        # the check plants when it fails.
+        final = at("Validate recovery envelopes before upload", keep)
+        self.assertLess(keep, final)
+        for i in uploads:
+            if steps[i]["with"]["name"] in ("agent", "agent-output-fallback"):
+                self.assertIn("steps.validate_final_recovery_envelopes.outcome == 'success'", steps[i]["if"])
+        self.assertIn('fs.symlinkSync("/", tripwire)', script)
         # After the agent nothing is checked out, and no step of ours runs
         # git or loads code from the workspace the agent could write. The
         # only git after the agent is gh-aw's own credential step, which
@@ -252,6 +256,37 @@ class TestDispatcherStaging(unittest.TestCase):
                 else:
                     self.assertEqual(body, 'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"')
 
+    def test_a_check_that_cannot_run_keeps_the_collected_intents_from_upload(self):
+        # The check's module is missing: the step removes the collected
+        # files, plants the tripwire that fails gh-aw's final recovery
+        # check (tested against gh-aw v1.2.2 in work_queue_stage.test.cjs),
+        # and fails.
+        steps = dispatcher_agent_steps()
+        step = next(s for s in steps if s.get("name") == "Keep only the intents the trusted stage wrote")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "gh-aw"
+            root.mkdir()
+            (root / "work-queue.intents.jsonl").write_text('{"kind":"submit"}\n')
+            (root / "work-queue.finish.jsonl").mkdir()
+            harness = (
+                "const core = { setFailed: m => { console.log('FAILED ' + m); process.exitCode = 1; } };\n"
+                + step["with"]["script"].replace('"/tmp/gh-aw', json.dumps(str(root))[:-1])
+            )
+            result = subprocess.run(
+                ["node", "-e", harness], capture_output=True, text=True,
+                env={**os.environ, "RUNNER_TEMP": str(Path(tmp) / "runner-temp"), "TRUSTED_INTENTS": ""},
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("none are uploaded", result.stdout)
+            self.assertFalse((root / "work-queue.intents.jsonl").exists())
+            self.assertFalse((root / "work-queue.finish.jsonl").exists())
+            self.assertEqual(os.readlink(root / "work-queue.unchecked"), "/")
+
+
+def dispatcher_agent_steps() -> list:
+    lock = yaml.safe_load(
+        (Path(__file__).parents[1] / ".github/workflows/dispatcher.lock.yml").read_text())
+    return lock["jobs"]["agent"]["steps"]
 
 if __name__ == "__main__":
     unittest.main()

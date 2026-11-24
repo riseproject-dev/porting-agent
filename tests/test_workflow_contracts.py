@@ -773,6 +773,90 @@ class TestWorkflowContracts(unittest.TestCase):
         )
 
 
+# Commands with an option or script syntax that runs another program, or
+# that writes a file the command line names. Allowing one of them by name
+# (gh-aw's Pi tool policy checks only the executable) gives the agent a
+# shell or a file write: `sort --compress-program sh`, `find -exec`,
+# `xargs sh`, `env sh`, awk's system(), sed's `e` command, `git -c
+# core.pager=...`, `tar --to-command`, `uniq IN OUT`, `sort -o`, `yq -i`.
+EXEC_OR_WRITE_COMMANDS = frozenset({
+    "awk", "gawk", "mawk", "nawk", "sed", "find", "xargs", "env", "sort", "uniq", "yq",
+    "git", "tar", "zip", "unzip", "rsync", "ssh", "scp", "less", "more", "man", "vi",
+    "vim", "nvim", "ed", "ex", "nice", "nohup", "timeout", "stdbuf", "time", "watch",
+    "flock", "setsid", "strace", "ltrace", "gdb", "make", "perl", "python", "python3",
+    "node", "ruby", "php", "lua", "bash", "sh", "dash", "zsh", "ksh", "busybox", "tee",
+    "cp", "mv", "dd", "install", "ln", "chmod", "chown", "touch", "mkdir", "rm",
+    "split", "csplit", "jq", "curl", "wget", "npm", "npx", "pip", "uv", "docker",
+    "sudo", "su", "script", "expect", "parallel", "command", "exec", "eval", "source",
+})
+
+
+def pi_tool_policy(lock: dict) -> tuple[dict, str]:
+    step = next(s for s in lock["jobs"]["agent"]["steps"] if s.get("name") == "Execute Pi CLI")
+    return json.loads(step["env"]["GH_AW_PI_TOOL_POLICY"]), step["run"]
+
+
+def exec_or_write_entries(bash) -> list:
+    if not isinstance(bash, list):
+        return []
+    return [entry for entry in bash
+            if entry.replace(":*", "").split()[0] in EXEC_OR_WRITE_COMMANDS]
+
+
+class TestAgentToolPolicy(unittest.TestCase):
+    """A sandboxed agent has no shell and no file writes."""
+
+    def test_no_sandboxed_agent_has_a_shell_or_file_writes(self):
+        sandboxed = set()
+        for name in ("dispatcher", "planner", "worker"):
+            with self.subTest(workflow=name):
+                policy, run = pi_tool_policy(workflow(f"{name}.lock.yml"))
+                if "awf --config" not in run:
+                    # Unsandboxed by operator decision (known-gaps.md): the
+                    # agent runs on the runner with a full shell.
+                    self.assertEqual(source(name)["sandbox"]["agent"], False)
+                    self.assertIn("*", policy["bash"])
+                    continue
+                sandboxed.add(name)
+                # gh-aw merges its default commands (sort, uniq, yq, ...)
+                # into every non-empty list, so a sandboxed agent's bash
+                # must be off, not narrowed.
+                self.assertIs(policy["bash"], False)
+                self.assertIs(policy["edit"], False)
+                self.assertIn("--exclude-tools bash --exclude-tools edit,write", run)
+                self.assertEqual(exec_or_write_entries(policy["bash"]), [])
+        self.assertEqual(sandboxed, {"dispatcher"})
+
+    def test_a_list_with_an_exec_or_write_command_is_refused(self):
+        # The dispatcher's former list: gh-aw's defaults plus one cat.
+        former = ["echo", "printf", "ls", "pwd", "cat", "head", "tail", "grep", "wc",
+                  "sort", "uniq", "date", "yq", "cat /tmp/gh-aw/agent/porting-plan.json"]
+        self.assertEqual(exec_or_write_entries(former), ["sort", "uniq", "yq"])
+        self.assertEqual(exec_or_write_entries(["find:*", "git status", "cat"]), ["find:*", "git status"])
+        self.assertEqual(exec_or_write_entries(False), [])
+
+    def test_the_host_paths_the_sandbox_mounts_are_root_owned_before_the_agent(self):
+        # AWF v0.29.11 bind-mounts these home directories into the sandbox
+        # read-write (sandbox-mount-policy.json, without .copilot and
+        # .gemini); revisit the list with any other AWF version.
+        steps = workflow("dispatcher.lock.yml")["jobs"]["agent"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        install = steps[names.index("Install AWF binary")]
+        self.assertTrue(install["run"].endswith("install_awf_binary.sh\" v0.29.11 --rootless"))
+        harden = names.index("Make the home directories the sandbox mounts read-only to the agent")
+        self.assertLess(names.index("Install AWF binary"), harden)
+        self.assertLess(names.index("Install Pi CLI"), harden)
+        self.assertLess(harden, names.index("Execute Pi CLI"))
+        run = steps[harden]["run"]
+        listed = re.search(r"for dir in (.*?); do", run, re.S).group(1).replace("\\\n", " ").split()
+        self.assertEqual(sorted(listed), sorted([
+            ".cache", ".config", ".local/bin", ".local/lib", ".local/lib64", ".local/share",
+            ".local/pipx", ".azure", ".anthropic", ".claude", ".cargo", ".rustup", ".npm", ".nvm",
+        ]))
+        for needle in ('sudo chown -R root:root -- "$HOME/$dir"', 'sudo chmod -R go-w -- "$HOME/$dir"',
+                       "! -user root -o -perm /022", "exit 1"):
+            self.assertIn(needle, run)
+
 class TestHistoryAndReports(unittest.TestCase):
     """Every Work reads its verified history first and returns its report."""
 

@@ -4,7 +4,7 @@
 // The dispatcher's staging of its plan (scripts/work_queue_stage.cjs)
 // against the exact gh-aw v1.2.2 queue library: the ledger is built and
 // checked by the library's own submission processing and replay.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -297,27 +297,75 @@ describe("intents after the agent", () => {
     expect(enforce({ lib, core: core(), trusted: "", intentsPath: intentsFile() })).toEqual({ kept: 0, dropped: 0 });
   });
 
-  it("writes back only the trusted intents from the files set aside", async () => {
-    // The dispatcher moves the collected files out of the uploaded paths
-    // before the check, so a check that cannot run leaves none there.
+  it("removes what the agent planted after it locked the directory (chmod 555)", async () => {
+    // The agent runs as the runner's user and owns /tmp/gh-aw: it can leave
+    // the directory and its files read-only, a locked tree or a link in
+    // place of a collected file. The check, as the same user, still leaves
+    // exactly the staged intents and no finish intent.
     const queue = ledger();
-    const held = intentsFile();
-    const trusted = await stageOutput({ lib, plan: plan(node(GRAPH, "c".repeat(40))), context, queue: queue.queue, intentsPath: held });
-    agentTools(queue, held).dispatch();
-    const heldFinish = path.join(path.dirname(held), "held.finish.jsonl");
-    fs.mkdirSync(heldFinish);
-    const out = fs.mkdtempSync(path.join(os.tmpdir(), "intents-out-"));
-    const file = path.join(out, "work-queue.intents.jsonl");
-    const finish = path.join(out, "work-queue.finish.jsonl");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "intents-locked-"));
+    const file = path.join(dir, "work-queue.intents.jsonl");
+    const finish = path.join(dir, "work-queue.finish.jsonl");
+    const trusted = await stageOutput({ lib, plan: plan(node(GRAPH, "c".repeat(40))), context, queue: queue.queue, intentsPath: file });
+    agentTools(queue, file).dispatch();
+    fs.chmodSync(file, 0o444);
+    fs.mkdirSync(path.join(finish, "a", "b"), { recursive: true });
+    fs.chmodSync(path.join(finish, "a"), 0o000);
+    fs.chmodSync(dir, 0o555);
     const log = core();
-    expect(enforce({ lib, core: log, trusted, intentsPath: file, finishPath: finish,
-                     heldIntentsPath: held, heldFinishPath: heldFinish })).toEqual({ kept: 2, dropped: 2 });
+    expect(enforce({ lib, core: log, trusted, intentsPath: file, finishPath: finish })).toEqual({ kept: 2, dropped: 2 });
     expect(intents.readStagedIntents(file)).toEqual(JSON.parse(trusted));
     expect(fs.existsSync(finish)).toBe(false);
     expect(log.messages.some(([kind, text]) => kind === "warning" && /a non-file entry/.test(text))).toBe(true);
-    // Nothing set aside and no plan: no intent file is written.
-    const empty = path.join(out, "none.jsonl");
-    expect(enforce({ lib, core: core(), trusted: "", intentsPath: empty, heldIntentsPath: path.join(out, "missing.jsonl") })).toEqual({ kept: 0, dropped: 0 });
-    expect(fs.existsSync(empty)).toBe(false);
+    // No plan: the locked intent file is removed, not left for the upload.
+    fs.chmodSync(dir, 0o555);
+    expect(enforce({ lib, core: core(), trusted: "", intentsPath: file })).toEqual({ kept: 0, dropped: 2 });
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it("never follows a link the agent left in place of a collected file", async () => {
+    const queue = ledger();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "intents-link-"));
+    const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "intents-outside-")), "target");
+    fs.writeFileSync(outside, "outside\n");
+    const file = path.join(dir, "work-queue.intents.jsonl");
+    const trusted = await stageOutput({ lib, plan: plan(node(GRAPH, "c".repeat(40))), context, queue: queue.queue, intentsPath: path.join(dir, "staged.jsonl") });
+    fs.symlinkSync(outside, file);
+    expect(enforce({ lib, core: core(), trusted, intentsPath: file })).toEqual({ kept: 2, dropped: 1 });
+    expect(fs.lstatSync(file).isFile()).toBe(true);
+    expect(intents.readStagedIntents(file)).toEqual(JSON.parse(trusted));
+    expect(fs.readFileSync(outside, "utf8")).toBe("outside\n");
+  });
+
+  it("empties a collected file it cannot unlink, and fails when nothing works", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "intents-stuck-"));
+    const file = path.join(dir, "work-queue.intents.jsonl");
+    fs.writeFileSync(file, `${codec.canonical({ version: 3, intent_id: "intent:agent", kind: "dispatch_next", parameters: {} })}\n`);
+    const rm = vi.spyOn(fs, "rmSync").mockImplementation(() => {
+      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    });
+    try {
+      expect(enforce({ lib, core: core(), trusted: "", intentsPath: file })).toEqual({ kept: 0, dropped: 1 });
+      expect(fs.statSync(file).size).toBe(0);
+      const tree = path.join(dir, "work-queue.finish.jsonl");
+      fs.mkdirSync(tree);
+      expect(() => enforce({ lib, core: core(), trusted: "", intentsPath: file, finishPath: tree })).toThrow(/could not be removed/);
+    } finally {
+      rm.mockRestore();
+    }
+  });
+
+  it("fails gh-aw's final recovery check once the dispatcher plants its tripwire", () => {
+    // When the check cannot run or fails, the dispatcher links
+    // /tmp/gh-aw/work-queue.unchecked to /. gh-aw v1.2.2 then refuses the
+    // artifact roots in the step that gates both agent uploads.
+    const recovery = require("./validate_recovery_envelopes.cjs");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gh-aw-root-"));
+    const file = path.join(dir, "work-queue.intents.jsonl");
+    fs.writeFileSync(file, "{}\n");
+    const run = () => recovery.main({ roots: [dir], additionalRoots: [file], core: { info() {} } });
+    expect(run()).toEqual({ removed: 0 });
+    fs.symlinkSync("/", path.join(dir, "work-queue.unchecked"));
+    expect(run).toThrow(/escapes trusted roots/);
   });
 });
