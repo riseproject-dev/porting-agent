@@ -5,14 +5,14 @@
 # was published although that review failed (after successive failed
 # reviews), once per review: a comment that already carries the review's
 # marker is found instead of posted again. Launched by the controller's
-# reconcile job for the record's due comment (`review_comment`) and its
+# reconcile job for a comment due on the record (`review_comments`) and its
 # current attempt, never by an agent. The record is read from the committed
 # state; nothing is posted unless the comment is still due at that attempt,
 # the contribution is not paused and the policy permits writes. The token is
 # minted for the one fork, with `pull-requests: write` only. The receipt
 # (`review-comment.json`) is folded by the reconciler, which launches a
-# failed or lost post again, bounded, and raises an alert once the attempts
-# are spent.
+# failed or lost post again and, once the attempts are spent, raises an alert
+# in every tick and launches it again daily until it is posted.
 name: Review Comment
 run-name: "Review comment ${{ inputs.evidence-id }} (attempt ${{ inputs.attempt }})"
 on:
@@ -32,8 +32,11 @@ on:
         type: string
 permissions:
   contents: read
+# One group per review: a pending post is replaced only by a later attempt
+# of the same comment (the committed record names only the newest attempt as
+# due), never a post of another comment.
 concurrency:
-  group: porting-review-comment
+  group: porting-review-comment-${{ inputs.evidence-id }}
   cancel-in-progress: false
 jobs:
   comment:

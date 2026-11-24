@@ -413,20 +413,54 @@ class TestVerdicts(unittest.TestCase):
         done = tick(rec, [published(rec, run=rec["held_patch"]["worker_run_id"])])
         last = final(done)
         self.assertEqual(engine.state_key(last), "development.waiting_ci")
-        self.assertEqual(last["review_comment"]["evidence_id"], review["evidence_id"])
-        self.assertEqual(last["review_comment"]["head"], CANDIDATE)
+        [due] = last["review_comments"]
+        self.assertEqual((due["evidence_id"], due["head"]), (review["evidence_id"], CANDIDATE))
+        self.assertEqual((due["repository"], due["pr_number"]),
+                         (rec["fork"]["name"], rec["fork"]["pr_number"]))
         self.assertEqual(done.report["review_comment_requests"], [{
             "type": "post_review_comment", "contribution_id": rec["contribution_id"],
             "contribution_file": "example--proj--12", "evidence_id": review["evidence_id"],
             "attempt": 1}])
-        self.assertEqual(last["review_comment"]["attempts"], 1)
-        self.assertEqual(last["review_comment"]["launched_at"], NOW)
+        self.assertEqual((due["attempts"], due["launched_at"]), (1, NOW))
+
+    def test_a_due_comment_survives_later_publications_and_generations(self):
+        # A comment still due for a patch published anyway is kept when the
+        # next patch is published after a passing review, and a second
+        # patch published anyway adds its own comment beside it.
+        due = {"evidence_id": "patch-review-old", "head": CANDIDATE,
+               "repository": "riseproject-upstreaming/proj", "pr_number": 3, "attempts": 1,
+               "next_attempt_at": NOW, "launched_at": None, "last_reason": "403",
+               "exhausted": False}
+        reviewing, _ = held(running(review_comments=[due]))
+        publishing = final(tick(reviewing, [review_result(reviewing)]))
+        self.assertEqual([d["evidence_id"] for d in publishing["review_comments"]],
+                         ["patch-review-old"])
+        later = datetime.fromisoformat(NOW) + timedelta(minutes=5)
+        done = final(tick(publishing, [published(publishing)], now=later))
+        self.assertEqual(engine.state_key(done), "development.waiting_ci")
+        self.assertEqual([d["evidence_id"] for d in done["review_comments"]],
+                         ["patch-review-old"])
+        anyway = copy.deepcopy(publishing)
+        anyway["pending_publication"]["patch_review"].update(evidence_id="patch-review-new",
+                                                             published_anyway=True)
+        both = final(tick(anyway, [published(anyway)], now=later))
+        self.assertEqual([d["evidence_id"] for d in both["review_comments"]],
+                         ["patch-review-old", "patch-review-new"])
+        self.assertEqual([d["attempts"] for d in both["review_comments"]], [2, 1])
+        # A new generation keeps every due comment, pinned to the PR it is
+        # posted on even once the record names no fork.
+        unpinned = dict(due, repository=None, pr_number=None)
+        restarted = engine.reset_generation(dict(both, review_comments=[unpinned]))
+        self.assertIsNone(restarted["fork"])
+        self.assertEqual(restarted["review_comments"],
+                         [dict(due, repository=both["fork"]["name"],
+                               pr_number=both["fork"]["pr_number"])])
 
     def test_the_comment_of_a_patch_published_anyway_is_retried_then_alerted(self):
-        due = {"evidence_id": "patch-review-x", "head": CANDIDATE, "attempts": 0,
-               "next_attempt_at": NOW, "launched_at": None, "last_reason": "",
-               "exhausted": False}
-        rec = contribution(activity="waiting_ci", review_comment=due)
+        due = {"evidence_id": "patch-review-x", "head": CANDIDATE, "repository": None,
+               "pr_number": None, "attempts": 0, "next_attempt_at": NOW, "launched_at": None,
+               "last_reason": "", "exhausted": False}
+        rec = contribution(activity="waiting_ci", review_comments=[due])
         at = datetime.fromisoformat(NOW)
 
         def run(record, receipts=(), minutes=0, **over):
@@ -446,17 +480,21 @@ class TestVerdicts(unittest.TestCase):
             out = run(record, **over)
             self.assertEqual(out.report.get("review_comment_requests") or [], [])
         launched = final(run(rec))
-        self.assertEqual(launched["review_comment"]["attempts"], 1)
+        self.assertEqual(launched["review_comments"][0]["attempts"], 1)
+        # The launch pins the development PR it is posted on.
+        self.assertEqual((launched["review_comments"][0]["repository"],
+                          launched["review_comments"][0]["pr_number"]),
+                         (rec["fork"]["name"], rec["fork"]["pr_number"]))
         # Waiting for its receipt: nothing is launched again.
         waiting = run(launched, minutes=10)
         self.assertEqual(waiting.report.get("review_comment_requests") or [], [])
         # A receipt of an older attempt is not this one's.
         self.assertEqual(run(launched, [receipt(0, "posted")], minutes=10)
-                         .report["review_comments"][0]["status"], "launched")
+                         .report["review_comment_posts"][0]["status"], "launched")
         # Posted, or found by its marker: the comment is done.
         for status in ("posted", "found"):
             done = final(run(launched, [receipt(1, status, comment_id=9)], minutes=10))
-            self.assertIsNone(done["review_comment"])
+            self.assertEqual(done["review_comments"], [])
         # A failed or skipped post, or one without a receipt, is launched
         # again later, at most COMMENT_ATTEMPTS times.
         record, minutes = launched, 0
@@ -466,15 +504,64 @@ class TestVerdicts(unittest.TestCase):
             out = run(record, receipts, minutes=minutes)
             record = final(out)
             if attempt < patch_review.COMMENT_ATTEMPTS:
-                self.assertEqual(record["review_comment"]["attempts"], attempt, out.report)
+                self.assertEqual(record["review_comments"][0]["attempts"], attempt, out.report)
                 again = run(record, minutes=minutes + patch_review.COMMENT_RETRY_MINUTES * attempt)
                 record = final(again)
                 self.assertEqual(again.report["review_comment_requests"][0]["attempt"],
                                  attempt + 1)
-        self.assertTrue(record["review_comment"]["exhausted"])
+        self.assertTrue(record["review_comments"][0]["exhausted"])
         self.assertIn("could not be posted", out.report["controller"]["alerts"][0]["alert"])
-        self.assertEqual(run(record, minutes=minutes + 600).report.get(
-            "review_comment_requests") or [], [])
+        # Exhausted, it stays due: every tick alerts on it, and it is posted
+        # again daily until it is posted or found.
+        quiet = run(record, minutes=minutes + 600)
+        self.assertEqual(quiet.report.get("review_comment_requests") or [], [])
+        self.assertIn("could not be posted", quiet.report["controller"]["alerts"][0]["alert"])
+        daily = run(record, minutes=minutes + 60 * patch_review.COMMENT_EXHAUSTED_RETRY_HOURS)
+        self.assertEqual(daily.report["review_comment_requests"][0]["attempt"],
+                         patch_review.COMMENT_ATTEMPTS + 1)
+        done = final(run(final(daily), [receipt(patch_review.COMMENT_ATTEMPTS + 1, "found")],
+                         minutes=minutes + 60 * patch_review.COMMENT_EXHAUSTED_RETRY_HOURS + 5))
+        self.assertEqual(done["review_comments"], [])
+
+    def test_each_due_comment_has_its_own_attempts_and_bound(self):
+        at = datetime.fromisoformat(NOW)
+
+        def due(n, **over):
+            return {"evidence_id": f"patch-review-{n}", "head": CANDIDATE,
+                    "repository": "riseproject-upstreaming/proj", "pr_number": 3,
+                    "attempts": 0, "next_attempt_at": NOW, "launched_at": None,
+                    "last_reason": "", "exhausted": False, **over}
+
+        def run(record, receipts=(), minutes=0):
+            snap = reconcile.Snapshot(contributions={"c": record}, operations={}, consumed={},
+                                      projects={}, evidence={})
+            return reconcile.tick(None, snap, policy=POLICY,
+                                  now=at + timedelta(minutes=minutes), publications=[],
+                                  pressure=capacity.Pressure(ok=True), observe=False,
+                                  review_comment_receipts=list(receipts))
+
+        rec = contribution(activity="waiting_ci", review_comments=[due(1), due(2)])
+        launched = final(run(rec))
+        self.assertEqual([d["attempts"] for d in launched["review_comments"]], [1, 1])
+        receipts = [{"contribution_id": rec["contribution_id"], "evidence_id": "patch-review-1",
+                     "attempt": 1, "status": "posted"},
+                    {"contribution_id": rec["contribution_id"], "evidence_id": "patch-review-2",
+                     "attempt": 1, "status": "failed", "reason": "HTTP 502"}]
+        left = final(run(launched, receipts, minutes=5))
+        [only] = left["review_comments"]
+        self.assertEqual((only["evidence_id"], only["attempts"], only["last_reason"]),
+                         ("patch-review-2", 1, "HTTP 502"))
+        # Beyond the bound, the oldest exhausted comments are dropped with an
+        # alert; the others stay.
+        many = [due(n, exhausted=True, attempts=5, next_attempt_at="2099-01-01T00:00:00+00:00")
+                for n in range(patch_review.MAX_DUE_COMMENTS)] + [due(99)]
+        out = run(contribution(activity="waiting_ci", review_comments=many))
+        kept = final(out)["review_comments"]
+        self.assertEqual(len(kept), patch_review.MAX_DUE_COMMENTS)
+        self.assertNotIn("patch-review-0", [d["evidence_id"] for d in kept])
+        self.assertIn("patch-review-99", [d["evidence_id"] for d in kept])
+        self.assertTrue(any("is no longer posted" in a["alert"]
+                            for a in out.report["controller"]["alerts"]))
 
     def test_an_unusable_review_is_work_without_a_usable_result(self):
         reviewing, _ = held(running())
@@ -815,9 +902,9 @@ class TestLiveRecords(unittest.TestCase):
                     self.assertFalse(state.needs_field_migration(rec))
                     continue
                 new, event = state.migrate_record_fields(rec, now=NOW)
-                self.assertEqual(event["details"]["added"], ["held_patch", "review_comment"])
+                self.assertEqual(event["details"]["added"], ["held_patch", "review_comments"])
                 self.assertEqual({k: v for k, v in new.items()
-                                  if k not in ("held_patch", "review_comment", "updated_at")},
+                                  if k not in ("held_patch", "review_comments", "updated_at")},
                                  {k: v for k, v in rec.items() if k != "updated_at"})
                 work_ = new.get("active_work")
                 if work_ and work_.get("task") == "development_patch":
@@ -954,6 +1041,11 @@ class TestWorkflows(unittest.TestCase):
                       if str(step.get("uses", "")).startswith("actions/upload-artifact"))
         self.assertEqual((upload["with"]["name"], upload["if"]),
                          ("porting-review-comment", "always()"))
+        # A pending post is replaced only by a later attempt of its own
+        # comment.
+        self.assertEqual(source["concurrency"],
+                         {"group": "porting-review-comment-${{ inputs.evidence-id }}",
+                          "cancel-in-progress": False})
         controller_text = (self.root / "controller.yml").read_text()
         self.assertIn("--review-comments review-comments", controller_text)
         self.assertIn("gh workflow run review-comment.yml", controller_text)

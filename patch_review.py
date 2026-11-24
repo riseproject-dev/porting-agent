@@ -47,7 +47,7 @@ from typing import Any
 
 import schemas
 import worker_report
-from common import STATE_ROOT, canonical_json, fitted_id, repository_root
+from common import APP_COMMIT_NAME, STATE_ROOT, canonical_json, fitted_id, repository_root
 
 TASK = "development_review"
 STATUS = "patch_review"
@@ -284,10 +284,29 @@ def evidence(record: dict, outcome: dict, *, now: str, policy: dict, run: str,
 # The comment on the development PR
 
 
+# The bound of the comment on the development PR, in characters, below
+# GitHub's limit of 65536; the texts of the review are bounded before they
+# are fenced, so the comment always ends with its marker and never leaves a
+# fence open.
+COMMENT_MAX = 60000
+COMMENT_SUMMARY_MAX = 6000
+
+
+def _mentionless(lines: list[str]) -> str:
+    import handoff
+
+    return handoff.neutralize_mentions("\n".join(lines))[0]
+
+
 def comment_body(review: dict, head: str) -> str:
     """The comment on the development PR for a patch published after
     successive failed reviews: plain words, the latest review and why it
-    failed, its findings as inert text, and the marker of the review."""
+    failed, its findings as inert text, and the marker of the review.
+
+    Every text of the review is bounded before it is fenced, and a finding
+    is listed whole or not at all: the findings that do not fit are counted
+    instead, so the comment never exceeds ``COMMENT_MAX``, never leaves a
+    fence open, and always ends with its marker."""
     import handoff
 
     data = review.get("data") or {}
@@ -295,7 +314,7 @@ def comment_body(review: dict, head: str) -> str:
     blocking = [f for f in findings if f.get("severity") in BLOCKING]
     others = [f for f in findings if f.get("severity") not in BLOCKING]
     count = int(data.get("failed_in_succession") or 0)
-    lines = [
+    head_lines = [
         "This patch was published although its latest review did not pass.",
         "",
         "Every development patch of this contribution is reviewed before it is published. "
@@ -307,21 +326,39 @@ def comment_body(review: dict, head: str) -> str:
         "(a blocker or a major finding fails a review):",
         "",
     ]
+    summary = str(data.get("summary") or "")[:COMMENT_SUMMARY_MAX]
+    tail_lines = ["", "The reviewer's summary:", "", *handoff._fenced(summary),
+                  "", "The review is recorded with the history of this contribution, so the "
+                  "next development work reads it. A human can ask for a change here.",
+                  "", COMMENT_MARKER.format(review["evidence_id"])]
+    head_text, tail_text = _mentionless(head_lines), _mentionless(tail_lines)
+    # Room for the findings and the line that counts those left out.
+    room = COMMENT_MAX - len(head_text) - len(tail_text) - 200
+    parts: list[str] = []
+    listed = 0
     for f in blocking + others:
         where = handoff._code(f"{f['file']}:{f['line']}" if f.get("file") and f.get("line")
                               else f.get("file") or "the whole patch", 300)
-        lines.append(f"- **{f['severity']}**, {f['category'].replace('_', ' ')}, {where}: "
-                     + handoff._code(f.get("title"), 300))
-        lines.extend("  " + line for line in handoff._fenced(str(f.get("detail") or "")))
+        lines = [f"- **{f['severity']}**, {str(f.get('category') or '').replace('_', ' ')}, "
+                 f"{where}: " + handoff._code(f.get("title"), 300)]
+        lines.extend("  " + line
+                     for line in handoff._fenced(str(f.get("detail") or "")[:MAX_DETAIL]))
         if f.get("suggestion"):
             lines.append("  Suggested change:")
-            lines.extend("  " + line for line in handoff._fenced(str(f["suggestion"])))
-    lines += ["", "The reviewer's summary:", "", *handoff._fenced(str(data.get("summary") or "")),
-              "", "The review is recorded with the history of this contribution, so the next "
-              "development work reads it. A human can ask for a change here.",
-              "", COMMENT_MARKER.format(review["evidence_id"])]
-    text, _ = handoff.neutralize_mentions("\n".join(lines))
-    return text[:60000]
+            lines.extend("  " + line for line in handoff._fenced(
+                str(f["suggestion"])[:MAX_SUGGESTION]))
+        text = _mentionless(lines)
+        if len(text) + 1 > room:
+            break
+        parts.append(text)
+        room -= len(text) + 1
+        listed += 1
+    left = len(findings) - listed
+    if left:
+        parts.append(f"- {_count(left, 'further finding')} of the review "
+                     f"{'is' if left == 1 else 'are'} recorded with the history of this "
+                     "contribution and not listed here.")
+    return "\n".join([head_text, *parts, tail_text])
 
 
 def _ordinal(n: int) -> str:
@@ -337,44 +374,73 @@ def _count(n: int, noun: str) -> str:
 # before an attempt that failed is made again (times the attempts so far).
 COMMENT_ATTEMPTS = 5
 COMMENT_RETRY_MINUTES = 30
+# Once those attempts are spent the comment is exhausted: it is alerted on in
+# every tick and posted again once every this many hours, until it is posted
+# or found, so a human who restores what the post needs ends the alert.
+COMMENT_EXHAUSTED_RETRY_HOURS = 24
 # A launched post whose receipt is not folded within this many minutes is
 # a failed attempt.
 COMMENT_RECEIPT_WAIT_MINUTES = 60
 # The outcomes of a post that end its comment: posted now, or found by its
 # marker (an earlier attempt posted it).
 COMMENT_DONE = ("posted", "found")
+# The comments a record keeps due. Beyond this bound the oldest exhausted
+# comments are dropped, each with an alert; the schema allows twice as many,
+# so the comments recorded between two ticks always fit.
+MAX_DUE_COMMENTS = 16
+# The author of the comment: the App whose token posts it. Only a comment of
+# that author carries the marker of a review.
+COMMENT_AUTHOR = APP_COMMIT_NAME
 
 
-def comment_due(record: dict, *, head: str, now: str) -> dict | None:
-    """The comment that becomes due once the held patch is published at
-    ``head``: only for a patch whose pending publication records a failed
-    review it was published after. Its value is the record's
-    ``review_comment``: the review, the published head, and no attempt yet,
-    due now."""
+def comment_due(record: dict, *, head: str, now: str) -> list[dict]:
+    """The record's due comments (``review_comments``) once the held patch is
+    published at ``head``: every comment still due, kept, and, for a patch
+    whose pending publication records a failed review it was published
+    after, the comment of that review: the review, the published head, the
+    development PR it is posted on, and no attempt yet, due now."""
+    due = [dict(item) for item in record.get("review_comments") or []]
     review = (record.get("pending_publication") or {}).get("patch_review") or {}
-    if not review.get("published_anyway"):
-        return None
-    return {"evidence_id": review["evidence_id"], "head": head, "attempts": 0,
-            "next_attempt_at": now, "launched_at": None, "last_reason": "",
-            "exhausted": False}
+    if not review.get("published_anyway") \
+            or any(item["evidence_id"] == review["evidence_id"] for item in due):
+        return due
+    fork = record.get("fork") or {}
+    return due + [{"evidence_id": review["evidence_id"], "head": head,
+                   "repository": fork.get("name"), "pr_number": fork.get("pr_number"),
+                   "attempts": 0, "next_attempt_at": now, "launched_at": None,
+                   "last_reason": "", "exhausted": False}]
+
+
+def comment_target(record: dict, due: dict) -> tuple[str | None, int | None]:
+    """The development PR a due comment is posted on: the one recorded when
+    it became due, else the record's."""
+    fork = record.get("fork") or {}
+    if due.get("repository") and due.get("pr_number"):
+        return due["repository"], int(due["pr_number"])
+    if fork.get("name") and fork.get("pr_number"):
+        return fork["name"], int(fork["pr_number"])
+    return None, None
+
+
+def due_comment(record: dict, evidence_id: str) -> dict | None:
+    return next((item for item in record.get("review_comments") or []
+                 if item.get("evidence_id") == evidence_id), None)
 
 
 def comment_check(record: dict, evidence_id: str, attempt: int, policy: dict) -> str | None:
     """Why the comment named by ``evidence_id`` and ``attempt`` must not be
-    posted now, or ``None``: it is the record's due comment, at its current
-    attempt, on a recorded development PR, while the record is not paused and
-    the policy permits writes."""
-    due = record.get("review_comment") or {}
-    if due.get("evidence_id") != evidence_id or due.get("attempts") != attempt:
-        return "the comment is not the record's due comment at this attempt"
-    if due.get("exhausted"):
-        return "the comment's attempts are spent"
+    posted now, or ``None``: it is a due comment of the record, at its
+    current attempt, on a known development PR, while the record is not
+    paused and the policy permits writes."""
+    due = due_comment(record, evidence_id) or {}
+    if due.get("attempts") != attempt:
+        return "the comment is not a due comment of the record at this attempt"
     if record.get("paused"):
         return "the contribution is paused"
     if policy.get("read_only", True):
         return "the policy is read-only"
-    fork = record.get("fork") or {}
-    if not fork.get("name") or not fork.get("pr_number"):
+    repository, number = comment_target(record, due)
+    if not repository or not number:
         return "no development PR is recorded"
     if not _SHA.match(str(due.get("head") or "")):
         return "the published head is unknown"
@@ -396,26 +462,28 @@ def _comments(api, repository: str, number: int):
 def comment(api, record: dict, evidence_id: str, attempt: int, *, policy: dict,
             root: Path | None = None) -> dict:
     """Post the comment of a patch published after successive failed reviews
-    on the development PR, once: a comment that carries the marker of the
-    review, on any page, is found instead of posted again. The receipt names
-    the contribution, the review and the attempt."""
+    on its development PR, once: a comment of the App (``COMMENT_AUTHOR``)
+    that carries the marker of the review, on any page, is found instead of
+    posted again; the marker in anyone else's comment is ignored. The
+    receipt names the contribution, the review and the attempt."""
     receipt = {"contribution_id": record["contribution_id"], "evidence_id": evidence_id,
                "attempt": attempt}
     why = comment_check(record, evidence_id, attempt, policy)
     if why:
         return receipt | {"status": "skipped", "reason": why}
-    fork = record["fork"]
-    repository, number = fork["name"], int(fork["pr_number"])
+    due = due_comment(record, evidence_id) or {}
+    repository, number = comment_target(record, due)
     path = (root or repository_root()) / STATE_ROOT / "evidence" / f"{evidence_id}.json"
     review = json.loads(path.read_text(encoding="utf-8"))
     if review.get("kind") != STATUS or review.get("evidence_id") != evidence_id:
         return receipt | {"status": "skipped", "reason": f"{evidence_id} is not a patch review"}
     marker = COMMENT_MARKER.format(evidence_id)
     for item in _comments(api, repository, number):
-        if marker in (item.get("body") or ""):
+        if (item.get("user") or {}).get("login") == COMMENT_AUTHOR \
+                and marker in (item.get("body") or ""):
             return receipt | {"status": "found", "comment_id": item.get("id")}
     posted = api.call("POST", f"/repos/{repository}/issues/{number}/comments",
-                      {"body": comment_body(review, record["review_comment"]["head"])})
+                      {"body": comment_body(review, due["head"])})
     return receipt | {"status": "posted", "comment_id": (posted or {}).get("id")}
 
 
@@ -459,8 +527,9 @@ def main(argv: list[str] | None = None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     if args.command == "comment-due":
         why = comment_check(record, args.evidence, args.attempt, policy)
+        target, _number = comment_target(record, due_comment(record, args.evidence) or {})
         result = {"due": why is None, "reason": why,
-                  "fork_name": str((record.get("fork") or {}).get("name") or "").split("/")[-1]}
+                  "fork_name": str(target or "").split("/")[-1]}
         if why:
             # The receipt of a post that is not due: the reconciler folds it.
             receipt = {"contribution_id": record["contribution_id"],

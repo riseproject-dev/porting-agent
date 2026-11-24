@@ -29,6 +29,13 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `request_patch_review` states that the review Work is uncredentialed and can change nothing.
 - **Required:** an operator decision on the reviewer's posture, recorded in the workflow, or the agent sandbox and threat detection enabled for the reviewer.
 
+## An exhausted review comment has no command that ends it
+
+- **Where:** `reconcile.review_comments`, `review_comments` of the record.
+- **Today:** a comment due on a development PR whose attempts are spent stays due: every tick alerts on it and it is launched again every 24 hours until it is posted or found. No command dismisses it, so a development PR that can never take it (deleted or locked) keeps the alert until more than 16 comments are due and it is the oldest exhausted one.
+- **Table:** `record_publish_success` in `development.publishing` states that trusted code posts, retries, and alerts on the comment beside the table.
+- **Required:** a command that ends an exhausted comment once a human has posted or waived it, recorded as an event.
+
 ## A repository renamed during upstream review is not followed
 
 - **Where:** `upstream_review.*`; `require_renamed_upstream`, and `resume_upstream_revision` and `resume_renamed_upstream` in `upstream_review.waiting_human`; the collector (`collect.upstream_snapshots`).

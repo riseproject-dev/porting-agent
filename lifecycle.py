@@ -195,7 +195,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "publication_operation_id": None,
         "pending_publication": None,
         "held_patch": None,
-        "review_comment": None,
+        "review_comments": [],
         "processed_publications": [],
         "processed_review_ids": [],
         "processed_review_comment_ids": [],
@@ -651,10 +651,9 @@ HELD_RESULT = "pending_publication"
 # (the worker run, the artifact, the Work, the digest of the series, and the
 # commit it rebuilds to). A stop discards it like a held Result.
 HELD_PATCH = "held_patch"
-# The comment of a patch published after successive failed reviews, due on
-# the development PR until trusted code has posted it or its attempts are
-# spent.
-REVIEW_COMMENT = "review_comment"
+# The comments of patches published after successive failed reviews, each
+# due on its development PR until trusted code has posted it or found it.
+REVIEW_COMMENT = "review_comments"
 STOP_KINDS = ("generation_end", "terminal")
 # Clears that take only a part of a field, as (field, the part cleared).
 # A published Result clears exactly the feedback its Work carried.
@@ -1249,9 +1248,10 @@ LIFECYCLE: dict[str, State] = {
                             "`development.agent_running`. The report stored at the hold is "
                             "stored again with the head the publication read back "
                             "(`head_after`). A patch published after successive failed reviews "
-                            "records the comment of the latest review as due on the development "
-                            "PR (`review_comment`), which trusted code posts, retries, and "
-                            "alerts on, beside the table. A published patch starts `dev_reviews` and "
+                            "adds the comment of the latest review to the comments due on the "
+                            "development PR (`review_comments`), which keeps every comment "
+                            "still due and which trusted code posts, retries, and alerts on, "
+                            "beside the table. A published patch starts `dev_reviews` and "
                             "`no_progress` again."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,

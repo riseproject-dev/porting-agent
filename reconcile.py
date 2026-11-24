@@ -1742,10 +1742,10 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         if verb == "record_publish_success" and engine.state_key(rec) == lifecycle.PUBLISHING:
             # A patch published after successive failed reviews: the latest
             # review is due on the development PR, at exactly the reviewed
-            # commit the pin names, posted by trusted code that the tick
-            # launches (`review_comments`) until it is posted or its
-            # attempts are spent.
-            values["review_comment"] = patch_review.comment_due(
+            # commit the pin names, beside every comment still due, posted
+            # by trusted code that the tick launches (`review_comments`)
+            # until it is posted or found.
+            values["review_comments"] = patch_review.comment_due(
                 rec, head=(rec.get("held_patch") or {}).get("candidate"), now=now)
         if verb == "record_revision_publish_success":
             head = published_head(outcome)
@@ -2560,6 +2560,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                        if e.get("kind") == "resolution"}),
                           skip=skip, evidence=evidence)
     out.staged.extend(res.staged)
+    # The steps below write beside the records as the controller left them,
+    # never over what it staged.
+    for kind, r in res.staged:
+        if kind == "contributions" and r["contribution_id"] in by_cid:
+            contributions[by_cid[r["contribution_id"]]] = r
     out.report["controller"] = res.report
     out.report["requested_effects"] = res.requested_effects
     out.report["provision_requests"] = res.report["provision_requests"]
@@ -2611,7 +2616,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["publication_retries"] = retries
     # 4b. The comment of a patch published after successive failed reviews:
     # its receipts are folded, and a due post is launched, bounded.
-    out.report["review_comments"] = review_comments(
+    out.report["review_comment_posts"] = review_comments(
         contributions, review_comment_receipts or [], out, policy=policy, now=now, skip=skip)
     # 5. The history of every requested Work that has none yet, normally
     # recorded in the tick that allocates it: the new human steering of the
@@ -2631,51 +2636,60 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
 
 def review_comments(contributions: dict[str, dict], receipts: list[dict], out: TickOutput, *,
                     policy: dict, now: datetime, skip: frozenset[str]) -> list[dict]:
-    """Post the comment of every patch published after successive failed
-    reviews (``review_comment``), durably and bounded.
+    """Post every comment due on a development PR for a patch published
+    after successive failed reviews (``review_comments``), durably.
 
-    The receipt of a launched post (``review-comment.json`` of the
-    ``review-comment.yml`` run, for the record's review and its current
-    attempt) is folded first: a comment posted, or found by its marker,
-    ends it; a post that failed, was skipped, or left no receipt within
-    ``COMMENT_RECEIPT_WAIT_MINUTES`` is launched again later, at most
-    ``COMMENT_ATTEMPTS`` times. Once they are spent the comment stays
-    recorded (``exhausted``, with the last reason) and an alert says that the
-    development PR lacks it. A due post is launched while the record is not
-    paused and the policy permits writes; its attempt is recorded before the
-    launch, so a post is never launched twice for one attempt."""
-    report = []
+    Each due comment has its own attempts. The receipt of a launched post
+    (``review-comment.json`` of the ``review-comment.yml`` run, for the
+    contribution, the review and its current attempt) is folded first: a
+    comment posted, or found by its marker, ends it and only then is it
+    removed; a post that failed, was skipped, or left no receipt within
+    ``COMMENT_RECEIPT_WAIT_MINUTES`` is launched again later. Once
+    ``COMMENT_ATTEMPTS`` are spent the comment is ``exhausted``: it stays
+    recorded with the last reason, an alert in every tick says that the
+    development PR lacks it, and it is launched again every
+    ``COMMENT_EXHAUSTED_RETRY_HOURS``, so the alert ends once a human has
+    restored what the post needs. A due post is launched while the record is
+    not paused and the policy permits writes; its attempt is recorded before
+    the launch, so a post is never launched twice for one attempt. Beyond
+    ``MAX_DUE_COMMENTS`` the oldest exhausted comments are dropped, each
+    with an alert."""
+    report: list[dict] = []
     out.report.setdefault("review_comment_requests", [])
+    alerts = out.report["controller"]["alerts"]
     iso = now.isoformat()
-    by_cid = {c["contribution_id"]: k for k, c in contributions.items()}
     folded: dict[tuple[str, str, int], dict] = {}
     for receipt in receipts:
         attempt = receipt.get("attempt")
         if isinstance(attempt, int) and not isinstance(attempt, bool):
             folded[(str(receipt.get("contribution_id")), str(receipt.get("evidence_id")),
                     attempt)] = receipt
-    for cid, key in by_cid.items():
+    for key in list(contributions):
         c = contributions[key]
-        due = c.get("review_comment")
-        if not due or due.get("exhausted") or cid in skip:
+        cid = c["contribution_id"]
+        if not c.get("review_comments") or cid in skip:
             continue
         with isolation.contribution(cid, "review_comment"):
-            attempt = int(due["attempts"])
-            entry: dict[str, Any] = {"contribution": cid, "evidence_id": due["evidence_id"],
-                                     "attempt": attempt}
-            if due.get("launched_at"):
+            # 1. The receipts of launched posts.
+            kept: list[dict] = []
+            answered = False
+            for due in c["review_comments"]:
+                attempt = int(due["attempts"])
+                entry: dict[str, Any] = {"contribution": cid, "evidence_id": due["evidence_id"],
+                                         "attempt": attempt}
+                if not due.get("launched_at"):
+                    kept.append(due)
+                    continue
                 receipt = folded.get((cid, due["evidence_id"], attempt))
                 waited = now - datetime.fromisoformat(due["launched_at"])
                 if receipt is None and waited < timedelta(
                         minutes=patch_review.COMMENT_RECEIPT_WAIT_MINUTES):
+                    kept.append(due)
                     report.append(entry | {"status": "launched"})
                     continue
+                answered = True
                 status = (receipt or {}).get("status")
                 if status in patch_review.COMMENT_DONE:
-                    new = engine.record_beside(c, "review_comment_answered", now=iso,
-                                               review_comment=None)
-                    contributions[key] = new
-                    out.staged.append(("contributions", new))
                     report.append(entry | {"status": status,
                                            "comment_id": (receipt or {}).get("comment_id")})
                     continue
@@ -2684,39 +2698,74 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
                         f"{status}" if receipt else
                         f"no receipt within {patch_review.COMMENT_RECEIPT_WAIT_MINUTES} minutes"),
                     500)
-                spent = attempt >= patch_review.COMMENT_ATTEMPTS
-                due = dict(due, launched_at=None, last_reason=reason, exhausted=spent,
-                           next_attempt_at=(now + timedelta(
-                               minutes=patch_review.COMMENT_RETRY_MINUTES * attempt)).isoformat())
+                spent = bool(due.get("exhausted")) \
+                    or attempt >= patch_review.COMMENT_ATTEMPTS
+                wait = (timedelta(hours=patch_review.COMMENT_EXHAUSTED_RETRY_HOURS) if spent
+                        else timedelta(minutes=patch_review.COMMENT_RETRY_MINUTES * attempt))
+                kept.append(dict(due, launched_at=None, last_reason=reason, exhausted=spent,
+                                 next_attempt_at=(now + wait).isoformat()))
+                entry["reason"] = reason
+            # 2. The bound: the oldest exhausted comments beyond it are
+            # dropped, each with an alert.
+            while len(kept) > patch_review.MAX_DUE_COMMENTS:
+                oldest = next((d for d in kept if d.get("exhausted")
+                               and not d.get("launched_at")), None)
+                if oldest is None:
+                    break
+                kept.remove(oldest)
+                answered = True
+                alerts.append({"contribution": cid, "alert": (
+                    f"the comment of the review {oldest['evidence_id']} is no longer posted: "
+                    f"more than {patch_review.MAX_DUE_COMMENTS} comments are due on the "
+                    "development PR, and it is the oldest whose attempts are spent (last: "
+                    f"{oldest.get('last_reason')}); the patch was published although that "
+                    "review failed, and the PR does not say so")})
+                report.append({"contribution": cid, "evidence_id": oldest["evidence_id"],
+                               "attempt": int(oldest["attempts"]), "status": "dropped"})
+            if answered:
                 c = engine.record_beside(c, "review_comment_answered", now=iso,
-                                         review_comment=due)
+                                         review_comments=kept)
                 contributions[key] = c
                 out.staged.append(("contributions", c))
-                if spent:
-                    out.report["controller"]["alerts"].append({
-                        "contribution": cid,
-                        "alert": (f"the comment of the review {due['evidence_id']} on the "
-                                  f"development PR could not be posted in {attempt} attempts "
-                                  f"(last: {reason}); the patch was published although that "
-                                  "review failed, and the PR does not say so")})
-                    report.append(entry | {"status": "exhausted", "reason": reason})
+            # 3. An alert for every exhausted comment, in every tick, and the
+            # launch of every comment that is due now.
+            launched: list[dict] = []
+            requests: list[dict] = []
+            for due in kept:
+                attempt = int(due["attempts"])
+                entry = {"contribution": cid, "evidence_id": due["evidence_id"],
+                         "attempt": attempt}
+                if due.get("exhausted"):
+                    repository, number = patch_review.comment_target(c, due)
+                    alerts.append({"contribution": cid, "alert": (
+                        f"the comment of the review {due['evidence_id']} on the development PR "
+                        f"{repository or '(none recorded)'}#{number or '?'} could not be posted "
+                        f"in {attempt} attempts (last: {due.get('last_reason')}); the patch was "
+                        "published although that review failed, and the PR does not say so. "
+                        "It is posted again every "
+                        f"{patch_review.COMMENT_EXHAUSTED_RETRY_HOURS} hours until it is posted")})
+                if due.get("launched_at") or c.get("paused") or policy.get("read_only", True) \
+                        or datetime.fromisoformat(due["next_attempt_at"]) > now:
+                    launched.append(due)
+                    if not due.get("launched_at"):
+                        report.append(entry | {"status": "exhausted" if due.get("exhausted")
+                                               else "waiting"})
                     continue
-                entry["reason"] = reason
-            if c.get("paused") or policy.get("read_only", True) \
-                    or datetime.fromisoformat(due["next_attempt_at"]) > now:
-                report.append(entry | {"status": "waiting"})
-                continue
-            attempt += 1
-            new = engine.record_beside(c, "review_comment_launched", now=iso,
-                                       review_comment=dict(due, attempts=attempt,
-                                                           launched_at=iso))
-            contributions[key] = new
-            out.staged.append(("contributions", new))
-            out.report["review_comment_requests"].append({
-                "type": "post_review_comment", "contribution_id": cid,
-                "contribution_file": contribution_file_id(cid),
-                "evidence_id": due["evidence_id"], "attempt": attempt})
-            report.append(entry | {"status": "launch", "attempt": attempt})
+                repository, number = patch_review.comment_target(c, due)
+                attempt += 1
+                launched.append(dict(due, attempts=attempt, launched_at=iso,
+                                     repository=repository, pr_number=number))
+                requests.append({
+                    "type": "post_review_comment", "contribution_id": cid,
+                    "contribution_file": contribution_file_id(cid),
+                    "evidence_id": due["evidence_id"], "attempt": attempt})
+                report.append(entry | {"status": "launch", "attempt": attempt})
+            if requests:
+                new = engine.record_beside(c, "review_comment_launched", now=iso,
+                                           review_comments=launched)
+                contributions[key] = new
+                out.staged.append(("contributions", new))
+                out.report["review_comment_requests"].extend(requests)
     return report
 
 

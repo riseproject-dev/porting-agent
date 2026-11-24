@@ -53,7 +53,7 @@
   },
   "pending_publication": null,
   "held_patch": null,
-  "review_comment": null,
+  "review_comments": [],
   "phase": "planning",
   "plan_evidence_id": null,
   "prerequisite_ids": [],

@@ -55,7 +55,7 @@
     "publication_operation_id",
     "pending_publication",
     "held_patch",
-    "review_comment",
+    "review_comments",
     "processed_publications",
     "processed_review_ids",
     "processed_review_comment_ids",
@@ -1305,61 +1305,82 @@
         }
       ]
     },
-    "review_comment": {
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "evidence_id",
-            "head",
-            "attempts",
-            "next_attempt_at",
-            "launched_at",
-            "last_reason",
-            "exhausted"
-          ],
-          "properties": {
-            "evidence_id": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
-            },
-            "head": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "attempts": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "next_attempt_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "launched_at": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "type": "string",
-                  "format": "date-time"
-                }
-              ]
-            },
-            "last_reason": {
-              "type": "string",
-              "maxLength": 2000
-            },
-            "exhausted": {
-              "type": "boolean"
-            }
+    "review_comments": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "evidence_id",
+          "head",
+          "repository",
+          "pr_number",
+          "attempts",
+          "next_attempt_at",
+          "launched_at",
+          "last_reason",
+          "exhausted"
+        ],
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+          },
+          "head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "repository": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+              }
+            ]
+          },
+          "pr_number": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 1
+              }
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "next_attempt_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launched_at": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "format": "date-time"
+              }
+            ]
+          },
+          "last_reason": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "exhausted": {
+            "type": "boolean"
           }
         }
-      ]
+      }
     },
     "processed_publications": {
       "type": "array",

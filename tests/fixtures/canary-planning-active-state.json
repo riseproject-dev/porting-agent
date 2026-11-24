@@ -61,7 +61,7 @@
   "pending_human_action": null,
   "pending_publication": null,
   "held_patch": null,
-  "review_comment": null,
+  "review_comments": [],
   "phase": "planning",
   "prerequisite_ids": [],
   "previous_phase": null,

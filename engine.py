@@ -1261,7 +1261,13 @@ def reset_generation(record: dict) -> dict:
         "prerequisite_ids": [], "active_operation_id": None,
         "queue_work_id": None, "queue_claim_handle": None, "queue_result_id": None,
         "proposal_artifact": None, "publication_operation_id": None,
-        "pending_publication": None, "held_patch": None, "review_comment": None,
+        "pending_publication": None, "held_patch": None,
+        # The comments due on development PRs are kept, each pinned to the PR
+        # it is posted on: a new generation never drops one silently.
+        "review_comments": [
+            dict(item, repository=item.get("repository") or (record.get("fork") or {}).get("name"),
+                 pr_number=item.get("pr_number") or (record.get("fork") or {}).get("pr_number"))
+            for item in record.get("review_comments") or []],
         # processed_publications is kept as a replay fence against old run artifacts.
         "processed_review_ids": [], "processed_review_comment_ids": [],
         "processed_pr_conversation_comment_ids": [],
@@ -1652,7 +1658,7 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "prerequisite_ids": [], "active_operation_id": None, "queue_work_id": None,
     "queue_claim_handle": None, "queue_result_id": None, "proposal_artifact": None,
     "publication_operation_id": None, "pending_publication": None, "held_patch": None,
-    "review_comment": None, "processed_publications": [], "processed_review_ids": [],
+    "review_comments": [], "processed_publications": [], "processed_review_ids": [],
     "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
     "pending_feedback_evidence_ids": [], "active_work": None, "plan_evidence_id": None,
     "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
@@ -1820,8 +1826,8 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # The comment of a patch published after successive failed reviews, due
     # once `record_publish_success` published it: its posts launched and
     # their receipts folded, until it is posted or its attempts are spent.
-    "review_comment_launched": ("review_comment",),
-    "review_comment_answered": ("review_comment",),
+    "review_comment_launched": ("review_comments",),
+    "review_comment_answered": ("review_comments",),
 }
 
 

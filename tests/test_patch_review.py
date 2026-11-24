@@ -183,11 +183,11 @@ class TestComment(unittest.TestCase):
 
     def due(self, eid, **over):
         """A published record whose comment is due at its first attempt."""
-        comment = {"evidence_id": eid, "head": "c" * 40, "attempts": 1,
-                   "next_attempt_at": NOW, "launched_at": NOW, "last_reason": "",
+        comment = {"evidence_id": eid, "head": "c" * 40, "repository": None, "pr_number": None,
+                   "attempts": 1, "next_attempt_at": NOW, "launched_at": NOW, "last_reason": "",
                    "exhausted": False}
         comment.update(over)
-        return contribution(activity="waiting_ci", review_comment=comment)
+        return contribution(activity="waiting_ci", review_comments=[comment])
 
     def test_the_latest_review_and_why_it_failed_is_posted_once(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,14 +209,52 @@ class TestComment(unittest.TestCase):
             self.assertNotIn("@someone", body)
             self.assertIn("@" + handoff.WORD_JOINER + "someone", body)
             self.assertNotIn(chr(0x2014), body)
-            # A retry finds the comment by its marker, beyond the first page
-            # of comments, and posts nothing.
-            again = FakeApi([{"id": n, "body": "other"} for n in range(150)]
-                            + [{"id": 77, "body": body}])
+            # A retry finds the comment of the App by its marker, beyond the
+            # first page of comments, and posts nothing; the marker in a
+            # comment of anyone else is ignored.
+            app = {"login": patch_review.COMMENT_AUTHOR}
+            again = FakeApi([{"id": n, "body": "other", "user": app} for n in range(150)]
+                            + [{"id": 76, "body": body, "user": {"login": "someone"}},
+                               {"id": 77, "body": body, "user": app}])
             found = patch_review.comment(again, rec, ev["evidence_id"], 1,
                                          policy=policy(read_only=False), root=root)
             self.assertEqual((found["status"], found["comment_id"]), ("found", 77))
             self.assertEqual((again.posted, again.pages), ([], [1, 2]))
+            forged = FakeApi([{"id": 76, "body": body, "user": {"login": "someone"}}])
+            self.assertEqual(patch_review.comment(forged, rec, ev["evidence_id"], 1,
+                                                  policy=policy(read_only=False),
+                                                  root=root)["status"], "posted")
+            # The PR recorded with the comment is the one it is posted on.
+            pinned = self.due(ev["evidence_id"], repository="riseproject-upstreaming/old",
+                              pr_number=4)
+            other = FakeApi()
+            patch_review.comment(other, dict(pinned, fork=None), ev["evidence_id"], 1,
+                                 policy=policy(read_only=False), root=root)
+            self.assertEqual(other.posted[0][0],
+                             "/repos/riseproject-upstreaming/old/issues/4/comments")
+
+    def test_a_long_review_is_bounded_and_ends_with_its_marker(self):
+        findings = [{"id": f"f{i}", "severity": "major", "category": "tests", "file": "a/b.yml",
+                     "line": 3, "title": "t" * 300, "detail": "word " * 300 + "```",
+                     "suggestion": "@sugg " * 200} for i in range(30)]
+        rev = {"evidence_id": "patch-review-x-r1-1",
+               "data": {"findings": findings, "summary": "s " * 1500 + "````",
+                        "failed_in_succession": 2}}
+        body = patch_review.comment_body(rev, "c" * 40)
+        self.assertLessEqual(len(body), patch_review.COMMENT_MAX)
+        self.assertTrue(body.endswith(patch_review.COMMENT_MARKER.format(rev["evidence_id"])))
+        self.assertIn("further findings of the review are recorded", body)
+        # Every fence it opens is closed: the lines that open a fence pair
+        # up with the lines that close it.
+        fences = [line.strip() for line in body.splitlines()
+                  if line.strip().startswith("```")]
+        opened = []
+        for fence in fences:
+            if opened and fence == opened[-1][0]:
+                opened.pop()
+            else:
+                opened.append((fence.rstrip("text"), fence))
+        self.assertEqual(opened, [])
 
     def test_nothing_is_posted_unless_the_comment_is_due(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,12 +266,11 @@ class TestComment(unittest.TestCase):
             for rec, attempt, pol in (
                     (self.due(eid), 2, writable),
                     (self.due("patch-review-other"), 1, writable),
-                    (self.due(eid, exhausted=True), 1, writable),
                     (dict(self.due(eid), paused=True), 1, writable),
                     (self.due(eid), 1, policy(read_only=True)),
                     (dict(self.due(eid), fork=dict(self.due(eid)["fork"], pr_number=None)), 1,
                      writable),
-                    (dict(self.due(eid), review_comment=None), 1, writable)):
+                    (dict(self.due(eid), review_comments=[]), 1, writable)):
                 result = patch_review.comment(api, rec, eid, attempt, policy=pol, root=root)
                 self.assertEqual(result["status"], "skipped", result)
             self.assertEqual(api.posted, [])
@@ -243,12 +280,20 @@ class TestComment(unittest.TestCase):
             "worker_run_id": "11", "attempts": 0, "last_reason": "", "next_attempt_at": NOW,
             "patch_review": {"evidence_id": "patch-review-x", "verdict": "fail",
                              "published_anyway": True}})
-        self.assertEqual(patch_review.comment_due(rec, head="c" * 40, now=NOW), {
-            "evidence_id": "patch-review-x", "head": "c" * 40, "attempts": 0,
-            "next_attempt_at": NOW, "launched_at": None, "last_reason": "", "exhausted": False})
+        new = {"evidence_id": "patch-review-x", "head": "c" * 40,
+               "repository": rec["fork"]["name"], "pr_number": rec["fork"]["pr_number"],
+               "attempts": 0, "next_attempt_at": NOW, "launched_at": None, "last_reason": "",
+               "exhausted": False}
+        self.assertEqual(patch_review.comment_due(rec, head="c" * 40, now=NOW), [new])
         passed = copy.deepcopy(rec)
         passed["pending_publication"]["patch_review"]["published_anyway"] = False
-        self.assertIsNone(patch_review.comment_due(passed, head="c" * 40, now=NOW))
+        self.assertEqual(patch_review.comment_due(passed, head="c" * 40, now=NOW), [])
+        # The comments still due are kept, whatever is published.
+        older = dict(new, evidence_id="patch-review-old", attempts=3, exhausted=True)
+        self.assertEqual(patch_review.comment_due(dict(passed, review_comments=[older]),
+                                                  head="c" * 40, now=NOW), [older])
+        self.assertEqual(patch_review.comment_due(dict(rec, review_comments=[older]),
+                                                  head="c" * 40, now=NOW), [older, new])
 
     def test_the_command_line_checks_without_a_token_and_writes_a_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
