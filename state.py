@@ -753,16 +753,43 @@ def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> li
     return written
 
 
+def resolution_problems(operations: dict[str, dict], evidence: dict[str, dict]) -> list[str]:
+    """Each resolved operation names the `resolution` evidence record of that
+    operation, which the controller writes in the same commit."""
+    by_id = {e.get("evidence_id"): e for e in evidence.values()}
+    problems = []
+    for op in operations.values():
+        resolution = op.get("resolution")
+        if not resolution:
+            continue
+        record = by_id.get(resolution.get("evidence_id"))
+        if record is None:
+            problems.append(f"operation {op['operation_id']}: its resolution evidence "
+                            f"{resolution.get('evidence_id')} does not exist")
+        elif record.get("kind") != "resolution":
+            problems.append(f"operation {op['operation_id']}: evidence "
+                            f"{record['evidence_id']} is not a resolution record")
+        elif (record.get("resolution") or {}).get("operation_id") != op["operation_id"]:
+            problems.append(f"operation {op['operation_id']}: resolution evidence "
+                            f"{record['evidence_id']} names another operation")
+    return problems
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     policy = load_policy()
     store = StateStore(Path(args.root) if args.root else repository_root(), policy)
     bad = 0
+    loaded: dict[str, dict[str, dict]] = {}
     for kind in ("projects", "contributions", "operations", "commands", "events", "evidence"):
         try:
-            count = len(store.load_all(kind))
-            print(f"{kind}: {count} valid")
+            loaded[kind] = store.load_all(kind)
+            print(f"{kind}: {len(loaded[kind])} valid")
         except StateError as error:
             print(f"{kind}: INVALID: {error}", file=sys.stderr)
+            bad += 1
+    if "operations" in loaded and "evidence" in loaded:
+        for problem in resolution_problems(loaded["operations"], loaded["evidence"]):
+            print(f"operations: INVALID: {problem}", file=sys.stderr)
             bad += 1
     try:
         awaiting = pending_record_migrations(store.root, policy)

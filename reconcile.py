@@ -2636,10 +2636,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    acceptances=acceptances or {},
                                                    spent_graphs=spent_graphs,
                                                    handoff_runs=handoff_runs,
-                                                   development_pr_runs=development_pr_runs,
-                                                   resolution_evidence={
-                                                       e["evidence_id"]: e for e in evidence.values()
-                                                       if e.get("kind") == "resolution"}),
+                                                   development_pr_runs=development_pr_runs),
                           skip=skip, evidence=evidence)
     out.staged.extend(res.staged)
     # The steps below write beside the records as the controller left them,

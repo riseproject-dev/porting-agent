@@ -1113,7 +1113,7 @@ A read that fails without a definitive answer charges `source_reads` and keeps t
 
 ## Remote operations
 
-Every remote effect is an operation with its own small table, held to the same checks. The intent is recorded before the effect, and the receipt is confirmed by discovering the actual resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` closes an open operation with a resolution evidence record.
+Every remote effect is an operation with its own small table, held to the same checks. The intent is recorded before the effect, and the receipt is confirmed by discovering the actual resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` closes an open operation with a resolution evidence record, which the controller writes from the authorized command: who stated the disposition, where, why, and what the pipeline held about the operation at that moment.
 
 ```mermaid
 flowchart TB

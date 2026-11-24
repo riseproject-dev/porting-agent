@@ -20,6 +20,9 @@ from common import CONTROL_REPO
 
 # The pending action of a provisioning operation that failed (`controller`).
 PROVISIONING_FAILED = "provisioning_operation_failed"
+# The pending action of the provisioning wait after exhausted launches.
+LAUNCH_EXHAUSTED = "provisioning_launch_exhausted"
+_OPERATION_ID = r"op-[0-9a-f]{24}"
 
 
 class LedgerError(ValueError):
@@ -182,13 +185,53 @@ def _development_pr_guidance(details: dict) -> str:
     named = isinstance(operation, str) and re.fullmatch(r"op-[0-9a-f]{24}", operation)
     runs = (f"the `Development PR {operation}` runs" if named
             else "the `Development PR` runs of the operation")
-    launches = details.get("launches")
+    launches, replans = details.get("launches"), details.get("replans")
     spent = (f" after {launches} launches" if isinstance(launches, int)
-             and not isinstance(launches, bool) else "")
+             and not isinstance(launches, bool) else
+             f" after {replans} re-plans at this revision" if isinstance(replans, int)
+             and not isinstance(replans, bool) else "")
     return (f"The development PR operation got no verified receipt{spent}. Read {runs} of the "
             "control repository, correct the cause (for example, close a pull request open "
             "from `riscv64-dev` that is not this contribution's), then post "
             "`/upstreaming resume`.")
+
+
+def _resolve_template(operation: str, disposition: str) -> str:
+    return (f"`/upstreaming resolve-operation operation={operation} disposition={disposition} "
+            'reason="..."`')
+
+
+def _provisioning_launch_guidance(details: dict) -> str:
+    """What a human does once the launches of the planned provisioning
+    operation are spent without a receipt: the operation stays open, and it
+    fences `park` and the stale resume until it is resolved. Once no open
+    operation is named (a resolution or a receipt closed it, or the re-plans
+    of the intent are spent), `park` applies. Only trusted values are named:
+    the operation id, the launch or re-plan count, and the stale limit; no
+    workflow log text."""
+    operation = details.get("operation")
+    named = isinstance(operation, str) and re.fullmatch(_OPERATION_ID, operation)
+    runs = (f"the `Fork Provisioning {operation}` runs" if named
+            else "the `Fork Provisioning` runs of the operation")
+    launches, replans = details.get("launches"), details.get("replans")
+    spent = (f" after {launches} launches" if isinstance(launches, int)
+             and not isinstance(launches, bool) else
+             f" after {replans} re-plans at this revision" if isinstance(replans, int)
+             and not isinstance(replans, bool) else "")
+    days = details.get("stale_after_days")
+    limit = (f"{days} days" if isinstance(days, int) and not isinstance(days, bool)
+             else "`refresh.stale_after_days` days")
+    text = (f"The provisioning operation got no receipt{spent}. Read {runs} of the control "
+            "repository and correct the cause, then post `/upstreaming resume`.")
+    if named:
+        text += (f" To park, or to resume after more than {limit}, first close the operation: "
+                 f"{_resolve_template(operation, 'not-launched')} when no run did anything, "
+                 "`disposition=failed` when a run failed.")
+    else:
+        # No open operation fences the wait: `park` applies, and `resume`
+        # also once the wait is stale.
+        text += " To stop instead, post `/upstreaming park`."
+    return text
 
 
 # What a human corrects for each closed failure code a provisioning receipt
@@ -256,6 +299,11 @@ def _observed(event: dict) -> str:
             kind == "record_reminder"
             and details.get("pending_human_action") == lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED):
         parts.append(_development_pr_guidance(details))
+    if (kind == "require_provisioning_intervention"
+            and ("launches" in details or "replans" in details)
+            and not details.get("failure")) or (
+            kind == "record_reminder" and details.get("pending_human_action") == LAUNCH_EXHAUSTED):
+        parts.append(_provisioning_launch_guidance(details))
     if (kind == "require_provisioning_intervention" and details.get("failure")) or (
             kind == "record_reminder"
             and details.get("pending_human_action") == PROVISIONING_FAILED):
@@ -601,6 +649,13 @@ def _table_command_lines(record: dict) -> list[str]:
     lines = [_HEAD_TEMPLATES.get((state, c), _TEMPLATES[c]).format(
                  revision=record["revision"], head=head)
              for c in offered if c in _TEMPLATES and c.split()[-1] in commands.GRAMMAR]
+    operation = record.get("active_operation_id")
+    if isinstance(operation, str) and re.fullmatch(_OPERATION_ID, operation) \
+            and (paused or lifecycle.LIFECYCLE[state].kind == "human_wait"):
+        # `active_operation_id` names an open operation only: in a wait or a
+        # pause, a human who verified what it did closes it.
+        lines.append(f"/upstreaming resolve-operation operation={operation} "
+                     'disposition=failed|not-launched reason="..."')
     if state == "parked.idle":
         lines.append(REFRESH_OVERRIDE.format(
             revision=record["revision"],

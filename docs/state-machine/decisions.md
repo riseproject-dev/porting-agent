@@ -1379,6 +1379,23 @@ flowchart TB
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
+### O34. Who records resolution evidence
+
+Who writes the resolution evidence record with which `/upstreaming resolve-operation` closes an open operation, given that the command cannot name a record a human has no way to write? Without a producer every resolution is refused, and since the provisioning wait after exhausted launches keeps its planned operation open, a stale (or paused and stale) wait has `park` and the stale resume fenced for good.
+
+**Decision.** The controller is the trusted producer. When it accepts `/upstreaming resolve-operation operation=<id> disposition=confirmed|failed|not-launched reason="..."` from an authorized actor on the tracking issue of the operation's contribution, it writes the `resolution` evidence record (`resolution-<operation id>-<comment id>`) from the authenticated command (actor, comment, issue, body digest, disposition, reason) and its own snapshot of the operation (kind, status, revision, launches, discoveries) and the contribution, in the same state commit as the `resolve_*` row; a refused resolution writes none. The guard checks that the record names the operation and states the disposition. The pipeline does not verify the human's statement: the evidence makes it auditable, and the reason is stored as bounded data and never rendered. The provisioning wait keeps its fence instead of closing the operation on exhaustion as `exhaust_development_pr_launches` does, because provisioning has no in-flight run hold and a lost receipt is not proof that nothing launched: a stale or paused wait is left by resolving the operation, then `park` or `resume` (`resume_stale`). The entry and reminders of the wait, the next commands of a wait or pause with an open operation, and the reply to a command fenced in a wait or a pause name the exact resolution. A provisioning operation resolved `not-launched` or `confirmed` in `provisioning.idle` closes without a row, so the controller plans the intent again with a new id (`replan:<n>`, as the development PR operations do), each within its own `operation_launch`, and takes `require_provisioning_intervention` once the re-plans at one revision are spent.
+
+```mermaid
+flowchart TB
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+        provisioning_waiting_human["provisioning.waiting_human"]
+    end
+
+    provisioning_idle ==>|require_provisioning_intervention| provisioning_waiting_human
+    provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

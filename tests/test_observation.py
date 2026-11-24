@@ -472,10 +472,12 @@ class TestRecovery(unittest.TestCase):
         op = recovery.mark_result(recovery.mark_applying(self.op("ci_dispatch"), NOW, facts=recovery.RECEIPT_FACTS),
                                   response_ok=None, external_ids=None, now=NOW)
         c = commands.parse(f"/upstreaming resolve-operation operation={op['operation_id']} "
-                           "disposition=not-launched evidence=ev-9")
+                           'disposition=not-launched reason="the dispatch never ran"')
         with self.assertRaises(recovery.RecoveryError):
             recovery.resolve(op, c, actor=OWNER, command_id="x", evidence=None, now=NOW)
-        ev = {"evidence_id": "ev-9", "kind": "resolution"}
+        receipt = {"command_id": "x", "comment_id": 3, "issue_number": 12,
+                   "content_digest": "e" * 64, "actor": OWNER}
+        ev = controller.resolution_evidence(op, c, receipt, None, policy(), NOW)
         done = recovery.resolve(op, c, actor=OWNER, command_id="x", evidence=ev, now=NOW)
         self.assertEqual(done["status"], "not_launched")
         self.assertTrue(recovery.releases_capacity(done))

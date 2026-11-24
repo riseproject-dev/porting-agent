@@ -20,6 +20,8 @@ of a contribution's state:
   *fact* the caller establishes, or a *record* predicate decided from the
   operation and the command), applies the row's effects (``external_ids``,
   ``discovery``, ``resolution``) and moves the operation to the row's target;
+  the evidence of a ``resolve_*`` row is the ``resolution`` record the
+  controller writes from the authorized ``/upstreaming resolve-operation``;
 * ``mark_applying``, ``mark_result``, ``record_discovery``, ``fold_receipt``
   and ``resolve`` name the rows a caller's observation takes;
 * ``fire`` takes, through ``engine.apply_transition``, the lifecycle row with
@@ -148,11 +150,23 @@ def _exact_operation(ctx: Context) -> str | None:
 
 
 def _resolution_evidence(ctx: Context) -> str | None:
+    """The resolution evidence record the controller wrote from the command:
+    of kind ``resolution``, naming this operation and the disposition the
+    command states, with the actor who stated it."""
     evidence = ctx.evidence
-    if evidence is None or evidence.get("evidence_id") != _command_arg(ctx, "evidence"):
+    if not isinstance(evidence, dict):
         return "resolution evidence record not found"
     if evidence.get("kind") != "resolution":
         return "evidence is not a resolution record"
+    oid = ctx.operation["operation_id"]
+    resolution = evidence.get("resolution") or {}
+    if not str(evidence.get("evidence_id") or "").startswith(f"resolution-{oid}-") \
+            or resolution.get("operation_id") != oid:
+        return "resolution evidence names another operation"
+    if resolution.get("disposition") != _command_arg(ctx, "disposition"):
+        return "resolution evidence states another disposition"
+    if not (resolution.get("actor") or {}).get("id"):
+        return "resolution evidence names no actor"
     return None
 
 
@@ -377,8 +391,10 @@ def resolution_verbs(op: dict) -> list[str]:
 def resolve(op: dict, cmd: Command, *, actor: dict, command_id: str, evidence: dict | None,
             now: str) -> dict:
     """Apply ``/upstreaming resolve-operation``: the one ``resolve_*`` row of
-    the table whose guards hold (the command names this operation, a
-    resolution evidence record, the disposition). It never synthesizes a
+    the table whose guards hold (the command names this operation, the
+    resolution evidence record states the disposition, the disposition).
+    The evidence is the record the controller writes from the authorized
+    command (``controller.resolution_evidence``). It never synthesizes a
     native queue Result."""
     if cmd.verb != "resolve-operation" or cmd.args.get("operation") != op["operation_id"]:
         raise RecoveryError("command does not target this operation")

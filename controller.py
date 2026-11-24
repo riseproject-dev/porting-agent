@@ -36,6 +36,7 @@ import lifecycle
 import patch_review
 import recovery
 import schemas
+import state
 import work as work_queue
 from commands import URGENT, Command
 from common import (
@@ -64,7 +65,6 @@ class Inputs:
     # (``observe_ci.reads_upstream_pr_state``): whether it is open decides the
     # resume and the restart that depend on it.
     upstream_pr_observations: dict[str, dict] = field(default_factory=dict)
-    resolution_evidence: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
     # The queue graphs (``work.graph_id``) of Work that already returned a
@@ -700,7 +700,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             out = engine.apply_transition(c, "record_reminder", policy=policy, now=now,
                                           cause_id=f"reminder-{c['revision']}",
                                           details=reminder_details(
-                                              c, operations, inputs.handoff_observations.get(cid)))
+                                              c, operations, inputs.handoff_observations.get(cid),
+                                              policy))
             by_id[cid] = out.record
             res.stage("contributions", out.record)
             res.stage("events", out.event)
@@ -779,15 +780,31 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 rep["deferred"].append({"contribution": cid, "why": why})
                 continue
             fork = c.get("fork") or {}
-            op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="fork_provision",
-                               policy_version=policy["policy_version"], reason_ids=[c["plan_evidence_id"]],
-                               target={"repository": "riseproject-upstreaming/" + c["upstream"]["full_name"].split('/', 1)[1],
-                                       "repository_id": fork.get("repository_id"), "ref": DEV_REF,
-                                       "expected_head": fork.get("head_sha"), "base_sha": c["upstream"]["base_sha"]},
-                               proposed={"commit": c["upstream"]["base_sha"], "marker": f"provision:{cid}:{c['revision']}"},
-                               capacity={"selector": "ubuntu-24.04-riscv", "estimated_jobs": 1,
-                                         "estimated_minutes": 10, "observed_run_ids": []}, now=now)
-            if op["operation_id"] in operations:
+            op = None
+            for n in range(MAX_REPLANS + 1):
+                # A re-plan after a closed operation of the same intent at the
+                # same revision (one a human resolved in `provisioning.idle`)
+                # is a new operation: an operation id is never reused once it
+                # closed.
+                op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="fork_provision",
+                                   policy_version=policy["policy_version"],
+                                   reason_ids=[c["plan_evidence_id"]] + ([f"replan:{n}"] if n else []),
+                                   target={"repository": "riseproject-upstreaming/" + c["upstream"]["full_name"].split('/', 1)[1],
+                                           "repository_id": fork.get("repository_id"), "ref": DEV_REF,
+                                           "expected_head": fork.get("head_sha"), "base_sha": c["upstream"]["base_sha"]},
+                                   proposed={"commit": c["upstream"]["base_sha"], "marker": f"provision:{cid}:{c['revision']}"},
+                                   capacity={"selector": "ubuntu-24.04-riscv", "estimated_jobs": 1,
+                                             "estimated_minutes": 10, "observed_run_ids": []}, now=now)
+                prior = operations.get(op["operation_id"])
+                if prior is None or recovery.is_open(prior):
+                    break
+            prior = operations.get(op["operation_id"])
+            if prior is not None and not recovery.is_open(prior):
+                # Every re-plan of this intent at this revision is spent: the
+                # human wait, whose resume starts a new revision.
+                _exhaust_provisioning_replans(c, prior, by_id, operations, res, now, policy)
+                continue
+            if prior is not None:
                 rep["deferred"].append({"contribution": cid, "why": "existing provisioning operation requires reconciliation"})
                 continue
             # The intent is recorded and launched in the same tick.
@@ -1359,7 +1376,7 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
 
 
 def reminder_details(record: dict, operations: dict | None = None,
-                     observation: dict | None = None) -> dict:
+                     observation: dict | None = None, policy: dict | None = None) -> dict:
     """What a reminder repeats: the pending human action, when it was
     requested, and, where the step binds to a head, the revision and head.
     In the locked upstream-PR wait it also carries the link to the posted
@@ -1384,6 +1401,15 @@ def reminder_details(record: dict, operations: dict | None = None,
             latest = max(spent, key=lambda op: op["updated_at"])
             details["operation"] = latest["operation_id"]
             details["launches"] = recovery.launch_attempts(latest)
+    if pending["kind"] == LAUNCH_EXHAUSTED:
+        # The planned provisioning operation whose launches were spent: it
+        # stays open, and the reminder names it and the resolution.
+        op = (operations or {}).get(record.get("active_operation_id"))
+        if op is not None and recovery.is_open(op):
+            details["operation"] = op["operation_id"]
+            details["launches"] = recovery.launch_attempts(op)
+            if policy is not None:
+                details["stale_after_days"] = policy["refresh"]["stale_after_days"]
     if pending["kind"] == PROVISIONING_FAILED:
         # The provisioning operation that failed: the latest failed fork
         # provisioning operation of the contribution, with the closed code
@@ -1706,7 +1732,8 @@ def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict
             counts=counts, open_operations=open_ops,
             values={"pending_human_action": LAUNCH_EXHAUSTED,
                     lifecycle.PENDING_COUNTER: "operation_launch"},
-            details={"operation": oid, "launches": attempts})
+            details={"operation": oid, "launches": attempts,
+                     "stale_after_days": policy["refresh"]["stale_after_days"]})
         if not out.accepted:
             raise lifecycle.TransitionError(f"require_provisioning_intervention refused: {out.reason}")
         by_id[cid] = out.record
@@ -1715,6 +1742,29 @@ def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict
         return False
     res.report.setdefault("deferred", []).append({"contribution": cid, "why": why})
     return False
+
+
+def _exhaust_provisioning_replans(c: dict, last: dict, by_id: dict, operations: dict,
+                                  res: TickResult, now: str, policy: dict) -> None:
+    """`require_provisioning_intervention` once `MAX_REPLANS` re-plans of the
+    provisioning intent at one revision have all closed without provisioning
+    the fork: the launches of the intent are spent (`operation_launch`), and
+    the resume of the wait starts a new revision, whose operations have new
+    ids."""
+    cid = c["contribution_id"]
+    limit = lifecycle.budget_limit("operation_launch", policy)
+    out = engine.apply_transition(
+        c, "require_provisioning_intervention", policy=policy, now=now,
+        cause_id=last["operation_id"], counts={"operation_launch": limit},
+        open_operations=_open_operations(c, operations),
+        values={"pending_human_action": LAUNCH_EXHAUSTED,
+                lifecycle.PENDING_COUNTER: "operation_launch"},
+        details={"replans": MAX_REPLANS})
+    if not out.accepted:
+        raise lifecycle.TransitionError(f"require_provisioning_intervention refused: {out.reason}")
+    by_id[cid] = out.record
+    res.stage("contributions", out.record)
+    res.stage("events", out.event)
 
 
 def _command_target(decision, by_id: dict, operations: dict) -> str | None:
@@ -1728,9 +1778,24 @@ def _command_target(decision, by_id: dict, operations: dict) -> str | None:
     return rec["contribution_id"] if rec else None
 
 
-def _refusal(record: dict, cmd: Command, why: str) -> str:
+# The commands an open operation fences (`park`, `refresh`, and the stale
+# resume require no open operation).
+FENCED_COMMANDS = frozenset({"resume", "park", "refresh"})
+
+
+def resolve_line(operation_id: str) -> str:
+    """The resolution that closes an open operation a human has verified."""
+    return (f"/upstreaming resolve-operation operation={operation_id} "
+            'disposition=failed|not-launched reason="..."')
+
+
+def _refusal(record: dict, cmd: Command, why: str, open_ops: tuple[str, ...] = ()) -> str:
     """The reply to a command the table refuses, in the words the command
-    feedback recognizes for a pause or resume that has nothing to do."""
+    feedback recognizes for a pause or resume that has nothing to do. A
+    command the fence of an open operation refuses in a wait or a pause is
+    answered with the resolution that closes it, naming the pipeline's own
+    operation id; elsewhere the operation is in flight, and the refusal only
+    names it."""
     if cmd.verb == "pause" and record.get("paused") and why == "contribution is paused":
         return "already paused"
     state = lifecycle.LIFECYCLE.get(engine.state_key(record))
@@ -1739,6 +1804,11 @@ def _refusal(record: dict, cmd: Command, why: str) -> str:
             return commands.PARKED_RESUME
         if state.kind != "human_wait":
             return "not paused"
+    if cmd.verb in FENCED_COMMANDS and open_ops \
+            and (record.get("paused") or (state is not None and state.kind == "human_wait")) \
+            and f"operation {open_ops[0]} is open" in why.split("; "):
+        return (f"operation {open_ops[0]} is open: once you have verified what its runs did, "
+                f"close it with `{resolve_line(open_ops[0])}`, then post this command again")
     return why
 
 
@@ -1846,7 +1916,7 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
     verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now, counts=counts,
                                        open_operations=open_ops, facts=facts)
     if verb is None:
-        return engine.Outcome(rec, False, _refusal(rec, cmd, why), None)
+        return engine.Outcome(rec, False, _refusal(rec, cmd, why, open_ops), None)
     unread = _unread_field(cmd, verb, engine.state_key(rec))
     if unread:
         return engine.Outcome(rec, False, unread, None, verb)
@@ -1928,30 +1998,82 @@ RESOLUTION_FIRES: dict[tuple[str, str], tuple[frozenset[str], dict]] = {
 }
 
 
+def resolution_evidence(op: dict, cmd: Command, receipt: dict, record: dict | None,
+                        policy: dict, now: str) -> dict:
+    """The `resolution` evidence record of `/upstreaming resolve-operation`,
+    written by the controller from the authorized command and its own
+    snapshot of the operation: who stated the disposition, where, why, and
+    what the pipeline held about the operation then. The pipeline does not
+    verify the statement; the record makes it auditable. The reason is
+    untrusted text kept as bounded data: it is not in the summary and is
+    never rendered."""
+    oid = op["operation_id"]
+    # Bounded at intake: the normalized reason fits the schemas.
+    reason = state.normalize_state_text(cmd.args["reason"])
+    summary = (f"Operation {oid} ({op['kind']}, {op['status']}) resolved as "
+               f"{cmd.args['disposition']} by command {receipt['command_id']}.")
+    return {
+        "schema_version": 1,
+        "evidence_id": f"resolution-{oid}-{receipt['comment_id']}",
+        "contribution_id": op["contribution_id"],
+        "kind": "resolution",
+        "policy_version": policy["policy_version"],
+        "collected_at": now,
+        "summary": summary,
+        "resolution": {
+            "operation_id": oid,
+            "disposition": cmd.args["disposition"],
+            "command_id": receipt["command_id"],
+            "comment_id": receipt["comment_id"],
+            "issue_number": receipt["issue_number"],
+            "content_digest": receipt["content_digest"],
+            "actor": {"id": receipt["actor"]["id"], "login": receipt["actor"]["login"]},
+            "reason": reason,
+            "operation": {"kind": op["kind"], "status": op["status"], "revision": op["revision"],
+                          "launch_attempts": recovery.launch_attempts(op),
+                          "discoveries": len(op.get("discovery") or []),
+                          "updated_at": op["updated_at"]},
+            "contribution_state": engine.state_key(record) if record else None,
+            "paused": bool((record or {}).get("paused")),
+        },
+    }
+
+
 def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dict,
                        inputs: Inputs, res: TickResult, now: str, policy: dict,
                        store: dict[str, dict]) -> dict:
     """`/upstreaming resolve-operation` by the operation table: the one
     `resolve_*` row whose guards hold. The authority of the actor was checked
-    at intake. An operation that reaches `confirmed` or `failed` fires its
-    lifecycle row when the resolution establishes the row's guards; the
-    record's reference to the closed operation is released. ``store`` is the
-    store's evidence by id: a branch operation confirmed at the commit a
-    ``publish_anyway`` review pinned makes its comment due."""
+    at intake; the command is accepted only on the tracking issue of the
+    operation's contribution. The controller writes the resolution evidence
+    from the command (`resolution_evidence`) and stages it with the closed
+    operation only when the row is taken, so both land in one state commit.
+    An operation that reaches `confirmed` or `failed` fires its lifecycle row
+    when the resolution establishes the row's guards; the record's reference
+    to the closed operation is released. ``store`` is the store's evidence by
+    id: a branch operation confirmed at the commit a ``publish_anyway`` review
+    pinned makes its comment due."""
     op = operations.get(cmd.args["operation"])
     if op is None:
         return dict(receipt, result="rejected", reason="unknown operation")
-    evidence = inputs.resolution_evidence.get(cmd.args["evidence"])
+    cid = op["contribution_id"]
+    rec = by_id.get(cid)
+    if rec is None:
+        return dict(receipt, result="rejected",
+                    reason=f"operation {op['operation_id']} belongs to no tracked contribution")
+    if rec["tracking_issue"]["number"] != receipt.get("issue_number"):
+        return dict(receipt, result="rejected",
+                    reason=f"post this command on the tracking issue of {cid}")
+    receipt = dict(receipt, contribution_id=cid)
+    evidence = resolution_evidence(op, cmd, receipt, rec, policy, now)
     try:
         new = recovery.resolve(op, cmd, actor=receipt["actor"], command_id=receipt["command_id"],
                                evidence=evidence, now=now)
     except recovery.RecoveryError as e:
         return dict(receipt, result="rejected", reason=str(e))
     operations[op["operation_id"]] = new
+    res.stage("evidence", evidence)
     res.stage("operations", new)
-    rec = by_id.get(new["contribution_id"])
-    if rec is None:
-        return receipt
     facts, values = RESOLUTION_FIRES.get((new["kind"], new["status"]), (frozenset(), {}))
     fired = None
     if engine.state_key(rec) in lifecycle.LIFECYCLE and recovery.fired_verbs(rec, new) \

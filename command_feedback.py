@@ -22,6 +22,7 @@ TEMPLATES = {
     "abandon": '/upstreaming abandon revision=N reason="..."',
     "refresh": '/upstreaming refresh revision=N reason="..."',
     "resume": '/upstreaming resume revision=N reason="..."',
+    "resolve-operation": commands.RESOLVE_FORM,
 }
 # A retired command is answered with the form of the command that replaced it.
 REPLACEMENTS = {
@@ -37,10 +38,13 @@ REPLACEMENTS = {
     "force-develop": "refresh-override",
 }
 # A rejection that moves the command to another form, by reason: a resume in
-# `parked.idle` is answered with the refresh that starts a new generation.
+# `parked.idle` is answered with the refresh that starts a new generation, and
+# a resolution that names `evidence` with the form that states a `reason`.
 MOVED = {
     commands.PARKED_RESUME: "refresh",
-    **{reason: "refresh-override" for reason in commands.MOVED_FIELDS.values()},
+    **{reason: "refresh-override" for (verb, _name), reason in commands.MOVED_FIELDS.items()
+       if verb == "resume"},
+    commands.MOVED_FIELDS[("resolve-operation", "evidence")]: "resolve-operation",
 }
 
 

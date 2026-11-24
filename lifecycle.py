@@ -1068,7 +1068,9 @@ LIFECYCLE: dict[str, State] = {
     "provisioning.waiting_human": State(
         "human_wait", False, False,
         "Provisioning cannot continue safely; a human corrects the prerequisite and resumes, "
-        "or parks.",
+        "or parks. While the planned operation of exhausted launches is open, `park` and a "
+        "resume after `refresh.stale_after_days` days first need it closed with "
+        "`/upstreaming resolve-operation`.",
         transitions={
             ("resume_provisioning", "provisioning.idle"): Transition(
                 _C, RESUME,
@@ -3480,7 +3482,9 @@ OPERATION_SECTION = (
     "intent is recorded before the effect, and the receipt is confirmed by discovering the actual "
     "resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its "
     "contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` "
-    "closes an open operation with a resolution evidence record.",
+    "closes an open operation with a resolution evidence record, which the controller writes "
+    "from the authorized command: who stated the disposition, where, why, and what the pipeline "
+    "held about the operation at that moment.",
 )
 
 # Short node ids used when drawing states (``phase_activity`` otherwise).

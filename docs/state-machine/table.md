@@ -54,7 +54,7 @@ Requested Work is identified by its generation, revision, and Work id. A Result 
 | `planning.agent_running` | `work` | no | no | 10 + 2 | Planning Work is requested or running and will return a plan. |
 | `planning.waiting_human` | `human_wait` | no | no | 5 + 3 | Planning recovery or a budget is exhausted; a human corrects the cause and resumes. |
 | `provisioning.idle` | `work` | yes | yes | 7 + 4 | The fork provisioning operation is planned or running through the trusted workflow. |
-| `provisioning.waiting_human` | `human_wait` | no | no | 4 + 4 | Provisioning cannot continue safely; a human corrects the prerequisite and resumes, or parks. |
+| `provisioning.waiting_human` | `human_wait` | no | no | 4 + 4 | Provisioning cannot continue safely; a human corrects the prerequisite and resumes, or parks. While the planned operation of exhausted launches is open, `park` and a resume after `refresh.stale_after_days` days first need it closed with `/upstreaming resolve-operation`. |
 | `development.agent_running` | `work` | no | yes | 11 + 3 | Patch Work is requested or running, or its Result is being verified. Work dispatched before development patches were reviewed may still publish its Result here. |
 | `development.review_pending` | `auto_wait` | yes | no | 7 + 4 | A verified patch is held, unpublished, for its review; the controller allocates the review Work when a worker slot is free. |
 | `development.reviewing` | `work` | no | no | 7 + 3 | Review Work of the held patch is requested or running; its Result is pass or fail with findings for exactly the held patch. |
@@ -656,7 +656,7 @@ Two more limits are read from `policy.json`: `refresh.stale_after_days` (7) is t
 
 ## Operation table
 
-Every remote effect is an operation with its own small table, held to the same checks. The intent is recorded before the effect, and the receipt is confirmed by discovering the actual resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` closes an open operation with a resolution evidence record.
+Every remote effect is an operation with its own small table, held to the same checks. The intent is recorded before the effect, and the receipt is confirmed by discovering the actual resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` closes an open operation with a resolution evidence record, which the controller writes from the authorized command: who stated the disposition, where, why, and what the pipeline held about the operation at that moment.
 
 An operation starts in `planned` (`record_intent`).
 

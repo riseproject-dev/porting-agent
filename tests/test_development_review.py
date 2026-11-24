@@ -1333,13 +1333,9 @@ class TestCommentFromTheBranch(unittest.TestCase):
                  "last_reason": "HTTP 404", "exhausted": True}
                 for k in range(patch_review.RECORDED_DUE_COMMENTS)]
         rec = engine.record_beside(rec, "review_comment_due", now=NOW, review_comments=full)
-        self.evidence["ev-resolve"] = {
-            "schema_version": 1, "evidence_id": "ev-resolve", "kind": "resolution",
-            "policy_version": "p", "collected_at": NOW,
-            "summary": "the reviewed commit is on the development branch"}
         rec, out = self.run_tick(rec, comments=[
             f"/upstreaming resolve-operation operation={op['operation_id']} "
-            "disposition=confirmed evidence=ev-resolve"])
+            'disposition=confirmed reason="the reviewed commit is on the development branch"'])
         self.assertEqual([c["result"] for c in out.report["controller"]["commands"]],
                          ["accepted"])
         self.assertEqual([o["status"] for o in self.operations.values()], ["confirmed"])

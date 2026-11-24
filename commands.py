@@ -24,6 +24,10 @@ _SHA = r"[0-9a-f]{40}"
 _ID = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}"
 _INT = r"[0-9]{1,9}"
 _REASON = r".{1,2000}"
+# A reason is stored as state text, where each U+2014 becomes two hyphens
+# (`state.normalize_state_text`): the stored reason must still fit the 2000
+# characters of the schemas, so the bound is checked on the stored length.
+REASON_LIMIT = 2000
 _CLASS = r"configuration_integration|architecture_correctness|optimized_backend"
 _PATHS = r"[A-Za-z0-9_.*/?\[\]{},-]{1,500}"
 # A Git branch name; ``intake.canonical_branch`` checks the rest of the rules.
@@ -60,10 +64,12 @@ GRAMMAR: dict[str, dict[str, str]] = {
     # names the exact revision and the exact clean head.
     "retract-pr": {"contribution": _ID, "revision": _INT, "head": _SHA},
     # Intake commands, outside the lifecycle table.
+    # Closes an open operation on the word of an authorized human: the
+    # controller records the command itself as the resolution evidence.
     "resolve-operation": {
         "operation": _ID,
         "disposition": r"confirmed|not-launched|failed",
-        "evidence": _ID,
+        "reason": _REASON,
     },
     "authorize-followup": {"contribution": _ID, "revision": _INT, "proposal": _ID},
 }
@@ -77,6 +83,8 @@ OVERRIDE_FORM = ('/upstreaming refresh revision=N class=configuration_integratio
                  'paths=".github/workflows/*" reason="..."')
 REFRESH_FORM = '/upstreaming refresh revision=N reason="..."'
 BRANCH_FORM = '/upstreaming refresh revision=N branch=NAME reason="..."'
+RESOLVE_FORM = ('/upstreaming resolve-operation operation=OPERATION_ID '
+                'disposition=confirmed|failed|not-launched reason="..."')
 
 # The reply to a resume in `parked.idle` that has no pause to end: a new
 # generation starts with a refresh there.
@@ -91,6 +99,9 @@ MOVED_FIELDS: dict[tuple[str, str], str] = {
                        f"`parked.idle`: `{OVERRIDE_FORM}`")
     for name in ("class", "paths")
 }
+MOVED_FIELDS[("resolve-operation", "evidence")] = (
+    "`evidence` is no longer given: the controller records the resolution evidence from the "
+    f"command itself. State what you verified in `reason`: `{RESOLVE_FORM}`")
 
 # Commands the lifecycle no longer has, with what replaced them. They are
 # rejected with this message instead of being reported as unknown.
@@ -230,6 +241,9 @@ def parse(body: str) -> Command:
         else:
             if not re.fullmatch(spec[key], value, flags=re.DOTALL):
                 raise CommandError(f"invalid value for {key!r}")
+            if spec[key] == _REASON and len(value) + value.count("\u2014") > REASON_LIMIT:
+                raise CommandError(f"{key!r} is longer than {REASON_LIMIT} characters once "
+                                   "each long dash is stored as two hyphens")
             args[key] = value
         pos = m.end()
     missing = set(spec) - set(args) - OPTIONAL.get(verb, frozenset())

@@ -225,6 +225,144 @@
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "disposition",
+        "command_id",
+        "comment_id",
+        "issue_number",
+        "content_digest",
+        "actor",
+        "reason",
+        "operation"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+        },
+        "disposition": {
+          "enum": [
+            "confirmed",
+            "failed",
+            "not-launched"
+          ]
+        },
+        "command_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+        },
+        "comment_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "issue_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "login"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "login": {
+              "type": "string",
+              "maxLength": 39
+            }
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "operation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "status",
+            "revision",
+            "launch_attempts",
+            "discoveries",
+            "updated_at"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "applying",
+                "uncertain"
+              ]
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "launch_attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "discoveries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "contribution_state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "paused": {
+          "type": "boolean"
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "resolution"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "resolution",
+          "contribution_id"
+        ]
+      }
+    }
+  ]
 }

@@ -27,8 +27,16 @@ from tests.helpers import NOW, OWNER, SHA_A, SHA_C, STRANGER, apply_command, con
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = policy(read_only=False)
 T = datetime.fromisoformat(NOW)
-EVIDENCE = {"schema_version": 1, "evidence_id": "ev-9", "kind": "resolution",
-            "policy_version": "p", "collected_at": NOW, "summary": "the run never started"}
+RECEIPT = {"command_id": "comment-9", "comment_id": 9, "issue_number": 12,
+           "content_digest": "d" * 64, "actor": OWNER}
+
+
+def resolution_record(op, disposition="not-launched", receipt=RECEIPT):
+    """The schema-valid resolution evidence the controller writes for ``op``."""
+    record = controller.resolution_evidence(op, resolve_command(op, disposition), receipt,
+                                            contribution(), POLICY, NOW)
+    schemas.validate("evidence", record)
+    return record
 
 
 def operation(status="planned", kind="branch_update", cid="example--proj/12", **over):
@@ -41,9 +49,9 @@ def operation(status="planned", kind="branch_update", cid="example--proj/12", **
     return op
 
 
-def resolve_command(op, disposition="not-launched", evidence="ev-9"):
+def resolve_command(op, disposition="not-launched", reason="verified"):
     return commands.parse(f"/upstreaming resolve-operation operation={op['operation_id']} "
-                          f"disposition={disposition} evidence={evidence}")
+                          f'disposition={disposition} reason="{reason}"')
 
 
 # The facts and arguments that establish every guard of a row.
@@ -69,7 +77,8 @@ def take(edge, op=None, **over):
     kwargs = dict(now=NOW, facts=ROW_FACTS.get(edge.verb, set()),
                   values=ROW_VALUES.get(edge.verb))
     if edge.verb in DISPOSITIONS:
-        kwargs.update(command=resolve_command(op, DISPOSITIONS[edge.verb]), evidence=EVIDENCE,
+        kwargs.update(command=resolve_command(op, DISPOSITIONS[edge.verb]),
+                      evidence=resolution_record(op, DISPOSITIONS[edge.verb]),
                       actor=OWNER, command_id="cmd-1")
     kwargs.update(over)
     return recovery.apply_operation(op, edge.verb, **kwargs)
@@ -111,7 +120,8 @@ class TestOperationTable(unittest.TestCase):
                 if "resolution" in sets:
                     self.assertEqual(new["resolution"], {
                         "actor": OWNER, "disposition": DISPOSITIONS[edge.verb],
-                        "evidence_id": "ev-9", "command_id": "cmd-1"})
+                        "evidence_id": f"resolution-{new['operation_id']}-9",
+                        "command_id": "cmd-1"})
                 for name in ("external_ids", "discovery", "resolution"):
                     if name not in sets:
                         self.assertEqual(new[name], operation(edge.source)[name])
@@ -125,13 +135,25 @@ class TestOperationTable(unittest.TestCase):
                     self.assertEqual(out.operation, operation(edge.source))
             if edge.verb in DISPOSITIONS:
                 op = operation(edge.source)
-                for over in ({"evidence": None}, {"evidence": dict(EVIDENCE, kind="ci")},
-                             {"command": resolve_command(operation("planned", kind="ci_rerun"),
-                                                         DISPOSITIONS[edge.verb])}):
-                    with self.subTest(verb=edge.verb, over=list(over)):
-                        self.assertFalse(take(edge, op, **over).accepted)
-                other = next(d for d in DISPOSITIONS.values() if d != DISPOSITIONS[edge.verb])
-                self.assertFalse(take(edge, op, command=resolve_command(op, other)).accepted)
+                disposition = DISPOSITIONS[edge.verb]
+                other = next(d for d in DISPOSITIONS.values() if d != disposition)
+                another = operation("planned", kind="ci_rerun")
+                for name, over, why in (
+                        ("none", {"evidence": None}, "resolution evidence record not found"),
+                        ("kind", {"evidence": dict(resolution_record(op, disposition), kind="ci")},
+                         "evidence is not a resolution record"),
+                        ("operation", {"evidence": resolution_record(another, disposition)},
+                         "resolution evidence names another operation"),
+                        ("disposition", {"evidence": resolution_record(op, other)},
+                         "resolution evidence states another disposition"),
+                        ("command", {"command": resolve_command(another, disposition)},
+                         "command does not target this operation")):
+                    with self.subTest(verb=edge.verb, over=name):
+                        out = take(edge, op, **over)
+                        self.assertFalse(out.accepted)
+                        self.assertEqual(out.reason, why)
+                self.assertFalse(take(edge, op, command=resolve_command(op, other),
+                                      evidence=resolution_record(op, other)).accepted)
 
     def test_rows_the_table_does_not_have_raise(self):
         for status, verb in (("uncertain", "begin_effect"), ("planned", "confirm_by_discovery"),
@@ -174,16 +196,20 @@ class TestOperationTable(unittest.TestCase):
                                         ("not-launched", "not_launched")):
                 op = operation(status)
                 done = recovery.resolve(op, resolve_command(op, disposition), actor=OWNER,
-                                        command_id="c", evidence=EVIDENCE, now=NOW)
+                                        command_id="c", now=NOW,
+                                        evidence=resolution_record(op, disposition))
                 self.assertEqual(done["status"], target)
         op = operation("uncertain")
         with self.assertRaisesRegex(recovery.RecoveryError, "evidence record not found"):
-            recovery.resolve(op, resolve_command(op, evidence="ev-8"), actor=OWNER,
-                             command_id="c", evidence=EVIDENCE, now=NOW)
+            recovery.resolve(op, resolve_command(op), actor=OWNER, command_id="c",
+                             evidence=None, now=NOW)
+        with self.assertRaisesRegex(recovery.RecoveryError, "states another disposition"):
+            recovery.resolve(op, resolve_command(op), actor=OWNER, command_id="c",
+                             evidence=resolution_record(op, "failed"), now=NOW)
         with self.assertRaisesRegex(recovery.RecoveryError, "already confirmed"):
             closed = operation("confirmed")
             recovery.resolve(closed, resolve_command(closed), actor=OWNER, command_id="c",
-                             evidence=EVIDENCE, now=NOW)
+                             evidence=resolution_record(operation()), now=NOW)
 
 
 class TestStoreFence(unittest.TestCase):
@@ -308,10 +334,8 @@ def inputs(at=T, ok=True, comments=()):
     return controller.Inputs(now=at, pressure=capacity.Pressure(ok=ok), comments=list(comments))
 
 
-def tick(rec, operations, at=T, ok=True, comments=(), resolution=None):
+def tick(rec, operations, at=T, ok=True, comments=()):
     i = inputs(at, ok, comments)
-    if resolution:
-        i.resolution_evidence = resolution
     return controller.tick(contributions={"c": copy.deepcopy(rec)},
                            operations=copy.deepcopy(operations), consumed={}, projects={},
                            policy=POLICY, inputs=i)
@@ -850,16 +874,97 @@ class TestOpenOperationFence(unittest.TestCase):
 
 
 class TestResolveOperation(unittest.TestCase):
-    def comment(self, op, disposition="not-launched", actor=OWNER, cid=7):
-        return {"issue_number": 12, "comment": {
+    def comment(self, op, disposition="not-launched", actor=OWNER, cid=7, issue=12,
+                reason="verified", body=None):
+        return {"issue_number": issue, "comment": {
             "id": cid, "user": dict(actor), "created_at": NOW,
-            "body": f"/upstreaming resolve-operation operation={op['operation_id']} "
-                    f"disposition={disposition} evidence=ev-9"}}
+            "body": body or (f"/upstreaming resolve-operation operation={op['operation_id']} "
+                             f'disposition={disposition} reason="{reason}"')}}
 
     def run_resolve(self, rec, op, **kw):
-        result = tick(rec, {op["operation_id"]: op}, comments=[self.comment(op, **kw)],
-                      resolution={"ev-9": EVIDENCE})
+        result = tick(rec, {op["operation_id"]: op}, comments=[self.comment(op, **kw)])
         return result, staged(result, "commands")[0]
+
+    def test_the_controller_records_the_command_as_resolution_evidence(self):
+        rec = contribution(activity="waiting_ci")
+        op = recovery.charge_launch(operation("planned"), NOW)
+        rec["active_operation_id"] = op["operation_id"]
+        result, receipt = self.run_resolve(rec, op, reason="no run started")
+        self.assertEqual(receipt["result"], "accepted", receipt)
+        [evidence] = staged(result, "evidence")
+        schemas.validate("evidence", evidence)
+        self.assertEqual((evidence["evidence_id"], evidence["kind"], evidence["contribution_id"]),
+                         (f"resolution-{op['operation_id']}-7", "resolution", rec["contribution_id"]))
+        resolution = evidence["resolution"]
+        self.assertEqual({k: resolution[k] for k in ("operation_id", "disposition", "command_id",
+                                                     "comment_id", "issue_number",
+                                                     "content_digest", "actor", "reason")},
+                         {"operation_id": op["operation_id"], "disposition": "not-launched",
+                          "command_id": receipt["command_id"], "comment_id": 7,
+                          "issue_number": 12, "content_digest": receipt["content_digest"],
+                          "actor": OWNER, "reason": "no run started"})
+        self.assertEqual(resolution["operation"],
+                         {"kind": op["kind"], "status": "planned", "revision": op["revision"],
+                          "launch_attempts": 1, "discoveries": 0, "updated_at": op["updated_at"]})
+        self.assertEqual((resolution["contribution_state"], resolution["paused"]),
+                         ("development.waiting_ci", False))
+        self.assertNotIn("no run started", evidence["summary"])
+        [closed] = staged(result, "operations")
+        self.assertEqual(closed["resolution"]["evidence_id"], evidence["evidence_id"])
+        # One state commit: the evidence is staged before the operation.
+        kinds = [k for k, _ in result.staged]
+        self.assertLess(kinds.index("evidence"), kinds.index("operations"))
+
+    def test_a_refused_resolution_stages_no_evidence(self):
+        rec = contribution(activity="waiting_ci")
+        op = operation("uncertain")
+        cases = {
+            "closed": (dict(op, status="confirmed"), {}, "operation already confirmed"),
+            "stranger": (op, {"actor": STRANGER}, "unauthorized actor"),
+            "other issue": (op, {"issue": 99},
+                            f"post this command on the tracking issue of {rec['contribution_id']}"),
+        }
+        for name, (target, kw, why) in cases.items():
+            with self.subTest(case=name):
+                result, receipt = self.run_resolve(rec, target, **kw)
+                self.assertEqual((receipt["result"], receipt["reason"]), ("rejected", why))
+                self.assertEqual(staged(result, "evidence"), [])
+                self.assertEqual(staged(result, "operations"), [])
+
+    def test_the_old_evidence_form_is_rejected_with_the_new_form(self):
+        op = operation("uncertain")
+        body = (f"/upstreaming resolve-operation operation={op['operation_id']} "
+                "disposition=failed evidence=ev-9")
+        result, receipt = self.run_resolve(contribution(activity="waiting_ci"), op, body=body)
+        self.assertEqual((receipt["result"], receipt["reason"]),
+                         ("rejected", commands.MOVED_FIELDS[("resolve-operation", "evidence")]))
+        self.assertIn(commands.RESOLVE_FORM, receipt["reason"])
+        self.assertEqual(staged(result, "evidence"), [])
+        import command_feedback
+        reply = command_feedback.render(receipt, {"body": body, "user": OWNER})
+        self.assertIn(f"**Expected form:**\n```text\n{commands.RESOLVE_FORM}\n```", reply)
+
+    def test_the_reason_is_bounded_data_and_never_rendered(self):
+        import state
+        import status_ledger
+        op = operation("planned", kind="fork_provision")
+        rec = provisioning_record(active_operation_id=op["operation_id"])
+        reason = "**bold** @someone [x](https://example.com) a \u2014 b"
+        result, receipt = self.run_resolve(rec, op, reason=reason, disposition="failed")
+        self.assertEqual(receipt["result"], "accepted", receipt)
+        [evidence] = staged(result, "evidence")
+        stored = state.normalize_state_text(evidence)
+        schemas.validate("evidence", stored)
+        self.assertEqual(stored["resolution"]["reason"], reason.replace("\u2014", "--"))
+        self.assertLessEqual(len(stored["resolution"]["reason"]), 2000)
+        self.assertNotIn("\u2014", json.dumps(stored, ensure_ascii=False))
+        self.assertNotIn("someone", stored["summary"])
+        final = staged(result, "contributions")[-1]
+        [event] = staged(result, "events")
+        text = status_ledger.render(dict(event, sequence=3), final, "https://example.com/run")
+        for fragment in ("someone", "bold", "example.com) a"):
+            self.assertNotIn(fragment, text)
+
 
     def test_an_authorized_resolution_closes_the_operation_and_releases_the_record(self):
         rec = contribution(activity="waiting_ci")
@@ -916,6 +1021,264 @@ class TestResolveOperation(unittest.TestCase):
                 self.assertEqual((engine.state_key(released), released["active_operation_id"],
                                   released["fork"]["pr_number"]),
                                  ("development.waiting_ci", None, rec["fork"]["pr_number"]))
+
+
+
+class TestResolvedProvisioningIntent(unittest.TestCase):
+    """A provisioning operation a human resolves in `provisioning.idle` (as
+    `not-launched` or `confirmed`) closes and is released without a row; the
+    next tick re-plans the intent as a new operation (`replan:<n>`) and
+    launches it, so the contribution never stalls on the closed id."""
+
+    def comment(self, op, disposition, cid=60):
+        return {"issue_number": 12, "comment": {
+            "id": cid, "user": dict(OWNER), "created_at": NOW,
+            "body": (f"/upstreaming resolve-operation operation={op['operation_id']} "
+                     f'disposition={disposition} reason="no run did anything"')}}
+
+    def launched(self):
+        result = tick(provisioning_record(), {})
+        [op] = staged(result, "operations")
+        return staged(result, "contributions")[-1], {op["operation_id"]: op}, op
+
+    def step(self, rec, ops, at, comments=()):
+        result = tick(rec, ops, at=at, comments=comments)
+        rec = (staged(result, "contributions") or [rec])[-1]
+        ops = dict(ops, **{o["operation_id"]: o for o in staged(result, "operations")})
+        return result, rec, ops
+
+    def test_a_resolved_operation_is_planned_again_and_launched(self):
+        for disposition in ("not-launched", "confirmed"):
+            with self.subTest(disposition=disposition):
+                rec, ops, op = self.launched()
+                result, rec, ops = self.step(rec, ops, T + timedelta(minutes=5),
+                                             [self.comment(op, disposition)])
+                [receipt] = staged(result, "commands")
+                self.assertEqual(receipt["result"], "accepted", receipt)
+                self.assertNotIn(ops[op["operation_id"]]["status"], recovery.OPEN)
+                # The same tick re-plans the intent and launches it.
+                [event] = staged(result, "events")
+                self.assertEqual(event["kind"], "start_operation")
+                self.assertEqual(engine.state_key(rec), "provisioning.idle")
+                new = ops[rec["active_operation_id"]]
+                self.assertNotEqual(new["operation_id"], op["operation_id"])
+                self.assertEqual(new["reason_ids"], op["reason_ids"] + ["replan:1"])
+                self.assertEqual((new["status"], recovery.launch_attempts(new), new["revision"]),
+                                 ("planned", 1, rec["revision"]))
+
+    def test_a_paused_resolution_then_resume_launches_a_new_operation(self):
+        rec, ops, op = self.launched()
+        pause = {"issue_number": 12, "comment": {"id": 61, "user": dict(OWNER), "created_at": NOW,
+                                                 "body": '/upstreaming pause reason="hold"'}}
+        _r, rec, ops = self.step(rec, ops, T + timedelta(minutes=1), [pause])
+        self.assertTrue(rec["paused"])
+        _r, rec, ops = self.step(rec, ops, T + timedelta(minutes=2),
+                                 [self.comment(op, "not-launched", cid=62)])
+        self.assertIsNone(rec["active_operation_id"])
+        resume = {"issue_number": 12, "comment": {
+            "id": 63, "user": dict(OWNER), "created_at": NOW,
+            "body": f'/upstreaming resume revision={rec["revision"]} reason="go"'}}
+        result, rec, ops = self.step(rec, ops, T + timedelta(minutes=3), [resume])
+        self.assertFalse(rec.get("paused"))
+        self.assertIn("start_operation", [e["kind"] for e in staged(result, "events")])
+        self.assertNotEqual(rec["active_operation_id"], op["operation_id"])
+
+    def test_spent_replans_take_the_human_wait_whose_resume_plans_anew(self):
+        rec, ops, op = self.launched()
+        closed = {}
+        for n in range(controller.MAX_REPLANS + 1):
+            o = recovery.plan(contribution_id=op["contribution_id"], revision=op["revision"],
+                              kind="fork_provision", policy_version=op["policy_version"],
+                              reason_ids=op["reason_ids"] + ([f"replan:{n}"] if n else []),
+                              target=op["target"], proposed=op["proposed"],
+                              capacity=op["capacity_reservation"], now=NOW)
+            closed[o["operation_id"]] = dict(o, status="not_launched")
+        rec = dict(rec, active_operation_id=None)
+        result, rec, ops = self.step(rec, closed, T + timedelta(days=1))
+        [event] = staged(result, "events")
+        self.assertEqual((event["kind"], event["details"].get("replans")),
+                         ("require_provisioning_intervention", controller.MAX_REPLANS))
+        self.assertEqual(engine.state_key(rec), "provisioning.waiting_human")
+        self.assertEqual((rec["pending_human_action"]["kind"],
+                          rec["pending_human_action"]["counter"]),
+                         (controller.LAUNCH_EXHAUSTED, "operation_launch"))
+        # A reminder is due later, and the resume plans at a new revision.
+        [reminder] = staged(tick(rec, ops, at=T + timedelta(days=7)), "events")
+        self.assertEqual(reminder["kind"], "record_reminder")
+        resume = {"issue_number": 12, "comment": {
+            "id": 64, "user": dict(OWNER), "created_at": NOW,
+            "body": f'/upstreaming resume revision={rec["revision"]} reason="fixed"'}}
+        result, final, ops = self.step(rec, ops, T + timedelta(days=2), [resume])
+        kinds = [e["kind"] for e in staged(result, "events")]
+        self.assertEqual(kinds[:2], ["resume_provisioning", "start_operation"])
+        self.assertEqual(ops[final["active_operation_id"]]["reason_ids"], op["reason_ids"])
+
+
+class TestResolveIntakeReplies(unittest.TestCase):
+    def test_an_orphaned_operation_is_named_as_such(self):
+        op = operation("uncertain", cid="gone--proj/1")
+        result = tick(contribution(activity="waiting_ci"), {op["operation_id"]: op},
+                      comments=[{"issue_number": 12, "comment": {
+                          "id": 70, "user": dict(OWNER), "created_at": NOW,
+                          "body": (f"/upstreaming resolve-operation operation={op['operation_id']} "
+                                   'disposition=failed reason="x"')}}])
+        [receipt] = staged(result, "commands")
+        self.assertEqual((receipt["result"], receipt["reason"]),
+                         ("rejected", f"operation {op['operation_id']} belongs to no tracked "
+                                      "contribution"))
+
+    def test_the_resolution_is_offered_only_in_a_wait_or_a_pause(self):
+        op = operation("planned")
+        ops = {op["operation_id"]: op}
+        out = apply_command(contribution(activity="waiting_ci"),
+                            commands.parse('/upstreaming refresh revision=0 reason="x"'),
+                            operations=ops, policy_=POLICY)
+        self.assertFalse(out.accepted)
+        self.assertIn(op["operation_id"], out.reason)
+        self.assertNotIn("resolve-operation", out.reason)
+        paused = contribution(activity="fix_needed", paused=True, paused_at=NOW,
+                              paused_by="human", paused_reason="x")
+        out = apply_command(paused, commands.parse('/upstreaming park reason="x"'),
+                            operations=ops, policy_=POLICY)
+        self.assertFalse(out.accepted)
+        self.assertIn(controller.resolve_line(op["operation_id"]), out.reason)
+
+
+class TestResolutionStateValidation(unittest.TestCase):
+    """`state validate` checks that a resolved operation names the resolution
+    evidence of that operation."""
+
+    def validate(self, operations, evidence):
+        import contextlib
+        import io
+
+        import state
+        with tempfile.TemporaryDirectory() as directory:
+            store = state.StateStore(Path(directory), POLICY)
+            for op in operations:
+                store.stage("operations", op)
+            for record in evidence:
+                store.stage("evidence", record)
+            store.write_staged()
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = state.main(["validate", directory])
+            return code, err.getvalue()
+
+    def test_a_resolved_operation_names_its_resolution_evidence(self):
+        op = operation("uncertain")
+        other = operation("uncertain", kind="ci_rerun")
+        evidence = resolution_record(op)
+        resolved = recovery.resolve(op, resolve_command(op), actor=OWNER, command_id="comment-9",
+                                    evidence=evidence, now=NOW)
+        self.assertEqual(self.validate([resolved], [evidence]), (0, ""))
+        code, err = self.validate([resolved], [])
+        self.assertEqual(code, 1)
+        self.assertIn("does not exist", err)
+        stray = dict(resolution_record(other), evidence_id=evidence["evidence_id"])
+        code, err = self.validate([resolved], [stray])
+        self.assertEqual(code, 1)
+        self.assertIn("names another operation", err)
+        self.assertEqual(self.validate([op, other], []), (0, ""))
+
+
+class TestStaleProvisioningWait(unittest.TestCase):
+    """The provisioning wait after exhausted launches keeps its open planned
+    operation: once the wait is stale, `park` and the resume are fenced
+    until an authorized human closes it with `resolve-operation`."""
+
+    STALE = T + timedelta(days=POLICY["refresh"]["stale_after_days"] + 1)
+
+    def world(self, paused=False):
+        op = operation("planned", kind="fork_provision")
+        for _ in range(lc.budget_limit("operation_launch", POLICY)):
+            op = recovery.charge_launch(op, NOW)
+        rec = provisioning_record(activity="waiting_human", active_operation_id=op["operation_id"],
+                                  pending_human_action={
+                                      "kind": controller.LAUNCH_EXHAUSTED, "requested_at": NOW,
+                                      "reminded_at": None, "escalated_at": None,
+                                      "counter": "operation_launch"})
+        if paused:
+            rec.update(paused=True, paused_at=NOW, paused_by="human", paused_reason="x")
+        return rec, {op["operation_id"]: op}, op
+
+    def post(self, rec, ops, body, at, cid):
+        result = tick(rec, ops, at=at, comments=[{"issue_number": 12, "comment": {
+            "id": cid, "user": dict(OWNER), "created_at": NOW, "body": body}}])
+        [receipt] = staged(result, "commands")
+        final = (staged(result, "contributions") or [rec])[-1]
+        new_ops = dict(ops, **{o["operation_id"]: o for o in staged(result, "operations")})
+        return result, receipt, final, new_ops
+
+    def resolve(self, rec, ops, op, disposition, at):
+        body = (f"/upstreaming resolve-operation operation={op['operation_id']} "
+                f'disposition={disposition} reason="no run did anything"')
+        return self.post(rec, ops, body, at, 50)
+
+    def test_park_and_resume_are_fenced_and_name_the_resolution(self):
+        for paused in (False, True):
+            rec, ops, op = self.world(paused)
+            for body in ('/upstreaming park reason="x"',
+                         f'/upstreaming resume revision={rec["revision"]} reason="x"'):
+                with self.subTest(paused=paused, command=body):
+                    _r, receipt, final, _ops = self.post(rec, ops, body, self.STALE, 40)
+                    self.assertEqual(receipt["result"], "rejected")
+                    self.assertIn(controller.resolve_line(op["operation_id"]), receipt["reason"])
+                    self.assertEqual(engine.state_key(final), "provisioning.waiting_human")
+
+    def test_a_resolution_closes_the_operation_then_park_or_resume_leave_the_wait(self):
+        for paused in (False, True):
+            for disposition in ("not-launched", "failed"):
+                with self.subTest(paused=paused, disposition=disposition):
+                    rec, ops, op = self.world(paused)
+                    result, receipt, released, ops = self.resolve(rec, ops, op, disposition,
+                                                                  self.STALE)
+                    self.assertEqual(receipt["result"], "accepted", receipt)
+                    # No row fires (a reminder of the wait may be due in the tick).
+                    self.assertEqual([e["kind"] for e in staged(result, "events")
+                                      if e["kind"] != "record_reminder"], [])
+                    self.assertEqual(engine.state_key(released), "provisioning.waiting_human")
+                    self.assertIsNone(released["active_operation_id"])
+                    self.assertEqual(bool(released.get("paused")), paused)
+                    self.assertNotIn(ops[op["operation_id"]]["status"], recovery.OPEN)
+                    if not paused:
+                        _r, parked, final, _ops = self.post(
+                            released, ops, '/upstreaming park reason="x"', self.STALE, 51)
+                        self.assertEqual(parked["result"], "accepted", parked)
+                        self.assertEqual(engine.state_key(final), "parked.idle")
+                    _r, resumed, final, _ops = self.post(
+                        released, ops,
+                        f'/upstreaming resume revision={released["revision"]} reason="x"',
+                        self.STALE, 52)
+                    self.assertEqual(resumed["result"], "accepted", resumed)
+                    [event] = [e for e in staged(_r, "events")
+                               if e["cause"]["type"] == "command"]
+                    self.assertEqual((event["kind"], event["details"]["to_state"]),
+                                     ("resume_stale", "queued.idle"))
+                    self.assertFalse(final.get("paused"))
+
+    def test_the_reminder_names_the_open_operation(self):
+        rec, ops, op = self.world()
+        [reminder] = staged(tick(rec, ops, at=self.STALE), "events")
+        self.assertEqual(reminder["kind"], "record_reminder")
+        self.assertEqual({k: reminder["details"].get(k) for k in
+                          ("operation", "launches", "stale_after_days")},
+                         {"operation": op["operation_id"],
+                          "launches": recovery.launch_attempts(op),
+                          "stale_after_days": POLICY["refresh"]["stale_after_days"]})
+
+    def test_within_the_stale_window_the_resume_relaunches_the_open_operation(self):
+        rec, ops, op = self.world()
+        at = T + timedelta(days=1)
+        result, receipt, final, new_ops = self.post(
+            rec, ops, f'/upstreaming resume revision={rec["revision"]} reason="fixed"', at, 53)
+        self.assertEqual(receipt["result"], "accepted", receipt)
+        kinds = [e["kind"] for e in staged(result, "events")]
+        self.assertEqual(kinds[0], "resume_provisioning")
+        self.assertEqual(final["active_operation_id"], op["operation_id"])
+        relaunched = new_ops[op["operation_id"]]
+        self.assertEqual(relaunched["status"], "planned")
+        self.assertLess(recovery.launch_attempts(relaunched), recovery.launch_attempts(op))
 
 
 if __name__ == "__main__":

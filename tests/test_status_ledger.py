@@ -512,6 +512,81 @@ class TestWordingIsTheTable(unittest.TestCase):
         self.assertIn(status_ledger.PROVISIONING_FAILURE_GUIDANCE["other"], body)
         self.assertIn("the `Fork Provisioning` run of the operation", body)
 
+    def test_exhausted_provisioning_launches_name_the_operation_and_the_resolution(self):
+        op = "op-" + "c" * 24
+        resolve = (f"/upstreaming resolve-operation operation={op} disposition=not-launched "
+                   'reason="..."')
+        waiting = contribution(phase="provisioning", activity="waiting_human", fork=None,
+                               active_operation_id=op, pending_human_action={
+                                   "kind": status_ledger.LAUNCH_EXHAUSTED, "requested_at": NOW,
+                                   "reminded_at": None, "escalated_at": None,
+                                   "counter": "operation_launch"})
+        event = table_event("require_provisioning_intervention", "provisioning.idle",
+                            "provisioning.waiting_human")
+        event["details"].update(operation=op, launches=3, stale_after_days=7)
+        reminder = table_event("record_reminder", "provisioning.waiting_human",
+                               "provisioning.waiting_human")
+        reminder["details"].update(pending_human_action=status_ledger.LAUNCH_EXHAUSTED,
+                                   operation=op, launches=3, stale_after_days=7)
+        for entry in (event, reminder):
+            with self.subTest(kind=entry["kind"]):
+                body = status_ledger.render(entry, waiting, "https://github.com/run")
+                visible = body.split("<details>")[0]
+                self.assertIn("got no receipt after 3 launches", visible)
+                self.assertIn(f"Read the `Fork Provisioning {op}` runs", visible)
+                self.assertIn("after more than 7 days", visible)
+                self.assertIn(f"`{resolve}`", visible)
+                self.assertIn("`disposition=failed`", visible)
+        # A value that is not an operation id is never rendered, nor is a
+        # resolution offered for it.
+        reminder["details"].update(operation="<b>`x`</b>", launches="3")
+        body = status_ledger.render(reminder, waiting, "https://github.com/run")
+        visible = body.split("<details>")[0]
+        self.assertNotIn("<b>", visible)
+        self.assertNotIn("resolve-operation operation=", visible)
+        self.assertIn("the `Fork Provisioning` runs of the operation", visible)
+        self.assertNotIn("after 3 launches", visible)
+        # With no open operation named, nothing fences `park`.
+        self.assertIn("To stop instead, post `/upstreaming park`.", visible)
+
+    def test_spent_provisioning_replans_name_the_count_and_park(self):
+        waiting = contribution(phase="provisioning", activity="waiting_human", fork=None,
+                               active_operation_id=None, pending_human_action={
+                                   "kind": status_ledger.LAUNCH_EXHAUSTED, "requested_at": NOW,
+                                   "reminded_at": None, "escalated_at": None,
+                                   "counter": "operation_launch"})
+        event = table_event("require_provisioning_intervention", "provisioning.idle",
+                            "provisioning.waiting_human")
+        event["details"].update(replans=20)
+        visible = status_ledger.render(event, waiting, "https://github.com/run").split(
+            "<details>")[0]
+        self.assertIn("got no receipt after 20 re-plans at this revision", visible)
+        self.assertIn("then post `/upstreaming resume`", visible)
+        self.assertIn("To stop instead, post `/upstreaming park`.", visible)
+        self.assertNotIn("resolve-operation operation=", visible)
+
+    def test_next_commands_offer_the_resolution_only_for_an_open_operation_in_a_wait(self):
+        op = "op-" + "d" * 24
+        line = (f"/upstreaming resolve-operation operation={op} "
+                'disposition=failed|not-launched reason="..."')
+        pending = {"kind": status_ledger.LAUNCH_EXHAUSTED, "requested_at": NOW,
+                   "reminded_at": None, "escalated_at": None, "counter": "operation_launch"}
+        cases = [
+            (contribution(phase="provisioning", activity="waiting_human", fork=None,
+                          active_operation_id=op, pending_human_action=pending), True),
+            (contribution(activity="waiting_ci", active_operation_id=op, paused=True,
+                          paused_at=NOW, paused_by="human", paused_reason="x"), True),
+            (contribution(phase="provisioning", activity="waiting_human", fork=None,
+                          active_operation_id=None, pending_human_action=pending), False),
+            (contribution(activity="waiting_ci", active_operation_id=op), False),
+            (contribution(phase="provisioning", activity="waiting_human", fork=None,
+                          active_operation_id="op-<b>", pending_human_action=pending), False),
+        ]
+        for record, offered in cases:
+            with self.subTest(state=f"{record['phase']}.{record['activity']}",
+                              paused=record.get("paused"), op=record["active_operation_id"]):
+                self.assertEqual(line in status_ledger._table_command_lines(record), offered)
+
     def test_the_historic_development_pr_event_keeps_its_wording(self):
         record = contribution()
         event = lifecycle._event(record, record, "development_pr_created", "observation",

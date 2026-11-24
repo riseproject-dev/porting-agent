@@ -96,7 +96,54 @@ class TestGrammarIsTheTable(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(commands.CommandError) as raised:
                 commands.parse(text)
             self.assertIn(commands.OVERRIDE_FORM, str(raised.exception))
-            self.assertIn(str(raised.exception), commands.MOVED_FIELDS.values())
+            self.assertEqual(str(raised.exception),
+                             commands.MOVED_FIELDS[("resume", "class" if "class" in text
+                                                    else "paths")])
+
+    def test_resolve_operation_states_a_reason_instead_of_evidence(self):
+        op = "op-" + "a" * 24
+        cmd = commands.parse(f'/upstreaming resolve-operation operation={op} '
+                             'disposition=not-launched reason="no run started"')
+        self.assertEqual(cmd.args, {"operation": op, "disposition": "not-launched",
+                                    "reason": "no run started"})
+        self.assertEqual(commands.OPTIONAL["resolve-operation"], frozenset())
+        for text in (f"/upstreaming resolve-operation operation={op} disposition=failed",
+                     f'/upstreaming resolve-operation operation={op} reason="r"',
+                     '/upstreaming resolve-operation disposition=failed reason="r"',
+                     f'/upstreaming resolve-operation operation={op} disposition=lost reason="r"'):
+            with self.subTest(text=text), self.assertRaises(commands.CommandError):
+                commands.parse(text)
+        with self.assertRaises(commands.CommandError) as raised:
+            commands.parse(f'/upstreaming resolve-operation operation={op} disposition=failed '
+                           'evidence=ev-9 reason="r"')
+        self.assertEqual(str(raised.exception),
+                         commands.MOVED_FIELDS[("resolve-operation", "evidence")])
+        self.assertIn(commands.RESOLVE_FORM, str(raised.exception))
+
+    def test_a_reason_is_bounded_by_its_stored_length(self):
+        """Each U+2014 is stored as two hyphens, so the bound is on the
+        stored reason: a receipt that keeps it always fits the schemas."""
+        import json
+        from pathlib import Path
+
+        import schemas
+        import state
+        dash = "\u2014"
+        for verb, extra in (("park", "revision=1 "),
+                            ("resolve-operation",
+                             "operation=op-" + "a" * 24 + " disposition=failed ")):
+            fits = dash * 1000
+            cmd = commands.parse(f'/upstreaming {verb} {extra}reason="{fits}"')
+            self.assertEqual(len(state.normalize_state_text(cmd.args["reason"])), 2000)
+            for reason in (dash * 1001, dash * 1990, "x" * 1999 + dash):
+                with self.subTest(verb=verb, length=len(reason)), \
+                        self.assertRaises(commands.CommandError) as raised:
+                    commands.parse(f'/upstreaming {verb} {extra}reason="{reason}"')
+                self.assertIn("longer than 2000 characters", str(raised.exception))
+        schema = json.loads((Path(schemas.__file__).parent / "schemas" /
+                             "command.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(commands.REASON_LIMIT,
+                         schema["properties"]["args"]["additionalProperties"]["maxLength"])
 
     def test_optional_fields(self):
         refresh = commands.parse('/upstreaming refresh revision=2 class=optimized_backend '
