@@ -122,13 +122,10 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
     def test_a_dispatcher_run_stuck_for_an_hour_does_not_block_recovery(self):
         created = RETRY_AT - timedelta(minutes=2)
         runs = self.runs + [run(45278935001, created.isoformat(), status="queued")]
-        # Within the hour it is waited for, with a wake at the bound.
+        # Within the hour it is waited for.
         _relaunch, staged, report = self.recover(
             (created + timedelta(minutes=59)).isoformat(), runs=runs)
         self.assertEqual((staged, report[0]["decision"]), ([], "dispatcher running"))
-        self.assertEqual(at(report[0]["wake_at"]),
-                         created + reconcile.DISPATCHER_RUN_WAIT)
-        self.assertEqual(report[0]["wake_on"], "dispatcher run completion")
         # Past it, the run no longer holds the Work: it is launched again.
         relaunch, staged, report = self.recover(
             (created + reconcile.DISPATCHER_RUN_WAIT).isoformat(), runs=runs)

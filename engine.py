@@ -477,25 +477,6 @@ def _reminder_due(ctx: Context) -> str | None:
     return "the reminder is not due"
 
 
-def reminder_due_at(record: dict, policy: dict) -> datetime | None:
-    """The time from which ``_reminder_due`` holds for the pending human
-    action of ``record``: ``human_sla_business_days.reminder`` business days
-    after the request or the last reminder. ``None`` without a pending
-    action."""
-    pending = record.get("pending_human_action")
-    if not pending:
-        return None
-    since = datetime.fromisoformat(pending.get("reminded_at") or pending["requested_at"])
-    limit = int(lc.policy_value(policy, lc.REMINDER_KEY))
-    # A business day counts when a whole day ends on a weekday, so the
-    # reminder falls due a whole number of days after ``since``.
-    for days in range(1, limit * 2 + 8):
-        at = _utc(since) + timedelta(days=days)
-        if business_days_between(since, at) >= limit:
-            return at
-    return None
-
-
 UNKNOWN_EVIDENCE = "the CI evidence named by last_ci_evidence_id is not supplied"
 
 

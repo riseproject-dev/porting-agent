@@ -1681,8 +1681,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "is the version running now, an available Work with a retry, a cancelled graph and a "
         "dispatcher run that ended without claiming are held: nothing is launched, staged or "
         "charged, and an alert and a warning say why. A transient failure heals by itself: the "
-        "Work is launched again free after 30 minutes, 2 hours and 8 hours at one version of "
-        "the code, and then stays held. Once the pipeline code changes, or a "
+        "Work is launched again free by the first controller run after 30 minutes, 2 hours and "
+        "8 hours at one version of the code, and then stays held. Once the pipeline code changes, or a "
         "human launches the controller, a retry and a dispatcher are launched again, and a "
         "cancelled graph takes `reallocate_after_pipeline_failure`, which allocates a fresh "
         "graph at the next revision and charges nothing, so `work_recovery`, `work_total` and "
@@ -1694,28 +1694,6 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         edges=(("development.agent_running", "allocate_work_retry"),
                ("development.agent_running", "reallocate_after_pipeline_failure")),
         highlighted=(("development.agent_running", "reallocate_after_pipeline_failure"),),
-    ),
-    Item(
-        "Every decided wait is woken",
-        "What ends a wait that a controller tick decided, and what keeps the pipeline from "
-        "depending on the schedule of the controller?",
-        "Every wait a tick decides names what ends it: a time (the queue's retry backoff, the "
-        "wait for a history, the collection grace of a Result whose download failed, a "
-        "publish-only retry or the wait for its Result, the expiry of a held patch, a review "
-        "comment, the relaunch of a launched operation, the discovery of an uncertain "
-        "operation, a reminder, the throttle of the Policy reinstall) or an event that "
-        "triggers the controller by itself (the completion of a dispatcher or worker run, a "
-        "push, a command, a resume). The tick reports the earliest time as `wake_at`, and the "
-        "controller workflow dispatches `controller-wake.yml` for it, which sleeps until then "
-        "(at most 5 hours 45 minutes, after which the controller run it dispatches reports the "
-        "wait again) and runs the controller. A time that is not later than the tick is an "
-        "alert, not a wake. A tick that could not read its inputs looks again 10 minutes "
-        "later, so a later report never replaces a sooner wake. The schedule of the "
-        "controller repairs only an event that was missed and what has no wait to name.",
-        ("development.agent_running", "development.waiting_human"),
-        edges=(("development.agent_running", "retry_dispatch"),
-               ("development.agent_running", "exhaust_recovery")),
-        highlighted=(("development.agent_running", "retry_dispatch"),),
     ),
     Item(
         "A review observed with a CI failure while CI is awaited",

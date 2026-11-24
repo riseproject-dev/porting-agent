@@ -21,7 +21,6 @@ import lifecycle
 import pipeline_failure
 import queue_result
 import reconcile
-import wake
 import work
 from tests.helpers import policy, take
 
@@ -90,8 +89,8 @@ class TestTheStall(unittest.TestCase):
             "held: worker run 45397386038 failed before its agent (agent/Start MCP Gateway), "
             "a failure of the pipeline at version 111111111111"), entry["decision"])
         self.assertIn("alert", entry)
-        # It is woken when its first free relaunch is due.
-        self.assertEqual(wake.parse(entry["wake_at"]), FIRST)
+        # The alert names when its first free relaunch is due.
+        self.assertIn(FIRST.isoformat(), entry["alert"])
 
     def test_another_contributions_dispatcher_run_does_not_charge_the_held_work(self):
         # A dispatcher run for other Work, created after the retry time and
@@ -123,14 +122,12 @@ class TestTheStall(unittest.TestCase):
                 self.assertEqual((relaunch, staged), ([], []))
                 self.assertTrue(report[0]["decision"].startswith("waiting: the last Claim"))
                 self.assertIn("alert", report[0])
-                self.assertEqual(wake.parse(report[0]["wake_at"]), now + reconcile.READ_RETRY)
 
-    def test_the_backoff_is_woken_when_the_failure_is_not_a_failure_of_the_pipeline(self):
+    def test_the_backoff_is_waited_when_the_failure_is_not_a_failure_of_the_pipeline(self):
         relaunch, staged, report = recover(
             "2026-11-24T12:54:20+00:00", failures={GRAPH: {"run_id": "1", "pipeline": False}})
         self.assertEqual((relaunch, staged), ([], []))
         self.assertEqual(report[0]["decision"], "waiting for the queue's retry backoff")
-        self.assertEqual(wake.parse(report[0]["wake_at"]), RETRY_AT)
 
     def test_a_changed_version_or_a_human_releases_the_hold(self):
         for label, kwargs in (("a push", {"pipeline": V2}), ("a human", {"manual": True})):
@@ -198,7 +195,6 @@ class TestTheStall(unittest.TestCase):
                     self.assertTrue(report[0]["decision"].startswith("waiting:"))
                     self.assertIn("not known", report[0]["decision"])
                     self.assertIn("alert", report[0])
-                    self.assertEqual(wake.parse(report[0]["wake_at"]), now + reconcile.READ_RETRY)
 
     def test_a_transient_failure_is_relaunched_free_after_each_backoff_then_held(self):
         free = [(FIRST, 1), (SECOND, 2), (THIRD, 3)]
@@ -207,7 +203,7 @@ class TestTheStall(unittest.TestCase):
             with self.subTest(used=used):
                 before = recover((due - timedelta(seconds=1)).isoformat(), failures=failures)
                 self.assertEqual((before[0], before[1]), ([], []))
-                self.assertEqual(wake.parse(before[2][0]["wake_at"]), due)
+                self.assertIn(due.isoformat(), before[2][0]["alert"])
                 self.assertIn(f"free relaunch {used} of 3", before[2][0]["decision"])
                 relaunch, staged, report = recover(due.isoformat(), failures=failures)
                 self.assertEqual((len(relaunch), staged), (1, []))
@@ -219,7 +215,6 @@ class TestTheStall(unittest.TestCase):
         self.assertEqual((relaunch, staged), ([], []))
         self.assertIn("spent", report[0]["decision"])
         self.assertIn("alert", report[0])
-        self.assertNotIn("wake_at", report[0])
         relaunch, _staged, _report = recover("2026-12-30T00:00:00+00:00", failures=spent,
                                              pipeline=V2)
         self.assertEqual(len(relaunch), 1)
@@ -358,12 +353,13 @@ class TestTheTick(unittest.TestCase):
             queue_retries=queue_result.work_retries(projection()),
             pipeline_failures=failures, pipeline=pipeline, manual=manual)
 
-    def test_a_hold_is_alerted_and_woken_at_its_free_relaunch(self):
+    def test_a_hold_is_alerted_with_the_time_of_its_free_relaunch(self):
         held = self.tick({GRAPH: FAILED}, V1)
         self.assertEqual((held.staged, held.report["dispatch_relaunch"]), ([], []))
         self.assertTrue(any("failed before its agent (agent/Start MCP Gateway)" in a["alert"]
                             for a in held.report["controller"]["alerts"]))
-        self.assertEqual(held.report["wake_at"], wake.stamp(FIRST))
+        self.assertTrue(any(FIRST.isoformat() in a["alert"]
+                            for a in held.report["controller"]["alerts"]))
         for label, out in (("push", self.tick({GRAPH: FAILED}, V2)),
                            ("human", self.tick({GRAPH: FAILED}, V1, manual=True)),
                            ("backoff", self.tick({GRAPH: FAILED}, V1,

@@ -38,7 +38,6 @@ import patch_review
 import recovery
 import schemas
 import state
-import wake
 import work as work_queue
 from commands import URGENT, Command
 from common import (
@@ -763,14 +762,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 case engine.Applied() as out:
                     _stage(res, by_id, out)
                 case engine.Skip():
-                    # Not due yet, or suppressed while paused: a reminder
-                    # not yet due is woken at its time, a suppressed one by
-                    # the resume.
-                    if not c.get("paused"):
-                        due_at = engine.reminder_due_at(c, policy)
-                        if due_at is not None and due_at > inputs.now:
-                            wake.note(rep, due_at, "reminder of a pending human step",
-                                      now=inputs.now, contribution=cid)
+                    # Not due yet, or suppressed while paused.
                     continue
                 case engine.Bug(refused):
                     raise engine.TransitionRefused(refused, ("controller", "tick"))
@@ -790,9 +782,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 due = recovery.next_discovery_at(op, policy)
                 rep["operations"].append({"id": op["operation_id"], "status": op["status"],
                                           "next_discovery": due.isoformat() if due else None})
-                if due is not None and due > inputs.now:
-                    wake.note(rep, due, "discovery of an uncertain operation", now=inputs.now,
-                              contribution=op["contribution_id"])
                 for a in recovery.alerts(op, inputs.now):
                     rep["alerts"].append({"operation": op["operation_id"], "alert": a})
 
@@ -1302,24 +1291,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             res.requested_effects.append(work)
             rep["selected"].append({"contribution": c["contribution_id"], "task": kind})
 
-    _note_launch_waits(operations, inputs.now, rep)
     if policy["read_only"]:
         rep["note"] = "read-only: requested effects are reported, not executed"
     return res
-
-
-def _note_launch_waits(operations: dict[str, dict], now: datetime, rep: dict) -> None:
-    """The wake of every planned operation launched before: it is launched
-    again, or found spent, ``LAUNCH_INTERVAL_SECONDS`` after its last launch
-    when no receipt came back. A run still in flight ends its hold by its own
-    completion."""
-    for op in operations.values():
-        if op.get("status") != "planned" or not recovery.launch_attempts(op):
-            continue
-        at = datetime.fromisoformat(op["updated_at"]) + timedelta(seconds=LAUNCH_INTERVAL_SECONDS)
-        if at > now:
-            wake.note(rep, at, f"relaunch of the {op.get('kind')} operation", now=now,
-                      contribution=op.get("contribution_id"))
 
 
 def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,

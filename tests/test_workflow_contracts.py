@@ -713,8 +713,8 @@ class TestWorkflowContracts(unittest.TestCase):
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         step = next(s for s in steps if s.get("name") == "Reconcile deterministic state locally")
         expression = step["env"]["MANUAL"]
-        # A run a human launched, not the dispatches of the App (the follow-up
-        # and the wake), which the actor `riseproject-dev[bot]` makes.
+        # A run a human launched, not the dispatch of the App (the follow-up),
+        # which the actor `riseproject-dev[bot]` makes.
         self.assertIn("github.event_name == 'workflow_dispatch'", expression)
         self.assertIn("github.triggering_actor != env.PORTING_APP_ACTOR", expression)
         reconcile_job = workflow("controller.yml")["jobs"]["reconcile"]
@@ -756,59 +756,6 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("publications/.inventory", script)
         self.assertIn("rm -f publications/.inventory", script)
         subprocess.run(["bash", "-n"], input=script.encode(), check=True)
-
-    def test_the_controller_reports_its_wake_to_the_wake_workflow(self):
-        controller = workflow("controller.yml")
-        steps = controller["jobs"]["reconcile"]["steps"]
-        step = next(s for s in steps if s.get("name") == "Wake the controller at the next due time")
-        # It runs whether or not the run committed, and not once cancelled.
-        self.assertIn("!cancelled()", step["if"])
-        self.assertNotIn("state-commit", step["if"])
-        self.assertEqual(step["env"]["GH_TOKEN"], "${{ steps.dispatch-token.outputs.token }}")
-        self.assertIn(".wake_at", step["run"])
-        self.assertIn('gh workflow run controller-wake.yml --repo "$GITHUB_REPOSITORY" --ref main '
-                      '-f at="$wake_at"', step["run"])
-        self.assertEqual(sum("controller-wake.yml" in s.get("run", "") for s in steps), 1)
-
-    def test_the_wake_workflow_sleeps_one_cancellable_sleeper_then_runs_the_controller(self):
-        wake = workflow("controller-wake.yml")
-        trigger = wake.get("on", wake.get(True))
-        self.assertEqual(list(trigger), ["workflow_dispatch"])
-        self.assertEqual(list(trigger["workflow_dispatch"]["inputs"]), ["at"])
-        self.assertEqual(wake["concurrency"], {"group": "porting-agent-controller-wake",
-                                               "cancel-in-progress": True})
-        self.assertEqual(wake["permissions"], {"contents": "read"})
-        job = wake["jobs"]["wake"]
-        self.assertLessEqual(job["timeout-minutes"], 360)
-        # `ubuntu-slim` jobs are stopped after 15 minutes; this one sleeps for hours.
-        self.assertNotEqual(job["runs-on"], "ubuntu-slim")
-        self.assertEqual(job["runs-on"], "ubuntu-latest")
-        steps = job["steps"]
-        sleep = next(s for s in steps if s.get("name") == "Sleep until the reported time")
-        self.assertIn("python -m wake sleep-seconds", sleep["run"])
-        self.assertEqual(sleep["env"]["AT"], "${{ inputs.at }}")
-        self.assertIn("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", sleep["run"])
-        token = next(s for s in steps if s.get("id") == "dispatch-token")
-        # The token lasts one hour: it is minted after the sleep, with the
-        # one permission the dispatch needs, as the controller mints it.
-        self.assertGreater(steps.index(token), steps.index(sleep))
-        self.assertEqual(token["with"]["permission-actions"], "write")
-        self.assertEqual({k for k in token["with"] if k.startswith("permission-")},
-                         {"permission-actions"})
-        controller_token = next(
-            s for s in workflow("controller.yml")["jobs"]["reconcile"]["steps"]
-            if s.get("id") == "dispatch-token")
-        self.assertEqual(token["uses"], controller_token["uses"])
-        for key in ("client-id", "private-key", "owner", "repositories"):
-            self.assertEqual(token["with"][key], controller_token["with"][key])
-        run = next(s for s in steps if s.get("name") == "Run the controller")
-        self.assertEqual(run["run"], 'gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" '
-                                     '--ref main')
-        self.assertGreater(steps.index(run), steps.index(token))
-        # The workflow takes no part in the triggers of the controller.
-        self.assertNotIn("Controller Wake",
-                         workflow("controller.yml").get("on", workflow("controller.yml").get(True))
-                         ["workflow_run"]["workflows"])
 
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):
         controller = workflow("controller.yml")
@@ -927,7 +874,6 @@ class TestWorkflowContracts(unittest.TestCase):
             {
                 "validate.yml",
                 "controller.yml",
-                "controller-wake.yml",
                 "website.yml",
                 "dispatcher.md",
                 "dispatcher.lock.yml",
@@ -949,7 +895,7 @@ class TestWorkflowContracts(unittest.TestCase):
         non_destination = "\n".join(
             (WORKFLOWS / name).read_text()
             for name in (
-                "controller.yml", "controller-wake.yml", "dispatcher.md", "planner.md",
+                "controller.yml", "dispatcher.md", "planner.md",
                 "image.yml", "validate.yml", "website.yml",
             )
         )
@@ -960,7 +906,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertLessEqual(
             launches,
             {
-                "controller.yml", "controller-wake.yml", "dispatcher.lock.yml",
+                "controller.yml", "dispatcher.lock.yml",
                 "provision.yml", "dev-pr.yml", "publish-retry.yml", "review-comment.yml",
                 "handoff.yml",
             },

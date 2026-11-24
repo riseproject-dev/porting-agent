@@ -22,7 +22,6 @@ Display names are title case without a prefix.
 | Display name | File | Trigger |
 |:-------------|:-----|:--------|
 | Controller | `controller.yml` | Schedule, pushes to `main` that change trusted code, issue and comment events, completed runs of the workflows below, manual dispatch |
-| Controller Wake | `controller-wake.yml` | Dispatch by the controller, with the time of its next due wait (`at`) |
 | Dispatcher | `dispatcher.md` | Dispatch by the controller |
 | Planner | `planner.md` | Native Work queue |
 | Worker | `worker.md` | Native Work queue |
