@@ -43,7 +43,6 @@
     "head": "b29a8f49374004d650cf312e9c31848953e5ae60",
     "revision": 6
   },
-  "held_patch": null,
   "last_ci_evidence_id": "ci-1467208233-45150934812-1",
   "merge": null,
   "owners": {
@@ -103,7 +102,6 @@
   "refresh": null,
   "release_acceptance": null,
   "retirement": null,
-  "review_comments": [],
   "revision": 6,
   "schema_version": 1,
   "scope_coverage_complete": true,
@@ -112,7 +110,6 @@
     "pyproject.toml",
     "CHANGELOG.md"
   ],
-  "submission_review_id": null,
   "submission_rewrite_id": null,
   "target_contract_id": null,
   "terminal_reason": null,
@@ -124,7 +121,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-24T14:16:58.378042+00:00",
+  "updated_at": "2026-11-24T23:54:05.500486+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",

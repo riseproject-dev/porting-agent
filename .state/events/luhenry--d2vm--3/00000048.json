@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-24T23:54:05.500486+00:00",
+  "cause": {
+    "id": "strict-record-schema",
+    "type": "migration"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "added": [],
+    "from_state": "parked.idle",
+    "removed": [
+      "held_patch",
+      "review_comments",
+      "submission_review_id",
+      "budget.review_rejections"
+    ],
+    "to_state": "parked.idle"
+  },
+  "from": {},
+  "kind": "record_fields_migrated",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45513659112
+  },
+  "schema_version": 1,
+  "sequence": 48,
+  "to": {}
+}
