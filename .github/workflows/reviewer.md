@@ -13,21 +13,76 @@ permissions:
 engine:
   id: pi
   version: "1.5.0"
-  command: /tmp/gh-aw/agent/pi-scrubbed
+  # Pi 1.5.0 keeps only the last --exclude-tools value, and gh-aw passes
+  # `bash` and `edit,write` as two flags, so bash would stay registered.
+  # These args come last for the agent; the sub-agents' arguments, which
+  # gh-aw builds without engine.args, are set whole in the same way.
+  args: ["--exclude-tools", "bash,edit,write"]
+  env:
+    GH_AW_PI_SUBAGENT_ARGS: '["--print","--mode","json","--no-session","--no-approve","--exclude-tools","bash,edit,write"]'
 model: anthropic/claude-fable-5-2
 concurrency:
   job-discriminator: ${{ github.run_id }}
+# The agent reaches no host itself: it has no shell and no web tool, its
+# model calls go through AWF's API proxy and its MCP tools through the
+# gateway, whose servers run outside the sandbox. gh-aw's strict mode still
+# wants a non-empty list beside a container MCP server; api.github.com is
+# the host that server reads.
 network:
   allowed:
-    - defaults
-    - github
+    - api.github.com
 tools:
   work-queue:
     require-assignment: true
     worker: true
-  bash:
-    - "*"
-  edit:
+  bash: false
+  edit: false
+  cli-proxy: false
+# The agent has no file writes, so its one output reaches the workspace
+# through this tool: gh-aw runs it on the runner, outside the sandbox, in a
+# separate Node.js process that sees only GITHUB_WORKSPACE and the other
+# runtime variables gh-aw keeps. It writes one fixed file, a JSON object
+# of at most 256 KiB, and follows no link; the publish job checks the
+# review itself.
+mcp-scripts:
+  submit_review:
+    description: "Write the review, a JSON object matching schemas/patch_review.schema.json, to porting-out/proposal.json (replacing an earlier one)"
+    inputs:
+      review:
+        type: string
+        required: true
+        description: "The whole review, as JSON text"
+    script: |
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const text = typeof review === "string" ? review : "";
+      const size = Buffer.byteLength(text, "utf8");
+      if (size === 0 || size > 262144) {
+        return { written: false, error: `the review must be 1 to 262144 bytes of JSON, not ${size}` };
+      }
+      let value;
+      try {
+        value = JSON.parse(text);
+      } catch (error) {
+        return { written: false, error: `the review is not JSON: ${error.message}` };
+      }
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return { written: false, error: "the review must be a JSON object" };
+      }
+      const workspace = process.env.GITHUB_WORKSPACE;
+      if (!workspace || !path.isAbsolute(workspace)) throw new Error("GITHUB_WORKSPACE is not set");
+      const dir = path.join(workspace, "porting-out");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+      if (!fs.lstatSync(dir).isDirectory()) throw new Error("porting-out is not a directory");
+      const data = JSON.stringify(value, null, 2) + "\n";
+      const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = fs.constants;
+      const fd = fs.openSync(path.join(dir, "proposal.json"), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0o644);
+      try {
+        fs.writeFileSync(fd, data);
+      } finally {
+        fs.closeSync(fd);
+      }
+      return { written: "porting-out/proposal.json", bytes: Buffer.byteLength(data, "utf8") };
 mcp-servers:
   github-authenticated:
     # Read-only, job-token authenticated history research without the pinned
@@ -59,16 +114,16 @@ mcp-servers:
       - actions_list
     required: true
 safe-outputs:
-  # The same sandbox posture as the planner and the worker: gh-aw v1.2.2
-  # native threat detection requires the agent sandbox, which is disabled
-  # below. The reviewer reads and diffs a patch and runs no reproduction; the
-  # custom engine wrapper removes every credential before the model runs, and
-  # trusted post-processing keeps its separately scoped tokens. The owner
-  # decided on 2026-11-24 that the reviewer will be sandboxed; until a
-  # separate change does so, it runs with the risk described in
-  # docs/state-machine/known-gaps.md, "The reviewer runs without the agent
-  # sandbox".
-  threat-detection: false
+  # gh-aw's threat detection reads the agent's output in a separate job
+  # before any safe output is applied; for this Pi workflow on an Anthropic
+  # model it runs Claude Code on the same model. A threat it reports, or a
+  # detection that cannot conclude, fails the job, so the review is not
+  # completed: the conclusion job ends the Claim and the queue holds the
+  # Work for another attempt. No issue is filed (it would need issues:
+  # write).
+  threat-detection:
+    continue-on-error: false
+    report-as-issue: false
   upload-artifact:
     max-uploads: 1
     retention-days: 30
@@ -77,34 +132,29 @@ safe-outputs:
       - porting-out/*
   noop:
     report-as-issue: false
+# AWF 0.29.11 bind-mounts these directories of the runner's home into the
+# agent's sandbox read-write (its sandbox-mount-policy.json), and the
+# rootless install put awf in ~/.local/bin and ~/.local/lib/awf with
+# ~/.local/bin first on PATH; ~/.cargo/bin and ~/.config/composer/vendor/bin
+# are on the runner's PATH too. A file planted there would run on the
+# runner after the agent: awf at its teardown and in "Print firewall logs",
+# and any command a later step finds on PATH. Owned by root, they cannot be
+# changed by the sandbox's user, with one exception: since the API proxy
+# holds ANTHROPIC_API_KEY, AWF's entrypoint makes ~/.claude mode 777 again
+# (and its settings.json 666) for Claude Code's key helper. That is benign:
+# ~/.claude is not on PATH and nothing on the runner runs from it. A listed
+# directory that is a link fails the step; inside the trees, chown changes
+# a link itself, not what it points to, and the final check follows none.
+# The agent has no shell and no file writes either (`bash: false`,
+# `edit: false`): it reads, and writes its review only through the
+# submit_review tool above. This step covers only these home directories:
+# if a tool that writes were given back, the sandbox could still write
+# /tmp/gh-aw and the workspace with its .git and ./fork, where gh-aw's
+# "Configure Git credentials" step and the post step of the checkout run
+# git. ~/.copilot is left as it is: the MCP gateway writes it, nothing runs
+# from it, and it is not on PATH. The step comes last, after the trusted
+# steps that still use the home directories (gh, git, node).
 pre-agent-steps:
-  - name: Split Pi provider authentication from untrusted tool environment
-    run: python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"
-  - name: Install pinned Pi and create credential-free unsandboxed engine wrapper
-    run: |
-      set -euo pipefail
-      npm install -g @earendil-works/pi-coding-agent@1.5.0
-      real=$(command -v pi)
-      [ -x "$real" ] || { echo "Pi installation missing"; exit 1; }
-      cat > /tmp/gh-aw/agent/pi-scrubbed <<SH
-      #!/bin/sh
-      for name in GITHUB_TOKEN GH_TOKEN COPILOT_GITHUB_TOKEN \
-        GH_AW_GITHUB_TOKEN GH_AW_GITHUB_MCP_SERVER_TOKEN \
-        RISEPROJECT_APP_PRIVATE_KEY RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY \
-        UPSTREAMING_FORK_TOKEN ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-        AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SSH_AUTH_SOCK; do
-        unset "\$name"
-      done
-      for name in \$(env | sed -n 's/^\\([^=]*TOKEN[^=]*\\)=.*/\\1/p'); do
-        unset "\$name"
-      done
-      if env | grep -Eq '^(GITHUB_TOKEN|GH_TOKEN|COPILOT_GITHUB_TOKEN|GH_AW_[A-Z_]*TOKEN|RISEPROJECT_[A-Z_]*|UPSTREAMING_FORK_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|AWS_[A-Z_]+|SSH_AUTH_SOCK)='; then
-        echo "credential remained in model environment" >&2
-        exit 1
-      fi
-      exec "$real" "\$@"
-      SH
-      chmod 0755 /tmp/gh-aw/agent/pi-scrubbed
   - name: Suspend workflow commands around untrusted agent output
     id: suspend_commands
     run: |
@@ -216,9 +266,44 @@ pre-agent-steps:
       fi
       [ "$(git rev-parse 'HEAD^{tree}')" = "$tree" ] \
         || { echo "the held series does not rebuild to the verified tree"; exit 1; }
+      # The agent has no shell: what it would ask git, it reads here.
       git diff head patch > "$patch/diff.patch"
-      git log --format='%H %s' head..patch > "$patch/commits.txt" || true
+      git diff --stat=200 head patch > "$patch/diffstat.txt"
+      git log --format='%H %s' head..patch > "$patch/commits.txt"
+      git log --stat=200 --format=fuller head..patch > "$patch/log.txt"
+      git diff base patch > "$patch/diff-from-base.patch"
+      git log --stat=200 --format=fuller base..head > "$patch/head-log.txt"
+      git log -n 200 --format='%H %ad %an %s' --date=short base > "$patch/upstream-log.txt"
+      # Each file the patch changes, as it is on head (a file the patch
+      # adds has none).
+      git diff -z --name-only head patch > "$patch/changed-files"
+      mkdir -p "$patch/before"
+      while IFS= read -r -d '' file; do
+        if [ "$(git cat-file -t "head:$file" 2>/dev/null)" = blob ]; then
+          mkdir -p -- "$patch/before/$(dirname -- "$file")"
+          git cat-file blob "head:$file" > "$patch/before/$file"
+        fi
+      done < "$patch/changed-files"
+      tr '\0' '\n' < "$patch/changed-files" > "$patch/changed-files.txt"
+      rm -f -- "$patch/changed-files"
       echo "rebuilt the held patch on $start into ./fork (branches base, head, patch)"
+  - name: Make the home directories the sandbox mounts read-only to the agent
+    run: |
+      set -euo pipefail
+      for dir in .cache .config .local/bin .local/lib .local/lib64 .local/share \
+        .local/pipx .azure .anthropic .claude .cargo .rustup .npm .nvm; do
+        if [ -L "$HOME/$dir" ]; then
+          echo "$HOME/$dir is a link" >&2
+          exit 1
+        fi
+        mkdir -p -- "$HOME/$dir"
+        sudo chown -RHh root:root -- "$HOME/$dir/"
+        sudo chmod -R go-w -- "$HOME/$dir/"
+        if [ -L "$HOME/$dir" ] || [ -n "$(find -H "$HOME/$dir/" \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
+          echo "$HOME/$dir is still writable by the agent's user" >&2
+          exit 1
+        fi
+      done
 post-steps:
   - name: Resume workflow commands after untrusted agent output
     if: always()
@@ -314,6 +399,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
   continuation:
+    # It reads nothing of the agent's, so it runs whatever threat detection
+    # concludes: a review that detection blocks still ends in a controller
+    # tick, which reads the Work the queue then holds for another attempt.
+    detection-gate: status-only
     needs: [safe_outputs, publish]
     if: always()
     runs-on: ubuntu-latest
@@ -336,14 +425,7 @@ jobs:
         run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
 timeout-minutes: 45
 max-turns: 150
-# The same sandbox posture as the planner and the worker until the reviewer
-# is sandboxed (see the safe-outputs comment above). The custom engine wrapper above
-# strips and verifies model credentials first.
-strict: false
-features:
-  dangerously-disable-sandbox-agent: true
-sandbox:
-  agent: false
+strict: true
 ---
 
 # riscv64 patch reviewer
@@ -361,17 +443,28 @@ the task names:
 - `./fork`, a Git repository with the branches `base` (the frozen upstream
   base, `base_sha`), `head` (the development branch at
   `context.patch.expected_head`, the head the patch was written and verified
-  on) and `patch` (the held patch rebuilt on it,
-  checked out). Use `git -C fork diff head patch`, `git -C fork log head..patch`
-  and `git -C fork diff base patch` freely;
+  on) and `patch` (the held patch rebuilt on it, checked out): its files are
+  the patched tree;
 - `/tmp/gh-aw/agent/patch/`: `patches.mbox` (the held series),
-  `diff.patch`, `commits.txt`, and `proposal.json` (the worker's own account of
-  the patch: untrusted);
+  `diff.patch` (head to patch), `diffstat.txt`, `changed-files.txt`,
+  `commits.txt`, `log.txt` (the patch's commits with their messages and
+  stats), `diff-from-base.patch` (the frozen base to patch: the whole
+  development branch with the patch), `head-log.txt` (the development
+  branch's commits since the base), `upstream-log.txt` (the last 200
+  upstream commits of the base), `before/` (each changed file as it is on
+  head; a file the patch adds is absent), and `proposal.json` (the worker's
+  own account of the patch: untrusted);
 - `/tmp/gh-aw/agent/report.json`: the worker's report of this patch (what it
   attempted and why, its approaches and their outcomes, the verification it
   did);
 - `/tmp/gh-aw/agent/plan.json`: the verified plan, when the task names one;
 - `/tmp/gh-aw/agent/history.json`: the history of the contribution.
+
+You run in a sandbox with no shell and no file writes: read the files above
+with your read, find, grep and ls tools, and read upstream history,
+conventions and earlier reviews through `github-authenticated`. You cannot
+run git, build or test anything; what you could not check goes in
+`limitations`.
 
 Only process the compiler-supplied `work_queue_assignment`. It has exactly
 one Claim; use its `handle` as `claim_handle` on every safe output and on
@@ -431,9 +524,11 @@ worker amends the patch from your findings.
 
 ## What to produce
 
-Write `porting-out/proposal.json` matching `schemas/patch_review.schema.json`
-in the control repository: `schema_version` 1, `contribution_id`,
-`expected_revision` (the task's `revision`) copied from the task;
+Submit the review with one `submit_review` call whose `review` is the JSON
+text of an object matching `schemas/patch_review.schema.json` in the control
+repository; the tool writes it to `porting-out/proposal.json` (a later call
+replaces it) and reports what it wrote or why it refused the review. The
+object holds `schema_version` 1, `contribution_id`, `expected_revision` (the task's `revision`) copied from the task;
 `expected_head`, `patch_digest` and `candidate` copied from
 `task.context.patch`;
 `verdict` (`fail` exactly when a finding is a blocker or major), a `summary`
@@ -441,15 +536,15 @@ of the review (at most 3000 characters), `findings` (at most 30; each `title`
 at most 300 characters, `detail` 1500 and `suggestion` 1000),
 `previous_findings` (at most 60), `checked` (what you checked) and
 `limitations` (what you could not check). Keep it under
-256 KiB. Upload the directory with a single `upload_artifact` call:
+256 KiB. Then upload the directory with a single `upload_artifact` call:
 `{"path": "porting-out"}`. Then call `work_queue_claim_finish` with
 `outcome: "completed"`. If you cannot produce a review, stage
 `report_incomplete` explaining why and finish with `outcome: "cancelled"`.
 
 Your run is stopped 45 minutes after the job starts, and a stopped run
 returns nothing: no review, and the queue starts the same review again from
-the beginning. Write `porting-out/` and finish by 35 minutes into the run at
+the beginning. Submit the review and finish by 35 minutes into the run at
 the latest, with the findings your evidence supports and what you could not
-check in `limitations`. Bound every command and wait with a timeout.
+check in `limitations`.
 
 You cannot push, open PRs, comment or change any repository.

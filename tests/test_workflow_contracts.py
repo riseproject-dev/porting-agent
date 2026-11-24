@@ -65,9 +65,12 @@ class TestWorkflowContracts(unittest.TestCase):
         graph = planner["mcp-servers"]["project-graph"]
         self.assertTrue(graph["required"])
         self.assertEqual(graph["allowed"], ["project_graph_query"])
-        dispatcher = source("dispatcher")
-        self.assertTrue(dispatcher["strict"])
-        self.assertNotEqual(dispatcher.get("sandbox", {}).get("agent"), False)
+        for name in ("dispatcher", "reviewer"):
+            with self.subTest(workflow=name):
+                sandboxed = source(name)
+                self.assertTrue(sandboxed["strict"])
+                self.assertNotIn("sandbox", sandboxed)
+                self.assertNotIn("features", sandboxed)
 
     def test_completeness_gate_precedes_durable_completion(self):
         lock = workflow("planner.lock.yml")
@@ -858,7 +861,7 @@ class TestAgentToolPolicy(unittest.TestCase):
 
     def test_no_sandboxed_agent_has_a_shell_or_file_writes(self):
         sandboxed = set()
-        for name in ("dispatcher", "planner", "worker"):
+        for name in ("dispatcher", "planner", "reviewer", "worker"):
             with self.subTest(workflow=name):
                 policy, run = pi_tool_policy(workflow(f"{name}.lock.yml"))
                 if "awf --config" not in run:
@@ -882,7 +885,7 @@ class TestAgentToolPolicy(unittest.TestCase):
                 child = json.loads(step["env"]["GH_AW_PI_SUBAGENT_ARGS"])
                 self.assertLessEqual({"bash", "edit", "write"}, excluded_tools(child))
                 self.assertEqual(exec_or_write_entries(policy["bash"]), [])
-        self.assertEqual(sandboxed, {"dispatcher"})
+        self.assertEqual(sandboxed, {"dispatcher", "reviewer"})
 
     def test_a_list_with_an_exec_or_write_command_is_refused(self):
         # The dispatcher's former list: gh-aw's defaults plus one cat.
@@ -896,23 +899,32 @@ class TestAgentToolPolicy(unittest.TestCase):
         # AWF v0.29.11 bind-mounts these home directories into the sandbox
         # read-write (sandbox-mount-policy.json, without .copilot and
         # .gemini); revisit the list with any other AWF version.
-        steps = workflow("dispatcher.lock.yml")["jobs"]["agent"]["steps"]
-        names = [step.get("name", "") for step in steps]
-        install = steps[names.index("Install AWF binary")]
-        self.assertTrue(install["run"].endswith("install_awf_binary.sh\" v0.29.11 --rootless"))
-        harden = names.index("Make the home directories the sandbox mounts read-only to the agent")
-        self.assertLess(names.index("Install AWF binary"), harden)
-        self.assertLess(names.index("Install Pi CLI"), harden)
-        self.assertLess(harden, names.index("Execute Pi CLI"))
-        run = steps[harden]["run"]
-        listed = re.search(r"for dir in (.*?); do", run, re.S).group(1).replace("\\\n", " ").split()
-        self.assertEqual(sorted(listed), sorted([
-            ".cache", ".config", ".local/bin", ".local/lib", ".local/lib64", ".local/share",
-            ".local/pipx", ".azure", ".anthropic", ".claude", ".cargo", ".rustup", ".npm", ".nvm",
-        ]))
-        for needle in ('sudo chown -RHh root:root -- "$HOME/$dir/"', 'sudo chmod -R go-w -- "$HOME/$dir/"',
-                       'find -H "$HOME/$dir/"', "! -user root -o -perm /022", "exit 1"):
-            self.assertIn(needle, run)
+        runs = {}
+        for name in ("dispatcher", "reviewer"):
+            with self.subTest(workflow=name):
+                steps = workflow(f"{name}.lock.yml")["jobs"]["agent"]["steps"]
+                names = [step.get("name", "") for step in steps]
+                install = steps[names.index("Install AWF binary")]
+                self.assertTrue(install["run"].endswith("install_awf_binary.sh\" v0.29.11 --rootless"))
+                harden = names.index("Make the home directories the sandbox mounts read-only to the agent")
+                self.assertLess(names.index("Install AWF binary"), harden)
+                self.assertLess(names.index("Install Pi CLI"), harden)
+                self.assertLess(harden, names.index("Execute Pi CLI"))
+                run = runs[name] = steps[harden]["run"]
+                listed = re.search(r"for dir in (.*?); do", run, re.S).group(1).replace("\\\n", " ").split()
+                self.assertEqual(sorted(listed), sorted([
+                    ".cache", ".config", ".local/bin", ".local/lib", ".local/lib64", ".local/share",
+                    ".local/pipx", ".azure", ".anthropic", ".claude", ".cargo", ".rustup", ".npm", ".nvm",
+                ]))
+                for needle in ('sudo chown -RHh root:root -- "$HOME/$dir/"', 'sudo chmod -R go-w -- "$HOME/$dir/"',
+                               'find -H "$HOME/$dir/"', "! -user root -o -perm /022", "exit 1"):
+                    self.assertIn(needle, run)
+        # The same step, so the behavior tests below cover both. The
+        # reviewer's comes after its trusted steps that still use the home
+        # directories (gh, git, node).
+        self.assertEqual(runs["dispatcher"], runs["reviewer"])
+        authored = [step["name"] for step in source("reviewer")["pre-agent-steps"]]
+        self.assertEqual(authored[-1], "Make the home directories the sandbox mounts read-only to the agent")
 
     def test_excluded_tools_reads_the_last_flag_as_pi_does(self):
         self.assertEqual(excluded_tools(["--exclude-tools", "bash", "--exclude-tools", "edit,write"]),
@@ -960,6 +972,113 @@ class TestAgentToolPolicy(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((planted.stat().st_uid, planted.stat().st_mode & 0o777), (0, 0o755))
             self.assertEqual(outside.stat().st_uid, 1001)
+
+class TestReviewerSandbox(unittest.TestCase):
+    """The reviewer reads in the sandbox and writes only its review."""
+
+    def lock(self) -> dict:
+        return workflow("reviewer.lock.yml")
+
+    def test_the_reviewer_reaches_only_what_its_servers_need(self):
+        steps = self.lock()["jobs"]["agent"]["steps"]
+        run = next(s for s in steps if s.get("name") == "Execute Pi CLI")["run"]
+        self.assertIn("awf --config", run)
+        # The AWF configuration the agent step writes allows one host.
+        allowed = re.findall(r'\\"allowDomains\\":(\[[^\]]*\])', run)
+        self.assertEqual([json.loads(a.replace('\\"', '"')) for a in allowed], [["api.github.com"]])
+        self.assertEqual(source("reviewer")["network"], {"allowed": ["api.github.com"]})
+        # The reviewer's own servers: the GitHub read servers and the
+        # review writer; it has no web tool and no Docker.
+        self.assertEqual(set(source("reviewer")["mcp-servers"]), {"github-authenticated"})
+        self.assertEqual(set(source("reviewer")["mcp-scripts"]), {"submit_review"})
+        for absent in ("web-fetch", "web-search", "playwright", "--enable-dind", "docker-sudo"):
+            self.assertNotIn(absent, json.dumps(source("reviewer")))
+
+    def test_threat_detection_gates_the_review(self):
+        jobs = self.lock()["jobs"]
+        self.assertEqual(source("reviewer")["safe-outputs"]["threat-detection"],
+                         {"continue-on-error": False, "report-as-issue": False})
+        execute = next(s for s in jobs["detection"]["steps"]
+                       if s.get("name") == "Execute threat detection with AWF")
+        self.assertEqual(execute["env"]["GH_AW_DETECTION_CONTINUE_ON_ERROR"], "false")
+        self.assertEqual(execute["env"]["ANTHROPIC_MODEL"], "claude-fable-5-2")
+        self.assertIn("threat-detect --engine claude", execute["run"])
+        self.assertEqual(jobs["detection"]["permissions"], {"contents": "read"})
+        self.assertIn("needs.detection.result == 'success'", jobs["safe_outputs"]["if"])
+        self.assertIn("needs.detection.outputs.detection_success == 'true'", jobs["publish"]["if"])
+        # The controller is continued whatever detection concludes.
+        self.assertEqual(jobs["continuation"]["if"], "always()")
+        self.assertEqual(source("reviewer")["jobs"]["continuation"]["detection-gate"], "status-only")
+
+    def test_nothing_after_the_agent_runs_code_the_agent_could_change(self):
+        steps = self.lock()["jobs"]["agent"]["steps"]
+        agent = next(i for i, s in enumerate(steps) if s.get("name") == "Execute Pi CLI")
+        self.assertEqual([s["name"] for s in source("reviewer")["post-steps"]],
+                         ["Resume workflow commands after untrusted agent output"])
+        for step in steps[agent + 1:]:
+            with self.subTest(step=step.get("name")):
+                self.assertNotIn("actions/checkout", step.get("uses", ""))
+                body = step.get("run", "") + step.get("with", {}).get("script", "")
+                self.assertNotIn("GITHUB_WORKSPACE", body)
+                if step.get("name") != "Configure Git credentials":
+                    self.assertNotRegex(body, r"(^|[\s;&|(])git\s")
+                else:
+                    self.assertEqual(body, 'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"')
+
+    def test_the_agent_reads_what_the_trusted_steps_prepared(self):
+        steps = "\n".join(step.get("run", "") for step in source("reviewer")["pre-agent-steps"])
+        for output in ("diff.patch", "diffstat.txt", "changed-files.txt", "commits.txt", "log.txt",
+                       "diff-from-base.patch", "head-log.txt", "upstream-log.txt", "before/"):
+            with self.subTest(output=output):
+                self.assertIn(f'"$patch/{output}', steps)
+                self.assertIn(f"`{output.rstrip('/')}", (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2])
+        prompt = (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2]
+        self.assertNotIn("git -C fork", prompt)
+        self.assertIn("one `submit_review` call", prompt)
+
+    def submit(self, workspace: Path, review) -> subprocess.CompletedProcess:
+        script = source("reviewer")["mcp-scripts"]["submit_review"]["script"]
+        harness = ("async function execute(inputs) {\nconst { review } = inputs || {};\n" + script
+                   + "\n}\nexecute(JSON.parse(require('node:fs').readFileSync(0, 'utf8')))"
+                   ".then(r => console.log(JSON.stringify(r)),"
+                   " e => { console.log(JSON.stringify({ thrown: e.code || e.message })); });\n")
+        return subprocess.run(["node", "-e", harness], input=json.dumps({"review": review}),
+                              capture_output=True, text=True,
+                              env={"PATH": os.environ["PATH"], "GITHUB_WORKSPACE": str(workspace)})
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_submit_review_writes_one_json_object_and_follows_no_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            out = workspace / "porting-out/proposal.json"
+            result = self.submit(workspace, '{"schema_version": 1, "verdict": "pass"}')
+            self.assertEqual(json.loads(result.stdout),
+                             {"written": "porting-out/proposal.json", "bytes": out.stat().st_size}, result.stderr)
+            self.assertEqual(json.loads(out.read_text()), {"schema_version": 1, "verdict": "pass"})
+            for review, error in (("[1]", "the review must be a JSON object"), ("null", "the review must be a JSON object"),
+                                  ("{", "the review is not JSON"), ("", "the review must be 1 to 262144 bytes"),
+                                  ('{"x": "' + "a" * 262144 + '"}', "the review must be 1 to 262144 bytes")):
+                with self.subTest(review=review[:20]):
+                    answer = json.loads(self.submit(workspace, review).stdout)
+                    self.assertFalse(answer["written"])
+                    self.assertTrue(answer["error"].startswith(error), answer)
+            # The earlier review stands.
+            self.assertEqual(json.loads(out.read_text())["verdict"], "pass")
+            elsewhere = Path(tmp) / "elsewhere"
+            elsewhere.write_text("keep")
+            out.unlink()
+            out.symlink_to(elsewhere)
+            self.assertEqual(json.loads(self.submit(workspace, "{}").stdout), {"thrown": "ELOOP"})
+            self.assertEqual(elsewhere.read_text(), "keep")
+            out.unlink()
+            out.parent.rmdir()
+            target = Path(tmp) / "dir"
+            target.mkdir()
+            out.parent.symlink_to(target)
+            self.assertIn("thrown", json.loads(self.submit(workspace, "{}").stdout))
+            self.assertEqual(list(target.iterdir()), [])
+
 
 class TestHistoryAndReports(unittest.TestCase):
     """Every Work reads its verified history first and returns its report."""

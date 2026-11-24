@@ -1592,7 +1592,11 @@ class TestWorkflows(unittest.TestCase):
         source = self.front("reviewer.md")
         self.assertEqual(source["model"], "anthropic/claude-fable-5-2")
         self.assertEqual((source["timeout-minutes"], source["max-turns"]), (45, 150))
-        self.assertEqual(source["engine"]["command"], "/tmp/gh-aw/agent/pi-scrubbed")
+        # The agent runs in AWF's sandbox, where the API proxy holds the
+        # provider key and the gateway the GitHub tokens: gh-aw's own Pi.
+        self.assertNotIn("command", source["engine"])
+        self.assertTrue(source["strict"])
+        self.assertEqual((source["tools"]["bash"], source["tools"]["edit"]), (False, False))
         self.assertTrue(source["tools"]["work-queue"]["worker"])
         self.assertEqual(source["mcp-servers"]["github-authenticated"]["env"]["GITHUB_READ_ONLY"], "1")
         text = (self.root / "reviewer.md").read_text()
@@ -1614,7 +1618,8 @@ class TestWorkflows(unittest.TestCase):
         self.assertIn("python -m patch_review check", run)
         self.assertLess(run.index("unset GH_TOKEN"), run.index("python -m patch_review check"))
         lock = (self.root / "reviewer.lock.yml").read_text()
-        self.assertIn("GH_AW_PI_COMMAND: /tmp/gh-aw/agent/pi-scrubbed", lock)
+        self.assertNotIn("GH_AW_PI_COMMAND", lock)
+        self.assertNotIn("pi_provider_credential", lock)
         self.assertFalse("secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY" in lock)
 
     def test_the_worker_reads_the_rejected_patch_it_amends(self):
