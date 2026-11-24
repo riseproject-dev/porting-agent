@@ -2015,6 +2015,10 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
       such as an accepted Result whose report cannot be stored) is handled
       like an unexpected error of its contribution, but never counts toward
       the limit below: any number of them leave the tick going.
+    * An unexpected error in a contribution that is already paused (the
+      controller's own stop, or a human's) does not count toward the limit
+      either: it changes nothing, or only stops it again at the new version
+      of the pipeline code.
     * Unexpected errors in two or more contributions, a pause that cannot be
       applied, and every exception outside a contribution stop the tick:
       ``isolation.TickFailure`` or the original exception is raised and
@@ -2082,8 +2086,15 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # A stop of the controller from an earlier version of the
                 # pipeline code, resumed in this tick and failing again, is
                 # stopped again at the version that ran.
-                for step in _restop_steps(record, policy=policy, now=iso,
-                                          version=inputs.get("pipeline")):
+                # An automatic resume that itself fails is left out: the
+                # stop stays as it was and is not stopped again at this
+                # version.
+                try:
+                    restops = _restop_steps(record, policy=policy, now=iso,
+                                            version=inputs.get("pipeline"))
+                except Exception:
+                    restops = []
+                for step in restops:
                     out.staged.extend([("contributions", step.record), ("events", step.event)])
                     record = step.record
                 outcome = pause_on_processing_error(record, description, policy=policy, now=iso,
@@ -2564,7 +2575,7 @@ def _heal_invariant(record: dict, name: str, why: str, *, policy: dict, now: str
     if name == "dev_pr" and not record.get("paused"):
         head = controller.published_head_without_pr(record, operations or {}, None)
         if head:
-            return f"{HEALING}: the development PR of {head} is planned"
+            return f"{HEALING}: the controller opens the development PR of {head} when it plans it"
     verb = heal_verb(record, name)
     if verb == DEFAULT_HEAL:
         outcome = engine.try_apply_transition(
@@ -2671,11 +2682,20 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                          "why": why, "heal": healed.verb if applied else
                          "launch_development_pr" if planned else None}
                 violations.append(entry)
-                load_alerts.append({
-                    "contribution": cid,
-                    "alert": (f"invariant violation: {entry['state']} requires {name}: {why}; "
-                              + (f"healed by {healed.verb}" if applied else
-                                 healed if planned else f"not healed in this tick: {healed}"))})
+                # The alert is made once: not while the operation that heals
+                # it is in flight, and not for a paused record that waits for CI
+                # without a PR (the controller reports the wait as deferred,
+                # and the heal happens after the resume).
+                open_op = recovery.is_open((snap.operations or {}).get(c.get("active_operation_id")))
+                quiet = (c.get("paused") and name == "dev_pr") or (planned and open_op)
+                if applied or not quiet:
+                    load_alerts.append({
+                        "contribution": cid,
+                        "alert": (f"invariant violation: {entry['state']} requires {name}: "
+                                  f"{why}; "
+                                  + (f"healed by {healed.verb}" if applied else
+                                     healed if planned else
+                                     f"not healed in this tick: {healed}"))})
                 if applied:
                     c = contributions[key] = healed.record
                     out.staged.extend([("contributions", c), ("events", healed.event)])

@@ -169,7 +169,7 @@ class TestTheLiveRecordHeals(unittest.TestCase):
                          ("dev_pr", "launch_development_pr"))
         [alert] = [a for a in out.report["controller"]["alerts"]
                    if "invariant violation" in a.get("alert", "")]
-        self.assertIn(f"healing: the development PR of {HEAD} is planned", alert["alert"])
+        self.assertIn(f"healing: the controller opens the development PR of {HEAD}", alert["alert"])
         # The PR of the recorded head is planned from the stored report of
         # the Work that pushed it, and launched in the same tick.
         [request] = out.report["dev_pr_requests"]
@@ -318,6 +318,48 @@ class TestTheAutomaticResume(unittest.TestCase):
             problems = lc.check_table(POLICY)
         self.assertIn("flag paused resume_pause (tick): a variant must have the effects of "
                       "resume_pause", problems)
+
+
+class TestARestopThatFails(unittest.TestCase):
+    def test_an_automatic_resume_that_fails_again_does_not_stop_the_tick(self):
+        real = engine.try_apply_transition
+
+        def bad(rec, verb, **kw):
+            if verb == "resume_pause":
+                return engine.Refused(engine.Refusal.TARGET_INVALID, verb, None, "simulated")
+            return real(rec, verb, **kw)
+
+        stopped = dict(live(), paused_at_commit="1" * 64)
+        snap = reconcile.Snapshot({"a": stopped}, {}, {}, {}, {report()["evidence_id"]: report()})
+        with mock.patch("engine.try_apply_transition", bad), \
+                contextlib.redirect_stderr(io.StringIO()):
+            out = reconcile.tick(None, snap, policy=POLICY, now=T, publications=[],
+                                 pressure=capacity.Pressure(ok=True), observe=False,
+                                 pipeline="2" * 64)
+        [error] = out.report["processing_errors"]
+        self.assertTrue(error["decision"].startswith("not paused again"), error)
+
+
+class TestTheHealAlert(unittest.TestCase):
+    def alerts(self, out):
+        return [a["alert"] for a in out.report["controller"]["alerts"]
+                if a["alert"].startswith("invariant violation")]
+
+    def test_a_human_pause_is_not_alerted_in_every_tick(self):
+        rec = dict(live(), paused_by="human")
+        out = tick(rec)
+        self.assertEqual(self.alerts(out), [])
+        self.assertEqual(len(out.report["invariant_violations"]), 1)
+
+    def test_the_alert_is_made_once_and_not_while_the_operation_is_in_flight(self):
+        first = tick(dict(live(), paused_by="controller", paused=False, paused_reason=None,
+                          paused_at=None))
+        [alert] = self.alerts(first)
+        self.assertNotIn("is planned", alert)
+        [op] = [r for k, r in first.staged if k == "operations"]
+        rec = final(first, live())
+        second = tick(rec, now=T + timedelta(minutes=10), operations={op["operation_id"]: op})
+        self.assertEqual(self.alerts(second), [])
 
 
 if __name__ == "__main__":
