@@ -28,8 +28,6 @@ engine:
   # default.
   config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"],"agentOverrides":{"reviewer":{"tools":"read, grep, find, ls"},"worker":{"tools":"read, grep, find, ls, bash, edit, write"}}}}}'
 model: anthropic/claude-opus-5-5
-# The Ubuntu release the pinned ripgrep and fd-find packages below are from.
-runs-on: ubuntu-24.04
 concurrency:
   job-discriminator: ${{ github.run_id }}
 network:
@@ -201,21 +199,29 @@ pre-agent-steps:
        "disabledFeatures": ["workflow-scripts", "missions", "panes", "agent-management",
                             "lane-management", "watchdog"]}
       JSON
-  # Pi's grep and find tools, which the reviewers use, run rg and fd (Debian's
-  # fdfind), which it looks for in $PI_CODING_AGENT_DIR/bin and then on PATH;
-  # with PI_OFFLINE, which gh-aw sets, it never downloads them. They come from
-  # Ubuntu 24.04's archive, which apt verifies against its signed index, at
-  # pinned versions.
+  # Pi's grep and find tools, which the reviewers use, run rg and fd, which it
+  # looks for in $PI_CODING_AGENT_DIR/bin and then on PATH under the names rg,
+  # and fd or fdfind (Pi 1.5.0, dist/utils/tools-manager.js); with PI_OFFLINE,
+  # which gh-aw sets, it never downloads them. They are the upstream static
+  # release binaries, each archive checked against a pinned SHA-256, so the step
+  # does not depend on the runner image's package archive or on its release.
   - name: Install ripgrep and fd for the agent's grep and find tools
     run: |
       set -euo pipefail
-      sudo apt-get update -q
-      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-        ripgrep=14.1.0-1 fd-find=9.0.0-1
-      [ "$(dpkg-query -W -f='${Version}' ripgrep)" = 14.1.0-1 ] || { echo "unexpected ripgrep"; exit 1; }
-      [ "$(dpkg-query -W -f='${Version}' fd-find)" = 9.0.0-1 ] || { echo "unexpected fd-find"; exit 1; }
-      /usr/bin/rg --version
-      /usr/bin/fdfind --version
+      work="$(mktemp -d)"
+      fetch() { # url sha256 archive-dir binary
+        curl -fsSL --retry 3 -o "$work/$3.tar.gz" "$1"
+        echo "$2  $work/$3.tar.gz" | sha256sum -c -
+        tar -xzf "$work/$3.tar.gz" -C "$work"
+        sudo install -m 0755 "$work/$3/$4" "/usr/local/bin/$4"
+      }
+      fetch https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
+        4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e ripgrep-14.1.1-x86_64-unknown-linux-musl rg
+      fetch https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-unknown-linux-musl.tar.gz \
+        d9bfa25ec28624545c222992e1b00673b7c9ca5eb15393c40369f10b28f9c932 fd-v10.2.0-x86_64-unknown-linux-musl fd
+      rm -rf "$work"
+      rg --version
+      fd --version
   - name: Suspend workflow commands around untrusted agent output
     id: suspend_commands
     run: |

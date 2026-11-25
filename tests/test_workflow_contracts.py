@@ -1192,7 +1192,9 @@ class TestPiExtensions(unittest.TestCase):
         self.assertEqual(overrides["worker"], {"tools": "read, grep, find, ls, bash, edit, write"})
         self.assertEqual(set(overrides), {"reviewer", "worker"})
         lock = workflow("worker.lock.yml")["jobs"]["agent"]
-        self.assertEqual(lock["runs-on"], "ubuntu-24.04")
+        # The Docker of the ubuntu-24.04 image (28.0.4) lacks `image inspect --platform`,
+        # which "Resolve anonymous reproduction image" needs (run 45574718773).
+        self.assertEqual(lock["runs-on"], "ubuntu-latest")
         steps = {s.get("name"): s for s in lock["steps"]}
         install = steps["Install pinned Pi and create credential-free unsandboxed engine wrapper"]["run"]
         # Children run in the foreground with the 30 minute backstop
@@ -1203,8 +1205,11 @@ class TestPiExtensions(unittest.TestCase):
             self.assertIn(needle, install)
         names = list(steps)
         grep_tools = steps["Install ripgrep and fd for the agent's grep and find tools"]["run"]
-        for needle in ("ripgrep=14.1.0-1 fd-find=9.0.0-1", "/usr/bin/rg --version"):
+        for needle in ("4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e",
+                       "d9bfa25ec28624545c222992e1b00673b7c9ca5eb15393c40369f10b28f9c932",
+                       "sha256sum -c -", "ripgrep-14.1.1", "fd-v10.2.0", "rg --version", "fd --version"):
             self.assertIn(needle, grep_tools)
+        self.assertNotIn("apt-get", grep_tools)
         self.assertLess(names.index("Install ripgrep and fd for the agent's grep and find tools"),
                         names.index("Suspend workflow commands around untrusted agent output"))
 
