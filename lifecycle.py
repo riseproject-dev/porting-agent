@@ -964,7 +964,10 @@ _REALLOCATE_AFTER_PIPELINE_FAILURE = Transition(
                 "no row is taken and the failure is reported as an alert. It carries the same "
                 "feedback ids. A Result held for a publish-only retry whose report records no "
                 "review loop (a worker run of the earlier pipeline) takes it too: the held "
-                "Result is dropped with the task.")
+                "Result is dropped with the task. So does a Result that no independent review "
+                "covers (the worker's loop records unavailable reviewers, or the agent's log "
+                "shows fewer successful reviewer launches than the rounds it reports), at most "
+                "3 times before each charged retry (`active_task.review_free`).")
 _SCHEDULE_PUBLISH_RETRY = Transition(
     _R, None,
     ("publication failed with an infrastructure error", "publish_recovery remains"),

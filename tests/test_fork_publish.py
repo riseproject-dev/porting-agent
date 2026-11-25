@@ -286,6 +286,18 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
                                      report_path=path)
         self.assertEqual((out["publish"], out["status"], out["failure_class"]),
                          (False, "unreviewed", None))
+        # A loop that records no reviewer is the same free `unreviewed`, never a
+        # charged rejection.
+        body["review_loop"] = {"rounds": 0, "round_digests": [],
+                               "stopped_because": "reviewers_unavailable",
+                               "findings": [], "summary": "The subagent tool was missing."}
+        path.write_text(json.dumps(body))
+        out = fork_publish.preflight(record=self.record, task=task, proposal=self.proposal(),
+                                     fork_lookup=lambda n: {"id": 2, "full_name": n},
+                                     report_path=path)
+        self.assertEqual((out["publish"], out["status"], out["failure_class"]),
+                         (False, "unreviewed", None))
+        self.assertIn("not independently reviewed", out["reason"])
         # A report whose loop fails the check stays a rejection.
         body["review_loop"] = {"rounds": 0, "round_digests": [], "stopped_because": "deadline",
                                "findings": [], "summary": "none"}

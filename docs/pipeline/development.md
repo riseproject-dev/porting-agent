@@ -47,6 +47,7 @@ Once the series is committed and validated in the image, the worker runs the loo
 
 - **Rounds.** At most 3. Each round launches fresh reviewers, in parallel and in the foreground, on the worker's model with read, grep, find and ls only. They read the series (`format-patch` output, which holds the commit messages), the tree after it, the task, the plan and the history. Angles: correctness on riscv64, scope and precedent, project conventions and reviewers' expectations, tests and CI coverage, security, and whether the report matches the series.
 - **Findings.** Reviewers label findings P0 (blocks), P1 (fix before release) or P2 (report only). After a round the worker fixes what a P0 or a worthwhile P1 asks, through one forked `worker` child, or itself when the child fails. It starts no fix pass after 175 minutes and no round after 210 minutes of the 330 minute run, so that a review round always follows a fix pass.
+- **No reviewers.** When the `subagent` tool is missing or a reviewer launch returns an error, the worker does not review the series itself: it delivers the series as usual and records `rounds` 0 and `stopped_because: "reviewers_unavailable"`.
 - **Stop.** When fresh reviewers find no P0 and no P1 worth fixing, when only optional notes remain, when the cap is reached, when time runs out, or when a decision that the worker may not take is needed. In the last case the outcome is `needs_clarification` with the question.
 - **Closing a P0.** Only the fresh reviewers of a later round close a P0 finding, as fixed or withdrawn. The worker never closes or drops one.
 
@@ -58,7 +59,7 @@ Before any token, the trusted worker gate validates the Result's structural scop
 
 The `changed_files` of the proposal are the net delta from `expected_head` to the series applied, for an append and for a rewrite. The gate, which has only the mbox, requires every path of the series and every claimed file to be in the approved scope, and for an append every claimed file to be a path of the mbox; the trusted publisher then requires the claim to equal `git diff --name-only --no-renames` from `expected_head` to the rebuilt candidate exactly.
 
-For a patch, the gate also checks the review loop (`review_loop.check`). It is the agent's own account, so the gate checks its shape and its P0 findings, not that the reviews happened:
+A loop that records `reviewers_unavailable`, or that reports more rounds than the agent's log (`agent-stdio.log`, read by the publish job) shows successful launches of the `reviewer` agent, is no review (`review_loop.ReviewersUnavailable`): the gate writes status `unreviewed`, nothing is published and the task is run again with nothing charged (at most 3 free relaunches before each charged retry). The worker's prose is never read for this. For a patch, the gate also checks the review loop (`review_loop.check`). It is the agent's own account, so the gate checks its shape and its P0 findings, not that the reviews happened:
 
 - at least one round ran, and the loop did not stop for a decision;
 - no P0 finding is open or deferred;

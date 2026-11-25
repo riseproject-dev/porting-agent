@@ -281,9 +281,10 @@ def _report(task: dict, report: bytes | dict | None) -> tuple[dict | None, str |
 
 def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
                   workdir: Path | None = None, read_token: str | None = None,
-                  report: bytes | dict | None = None) -> dict:
+                  report: bytes | dict | None = None, agent_log: Path | None = None) -> dict:
     """The trusted outcome of one submission rewrite Result. ``report`` is
-    the worker's ``report.json``."""
+    the worker's ``report.json``, ``agent_log`` the agent's stdio log (the
+    reviewer launches it shows must bear out the rounds of the report)."""
     out: dict[str, Any] = {"status": REWRITE, "stage": "submission_check",
                            "approved_head": task.get("expected_head"),
                            "base_sha": task.get("base_sha")}
@@ -312,7 +313,14 @@ def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
     digest = hashlib.sha256(mbox or b"").hexdigest()
     try:
         loop = review_loop.check(parsed, series_digest=digest,
-                                 text_digest=text_digest(rewrite["title"], rewrite["body"]))
+                                 text_digest=text_digest(rewrite["title"], rewrite["body"]),
+                                 launches=review_loop.log_launches(agent_log))
+    except review_loop.ReviewersUnavailable as error:
+        # No review ran: a failure of the pipeline, not a verdict on the
+        # rewrite. The reconciler relaunches the task with nothing charged.
+        return {"status": "unreviewed", "failure_class": None,
+                "stage": "agent_log" if error.stage == "agent_log" else "submission_check",
+                "reason": str(error)[:2000]}
     except review_loop.OpenP0 as error:
         return fail([f"review loop: P0 finding left open: {title}" for title in error.titles])
     except review_loop.LoopError as error:
@@ -371,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mbox", type=Path, help="the rewritten series (check-rewrite)")
     parser.add_argument("--report", type=Path,
                         help="the worker's report.json (required when the task carries a history)")
+    parser.add_argument("--agent-log", type=Path, help="the agent's stdio log")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     task = json.loads(args.task.read_text())
@@ -384,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
             report = None
         mbox = args.mbox.read_bytes() if args.mbox and args.mbox.is_file() \
             and not args.mbox.is_symlink() else None
-        result = check_rewrite(task, result_value, mbox, report=report)
+        result = check_rewrite(task, result_value, mbox, report=report, agent_log=args.agent_log)
     except (OSError, ValueError) as error:
         result = unusable(f"the Result cannot be read: {str(error)[:300]}")
     except CheckError as error:

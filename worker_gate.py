@@ -30,6 +30,16 @@ class WorkerGateError(ValueError):
     pass
 
 
+class ReviewersUnavailable(WorkerGateError):
+    """The review loop of the patch never ran (its reviewers were unavailable,
+    or the agent's log shows no reviewer launch for its rounds): a failure of
+    the pipeline. ``stage`` is where it was found."""
+
+    def __init__(self, message: str, stage: str = "review_loop"):
+        super().__init__(message)
+        self.stage = stage
+
+
 class ReviewLoopRejected(WorkerGateError):
     """The patch is valid and its report is readable, but its review loop is
     missing, ran no round, or left a P0 finding open. The Result is rejected
@@ -78,7 +88,8 @@ def _direct(command: str, image: str) -> bool:
         and "--platform linux/riscv64" in command and image in command
 
 
-def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | None = None) -> dict:
+def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | None = None,
+             agent_log: Path | None = None) -> dict:
     schemas.validate("proposal", proposal)
     if task.get("task") not in WRITE_TASKS:
         raise WorkerGateError("worker gate accepts only patch tasks")
@@ -241,7 +252,11 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
             # The patch was reviewed in the worker's run: it is published
             # only when the review loop it reports left no P0 finding open.
             try:
-                review_loop.check(report, series_digest=proposal.get("patch_digest"))
+                review_loop.check(report, series_digest=proposal.get("patch_digest"),
+                                  launches=review_loop.log_launches(agent_log))
+            except review_loop.ReviewersUnavailable as error:
+                raise ReviewersUnavailable(f"the review loop of the patch: {error}",
+                                           error.stage) from None
             except review_loop.LoopError as error:
                 raise ReviewLoopRejected(f"the review loop of the patch: {error}") from None
     return {
@@ -265,17 +280,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mbox", type=Path, required=True)
     parser.add_argument("--report", type=Path,
                         help="the worker's report.json (required when the task carries a history)")
+    parser.add_argument("--agent-log", type=Path,
+                        help="the agent's stdio log: the reviewer launches it shows bear out the rounds")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         task = json.loads(args.task.read_text())
         proposal = json.loads(args.proposal.read_text())
-        report = validate(task, proposal, args.mbox, args.report)
+        report = validate(task, proposal, args.mbox, args.report, args.agent_log)
         code = 0
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, schemas.SchemaError,
             WorkerGateError, ValueError) as error:
         report = {"status": "rejected", "reason": str(error)[:2000],
                   "stage": "review_loop" if isinstance(error, ReviewLoopRejected) else "worker_gate"}
+        if isinstance(error, ReviewersUnavailable):
+            # No review ran: not a rejection of the patch, so nothing is charged.
+            report = {"status": "unreviewed", "reason": str(error)[:2000], "stage": error.stage}
         code = 1
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2))

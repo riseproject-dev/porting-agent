@@ -25,8 +25,11 @@ engine:
   # nothing to show); its `worker` child keeps the parent model and loses
   # `contact_supervisor`, which has nobody to answer in a headless run. gh-aw
   # merges this key into Pi's settings whole, so it repeats the child-only
-  # default.
-  config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"],"agentOverrides":{"reviewer":{"tools":"read, grep, find, ls"},"worker":{"tools":"read, grep, find, ls, bash, edit, write"}}}}}'
+  # default. `tools` is an array of strings: pi-subagents 0.89.0 refuses the
+  # comma-separated string of an agent file in settings and then loads no
+  # `subagent` tool at all (`tests/test_pi_subagents_config.py` checks every
+  # override against the package's own rules).
+  config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"],"agentOverrides":{"reviewer":{"tools":["read","grep","find","ls"]},"worker":{"tools":["read","grep","find","ls","bash","edit","write"]}}}}}'
 model: anthropic/claude-opus-5-5
 concurrency:
   job-discriminator: ${{ github.run_id }}
@@ -381,12 +384,24 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           enable-cache: false
+      - name: Download the agent log
+        id: agentlog
+        # The stdio log of the agent step, whose tool events show which reviewer
+        # children the agent launched (`review_loop.reviewer_launches`). A
+        # missing log decides nothing: the review loop is then judged by the
+        # report alone, with a warning.
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: agent
+          path: agent-artifact
       - name: Resolve exact Result and gate the uncredentialed proposal
         id: result
         working-directory: control
         env:
           GH_TOKEN: ${{ github.token }}
           ASSIGNMENT: ${{ inputs.work_queue_assignment }}
+          AGENT_LOG_OUTCOME: ${{ steps.agentlog.outcome }}
           WORKFLOW_PATH: .github/workflows/worker.lock.yml
         run: |
           set -euo pipefail
@@ -413,6 +428,18 @@ jobs:
             exit 0
           fi
           task_name=$(jq -r .task ../in/task.json)
+          # The agent's own log, at its exact path (the artifact also holds
+          # files the agent wrote). Its tool events must bear out the review
+          # rounds the report claims: no successful launch of the `reviewer`
+          # agent for them is no review, a failure of the pipeline.
+          agent_log=../agent-artifact/agent-stdio.log
+          log_args=()
+          if [ -f "$agent_log" ] && [ ! -L "$agent_log" ]; then
+            log_args=(--agent-log "$agent_log")
+          else
+            echo "::warning::the agent log was not downloaded (step ${AGENT_LOG_OUTCOME}), so the review loop is judged by the worker report alone"
+            echo "The agent log was not available: the review loop was judged by the worker report alone." >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "$rc" = 0 ] && [ "$task_name" = submission_rewrite ]; then
             # The submission rewrite writes nothing: the rewritten series and
             # pull request text, and the review loop the worker ran on them,
@@ -431,7 +458,7 @@ jobs:
             else
               uv run --locked python -m submission check-rewrite --task ../in/task.json \
                 --result ../in/proposal.json --mbox ../in/patches.mbox \
-                --report ../in/report.json --out ../in/outcome.json
+                --report ../in/report.json "${log_args[@]}" --out ../in/outcome.json
             fi
             jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -441,7 +468,7 @@ jobs:
             gate_rc=0
             uv run --locked python -m worker_gate --task ../in/task.json \
               --proposal ../in/proposal.json --mbox ../in/patches.mbox \
-              --report ../in/report.json --out ../in/worker-gate.json || gate_rc=$?
+              --report ../in/report.json "${log_args[@]}" --out ../in/worker-gate.json || gate_rc=$?
             gate_status=$(jq -r .status ../in/worker-gate.json)
             if [ "$gate_rc" = 0 ] && [ "$gate_status" = accepted ]; then
               uv run --locked python -m fork_publish preflight \
@@ -468,6 +495,14 @@ jobs:
               echo "publish=false" >> "$GITHUB_OUTPUT"
               jq -n --arg reason "$(jq -r .reason ../in/worker-gate.json)" \
                 '{status:"worker_blocked", failure_class:"infrastructure", reason:$reason, stage:"worker_gate"}' \
+                > ../in/outcome.json
+            elif [ "$gate_status" = unreviewed ]; then
+              # No review ran (the reviewers were unavailable, or the worker
+              # reviewed the series itself): a failure of the pipeline, free.
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              jq -n --arg reason "$(jq -r .reason ../in/worker-gate.json)" \
+                --arg stage "$(jq -r '.stage // "review_loop"' ../in/worker-gate.json)" \
+                '{status:"unreviewed", failure_class:null, reason:$reason, stage:$stage}' \
                 > ../in/outcome.json
             else
               echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -708,6 +743,19 @@ and that the final tree is the tree of the approved series (the branch
 `riscv64-dev`) without its debug commits. Fixes are rewording, squashing and
 text edits only, never a change of code.
 
+**The reviewers must exist.** The loop is an independent review: you never
+stand in for it. When the `subagent` tool is missing from your tools, or a
+launch of a `reviewer` child returns an error (a settings or extension error,
+a refused launch, a child that never started) instead of a review, you do not
+review the series yourself, and you do not describe your own reading of it as
+a review, a round or a finding. Stop the loop at once, deliver the committed
+series as usual (`porting-out/patches.mbox` and the proposal), and record
+`review_loop` with `rounds: 0`, `round_digests: []`, no findings,
+`stopped_because: "reviewers_unavailable"` and a `summary` that says which
+call failed and how. Trusted code then publishes nothing, charges the task
+nothing and runs it again. A reviewer that ran and found nothing is a review;
+an error result is not.
+
 **Roles.** This session is the loop controller and the only decision-maker.
 Children implement or review and report back; they never launch children of
 their own, never decide what is a blocker, and never decide the outcome. Exactly
@@ -783,7 +831,10 @@ own sections. When a P0 finding is still open at the end, record it open:
 trusted code then pushes nothing and the Result is a rejected proposal.
 Trusted code publishes the series only when a round ran, the last round
 reviewed that series and no P0 finding is open, and posts your summary of the
-loop on the pushed commit.
+loop on the pushed commit. A loop that records `reviewers_unavailable`, or
+that reports rounds the log of this run does not bear out (it shows fewer
+successful launches of the `reviewer` agent than rounds), is no review: nothing
+is published and the task is run again at no charge.
 
 ## The worker report
 
@@ -798,10 +849,10 @@ copied from the task, `history_digest` copied from
 `failures` with their evidence, the `open_items`, the `verification` done, and
 `revisited` for every failed or abandoned approach of the history you tried
 again, and for a patch, repair, revision or passing rewrite task the `review_loop`: `rounds` run
-(1 to 3), `round_digests` (the SHA-256 of the series each round's reviewers read, in
+(1 to 3; 0 only for `reviewers_unavailable`), `round_digests` (the SHA-256 of the series each round's reviewers read, in
 order; the last is the digest of the `patches.mbox` you deliver), for a rewrite
 `text_digest` (see "The review loop"), `stopped_because` (`clean`, `optional_only`, `decision_needed`,
-`cap_reached` or `deadline`), at most 10 `findings` (P0 first), each with its
+`cap_reached`, `deadline` or, with `rounds` 0, `reviewers_unavailable`), at most 10 `findings` (P0 first), each with its
 `severity` (`P0`, `P1` or `P2`), `status` (`open`, `fixed`, `withdrawn` or
 `deferred`), `round`, `closed_in_round` (null while open), `title`, `detail`
 and `resolution`, and a `summary`. Trusted code rejects a Result without a

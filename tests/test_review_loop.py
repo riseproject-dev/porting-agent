@@ -128,10 +128,116 @@ class TestCheck(unittest.TestCase):
         schemas.validate("worker_report", report(review_loop=loop(finding())))
 
 
+SELF_REVIEW = ("The subagent tool failed to launch reviewer children (settings error), so the "
+               "controller reviewed the series itself")
+SETTINGS_ERROR = ("Builtin override 'reviewer' in '/tmp/gh-aw/pi-agent-dir/settings.json' has "
+                  "invalid 'tools'; expected an array of strings, \"inherit\", or false.")
+STAMP = "2026-11-25T09:38:58.1551821Z "
+
+
+def event(kind, call, **fields):
+    return STAMP + json.dumps(dict(type=kind, toolCallId=call, toolName="subagent", **fields),
+                              separators=(",", ":"))
+
+
+def failed_launch(call="toolu_01Rp6qwZAFpZgUB2EABMh9Vf"):
+    """The calls of run 45577808226 (agent log lines 7278-7279), the task text cut."""
+    return [event("tool_execution_start", call, args={"tasks": [
+                {"agent": "reviewer", "cwd": "./fork", "task": "Review angle: CORRECTNESS"},
+                {"agent": "reviewer", "cwd": "./fork", "task": "Review angle: TESTS"}]}),
+            event("tool_execution_end", call,
+                  result={"content": [{"type": "text", "text": SETTINGS_ERROR}], "details": {}},
+                  isError=True, durationMs=3)]
+
+
+def good_launch(call="toolu_ok", agents=("reviewer", "reviewer", "reviewer")):
+    return [event("tool_execution_start", call,
+                  args={"tasks": [{"agent": a, "task": "x"} for a in agents]}),
+            event("tool_execution_end", call, result={"content": [
+                {"type": "text", "text": "Verdict: OK with notes. P2: rename a helper."}],
+                "details": {}}, isError=False, durationMs=91000)]
+
+
+class TestUnavailable(unittest.TestCase):
+    """A loop with no reviewer behind it is no review, judged by structured
+    evidence: the report's own field and the tool events of the agent's log,
+    never the worker's prose."""
+
+    def check(self, value, log=None, **over):
+        launches = None if log is None else review_loop.reviewer_launches("\n".join(log))
+        return review_loop.check(report(review_loop=value, **over), series_digest=SERIES,
+                                 launches=launches)
+
+    def test_unavailable_reviewers_are_not_a_review(self):
+        value = loop(rounds=0, stopped="reviewers_unavailable", summary="The subagent tool was missing.")
+        value["round_digests"] = []
+        with self.assertRaisesRegex(review_loop.ReviewersUnavailable, "reviewers were unavailable"):
+            self.check(value)
+        with self.assertRaises(review_loop.ReviewersUnavailable):
+            self.check(loop(stopped="reviewers_unavailable"))
+
+    def test_the_live_log_of_run_45577808226_bears_out_no_review(self):
+        """Two `subagent` calls that returned the settings error, and a report
+        that claimed one round: the Result is unreviewed, found in the log."""
+        log = ["Extension error (/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-subagents/bundle/index.js): "
+               + SETTINGS_ERROR] + failed_launch() + failed_launch("toolu_01PdkFDfrDyzPTbxmaKttwy4")
+        self.assertEqual(review_loop.reviewer_launches("\n".join(log)), 0)
+        with self.assertRaises(review_loop.ReviewersUnavailable) as raised:
+            self.check(loop(rounds=1, summary=SELF_REVIEW, stopped="optional_only"), log)
+        self.assertEqual(raised.exception.stage, "agent_log")
+        self.assertIn("0 successful launches", str(raised.exception))
+
+    def test_successful_launches_bear_out_the_rounds(self):
+        self.assertEqual(self.check(loop(rounds=2), failed_launch() + good_launch("a")
+                                    + good_launch("b", ("reviewer",)))["rounds"], 2)
+        self.assertEqual(review_loop.reviewer_launches("\n".join(good_launch())), 3)
+        # A single `agent` call counts too, a worker child does not.
+        single = [event("tool_execution_start", "s", args={"agent": "reviewer", "task": "x"}),
+                  event("tool_execution_end", "s", result={"content": []}, isError=False)]
+        self.assertEqual(review_loop.reviewer_launches("\n".join(single)), 1)
+        self.assertEqual(review_loop.reviewer_launches("\n".join(good_launch(agents=("worker",)))), 0)
+        # Fewer launches than rounds is unreviewed; one launch per round is enough.
+        with self.assertRaises(review_loop.ReviewersUnavailable):
+            self.check(loop(rounds=3), good_launch("a", ("reviewer",)) + good_launch("b", ("reviewer",)))
+        self.assertEqual(self.check(loop(rounds=3), good_launch("a", ("reviewer",)) * 0
+                                    + good_launch("b") + good_launch("c", ("reviewer",))
+                                    + good_launch("d", ("reviewer",)))["rounds"], 3)
+
+    def test_an_error_text_without_the_flag_is_no_launch(self):
+        log = [event("tool_execution_start", "t", args={"agent": "reviewer"}),
+               event("tool_execution_end", "t", result={"content": [
+                   {"type": "text", "text": "Error: unknown agent 'reviewer'"}]})]
+        self.assertEqual(review_loop.reviewer_launches("\n".join(log)), 0)
+
+    def test_an_absent_log_decides_nothing(self):
+        self.assertEqual(self.check(loop(rounds=2))["rounds"], 2)
+        self.assertIsNone(review_loop.log_launches(Path("/nonexistent/agent-stdio.log")))
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "agent-stdio.log"
+            log.write_text("\n".join(good_launch()) + "\nnot json {\n{\"type\":\"tool_execution_end\"\n")
+            self.assertEqual(review_loop.log_launches(log), 3)
+
+    def test_prose_is_never_read(self):
+        """Sentences that look like a self-review are only words: with the
+        launches in the log, a legitimately reviewed patch is accepted."""
+        log = good_launch()
+        for prose in ("two reviewer subagents flagged a missing Signed-off-by",
+                      "findings were reviewed by the controller", "Zbb is unavailable on old cores",
+                      "The test itself reviewed nothing", SELF_REVIEW,
+                      "Self-review of the error paths: none needed"):
+            with self.subTest(prose=prose):
+                self.assertEqual(self.check(loop(finding(detail=prose), summary=prose), log,
+                                            summary=prose, open_items=[prose])["rounds"], 2)
+
+    def test_it_is_a_loop_error_for_a_caller_that_only_knows_a_refusal(self):
+        self.assertTrue(issubclass(review_loop.ReviewersUnavailable, review_loop.LoopError))
+        self.assertFalse(issubclass(review_loop.OpenP0, review_loop.ReviewersUnavailable))
+
+
 class TestGate(unittest.TestCase):
     """The worker gate accepts a patch only with a usable review loop."""
 
-    def validate(self, value, *, reviewed_series=True):
+    def validate(self, value, *, reviewed_series=True, agent_log=None):
         """The gate on a patch whose report holds ``value``; its rounds
         reviewed exactly the patch unless ``reviewed_series`` is false."""
         import hashlib
@@ -150,7 +256,7 @@ class TestGate(unittest.TestCase):
             if value is not None:
                 body["review_loop"] = value
             path.write_text(json.dumps(body))
-            return worker_gate.validate(own, m5.proposal(series), mbox, path)
+            return worker_gate.validate(own, m5.proposal(series), mbox, path, agent_log)
 
     def test_a_patch_with_its_loop_is_accepted(self):
         self.assertEqual(self.validate(loop(finding("P0", "fixed", 1, 2)))["status"], "accepted")
@@ -189,6 +295,62 @@ class TestGate(unittest.TestCase):
             path.unlink()
             with self.assertRaisesRegex(worker_gate.ReviewLoopRejected, "records no review loop"):
                 worker_gate.validate(own, m5.proposal(series), mbox, path)
+
+    def test_a_patch_nobody_reviewed_is_unreviewed_not_rejected(self):
+        """No reviewer ran: a failure of the pipeline, never a charged rejection."""
+        with self.assertRaisesRegex(worker_gate.ReviewersUnavailable, "review loop of the patch: "):
+            self.validate(loop(rounds=0, stopped="reviewers_unavailable"))
+        self.assertFalse(issubclass(worker_gate.ReviewersUnavailable,
+                                    worker_gate.ReviewLoopRejected))
+
+    def test_a_patch_whose_log_shows_no_reviewer_launch_is_unreviewed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "agent-stdio.log"
+            log.write_text("\n".join(failed_launch()))
+            with self.assertRaises(worker_gate.ReviewersUnavailable) as raised:
+                self.validate(loop(rounds=1, summary=SELF_REVIEW), agent_log=log)
+            self.assertEqual(raised.exception.stage, "agent_log")
+            log.write_text("\n".join(good_launch()))
+            self.assertEqual(self.validate(loop(rounds=1), agent_log=log)["status"], "accepted")
+            # No log: the report alone decides, as before.
+            self.assertEqual(self.validate(loop(rounds=1), agent_log=log.with_name("none"))["status"],
+                             "accepted")
+
+    def test_the_gate_writes_unreviewed_for_the_publish_job(self):
+        from tests import test_milestone5_worker as m5
+        series = m5.mbox()
+        own = dict(m5.task(), context={"history": {"sha256": HISTORY}})
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            (d / "patches.mbox").write_bytes(series)
+            body = report(contribution_id=own["contribution_id"], task=own["task"])
+            body["review_loop"] = loop(rounds=0, stopped="reviewers_unavailable")
+            (d / "report.json").write_text(json.dumps(body))
+            (d / "task.json").write_text(json.dumps(own))
+            (d / "proposal.json").write_text(json.dumps(m5.proposal(series)))
+            code = worker_gate.main(["--task", str(d / "task.json"), "--proposal",
+                                     str(d / "proposal.json"), "--mbox", str(d / "patches.mbox"),
+                                     "--report", str(d / "report.json"), "--out", str(d / "o.json")])
+            out = json.loads((d / "o.json").read_text())
+        self.assertEqual((code, out["status"], out["stage"]), (1, "unreviewed", "review_loop"))
+        self.assertNotIn("failure_class", out)
+        # The same report with a log of failed launches: found in the log.
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            (d / "patches.mbox").write_bytes(series)
+            import hashlib
+            body["review_loop"] = loop(rounds=1, digest=hashlib.sha256(series).hexdigest())
+            (d / "report.json").write_text(json.dumps(body))
+            (d / "task.json").write_text(json.dumps(own))
+            (d / "proposal.json").write_text(json.dumps(m5.proposal(series)))
+            (d / "agent-stdio.log").write_text("\n".join(failed_launch()))
+            code = worker_gate.main(["--task", str(d / "task.json"), "--proposal",
+                                     str(d / "proposal.json"), "--mbox", str(d / "patches.mbox"),
+                                     "--report", str(d / "report.json"), "--agent-log",
+                                     str(d / "agent-stdio.log"), "--out", str(d / "o.json")])
+            out = json.loads((d / "o.json").read_text())
+        self.assertEqual((code, out["status"], out["stage"]), (1, "unreviewed", "agent_log"))
+        self.assertNotIn("failure_class", out)
 
     def test_a_patch_the_last_round_did_not_review_is_rejected(self):
         with self.assertRaisesRegex(worker_gate.ReviewLoopRejected,
@@ -405,6 +567,44 @@ class TestFirstPatch(unittest.TestCase):
             "the head is not the commit the worker pushed")
 
 
+class TestPublishJobGate(unittest.TestCase):
+    """The worker's publish job turns an unreviewed Result into the free path."""
+
+    def test_the_publish_job_reads_the_agent_log_and_maps_unreviewed(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        for name in (".github/workflows/worker.md", ".github/workflows/worker.lock.yml"):
+            text = (root / name).read_text()
+            self.assertIn("name: Download the agent log", text, name)
+            self.assertIn("../agent-artifact/agent-stdio.log", text, name)
+            self.assertNotIn("find ../agent-artifact", text, name)
+            self.assertIn("--agent-log", text, name)
+            self.assertIn("::warning::", text, name)
+            self.assertIn('{status:"unreviewed", failure_class:null, reason:$reason, '
+                          'stage:$stage}', text, name)
+        lock = yaml.safe_load((root / ".github/workflows/worker.lock.yml").read_text())
+        steps = lock["jobs"]["publish"]["steps"]
+        names = [s.get("name") for s in steps]
+        download = steps[names.index("Download the agent log")]
+        self.assertEqual(download["with"], {"name": "agent", "path": "agent-artifact"})
+        self.assertLess(names.index("Download the agent log"),
+                        names.index("Resolve exact Result and gate the uncredentialed proposal"))
+        # The log is the one the gh-aw steps parse and upload with the agent artifact.
+        agent = lock["jobs"]["agent"]["steps"]
+        upload = next(s for s in agent if s.get("name") == "Upload agent artifacts")
+        self.assertEqual(upload["with"]["name"], "agent")
+        self.assertIn("/tmp/gh-aw/agent-stdio.log", upload["with"]["path"])
+
+    def test_the_prompt_makes_the_worker_report_unavailable_reviewers_not_review_itself(self):
+        prompt = (Path(__file__).resolve().parents[1] / ".github/workflows/worker.md").read_text()
+        section = prompt[prompt.index("## The review loop"):prompt.index("## The worker report")]
+        flat = " ".join(section.split())
+        for needle in ("you never stand in for it", "you do not review the series yourself",
+                       "`rounds: 0`", '`stopped_because: "reviewers_unavailable"`',
+                       "deliver the committed series as usual"):
+            self.assertIn(needle, flat)
+
+
 class TestPublishRetryGate(unittest.TestCase):
     """The publish-only retry reaches the push without the worker gate: the
     preflight both paths run refuses a patch without a usable review loop
@@ -450,6 +650,74 @@ class TestOldWork(unittest.TestCase):
         self.assertEqual(new["budget"], rec["budget"])
         self.assertEqual(new["active_task"]["attempt"], 1)
         self.assertEqual(new["revision"], rec["revision"] + 1)
+
+    def test_a_patch_with_no_review_is_relaunched_nothing_charged_a_bounded_number_of_times(self):
+        """`unreviewed` (the reviewers could not run) takes the free path, and
+        the free relaunches are counted per version of the task, so a task
+        whose reviewers stay unavailable is charged after the third."""
+        rec = running()
+        result = dict(published(rec), status="unreviewed")
+        result.pop("operation")
+        for used in range(3):
+            with self.subTest(used=used):
+                out = tick(rec, [result])
+                self.assertEqual(kinds(out), ["reallocate_after_pipeline_failure"])
+                new = final(out)
+                self.assertEqual(new["budget"], rec["budget"])
+                self.assertEqual(new["active_task"]["review_free"], used + 1)
+                self.assertNotIn("pipeline_free", new["active_task"])
+                rec = dict(new)
+                result = dict(published(rec, run=str(4243 + used), artifact=904 + used),
+                              status="unreviewed")
+                result.pop("operation")
+        # The fourth is no longer free: a task without a usable Result, charged.
+        out = tick(rec, [result])
+        self.assertEqual(kinds(out), ["allocate_task_retry"])
+        self.assertNotIn("review_free", final(out)["active_task"])
+
+    def test_the_two_kinds_of_free_relaunch_never_reset_each_other(self):
+        """A failure before the agent (`pipeline_free`) between the failures of
+        the review (`review_free`) does not give the review a fresh count."""
+        rec = running()
+        used = 0
+        for round_ in range(6):
+            result = dict(published(rec, run=str(5000 + round_), artifact=7000 + round_),
+                          status="unreviewed")
+            result.pop("operation")
+            out = tick(rec, [result])
+            if kinds(out) != ["reallocate_after_pipeline_failure"]:
+                break
+            used += 1
+            rec = dict(final(out))
+            # The version gate relaunches the new graph for a failure before its agent.
+            rec["active_task"] = dict(rec["active_task"],
+                                      pipeline_free={"version": f"v{round_}", "count": 1})
+        self.assertEqual(used, 3)
+        self.assertEqual(kinds(out), ["allocate_task_retry"])
+
+    def test_a_held_result_keeps_the_review_count_of_its_task(self):
+        """The task is cleared when its Result is held for a publish-only retry,
+        and the rebuilt task must not start the free relaunches again."""
+        work_ = running()
+        held = {"worker_run_id": "4242", "attempts": 1, "last_reason": "infra",
+                "next_attempt_at": NOW, "review_free": 3}
+        rec = dict(work_, pending_publication=held, active_task=None)
+        result = dict(published(work_), status="unreviewed")
+        result.pop("operation")
+        self.assertEqual(kinds(tick(rec, [result])), ["allocate_task_retry"])
+        rec["pending_publication"] = dict(held, review_free=2)
+        out = tick(rec, [result])
+        self.assertEqual(kinds(out), ["reallocate_after_pipeline_failure"])
+        self.assertEqual(final(out)["active_task"]["review_free"], 3)
+
+    def test_the_gate_of_a_failure_before_the_agent_keeps_the_review_count(self):
+        import controller
+        aw = dict(running()["active_task"], review_free=2)
+        new, _event, _why = controller.terminal_task(
+            dict(running(), active_task=aw), aw, "cancelled", now=datetime.fromisoformat(NOW),
+            policy=POLICY, details={"pipeline_failure": {"version": "abc", "free_count": 1}})
+        self.assertEqual((new["active_task"]["review_free"], new["active_task"]["pipeline_free"]),
+                         (2, {"version": "abc", "count": 1}))
 
     def test_task_that_carries_the_review_contract_publishes_like_any_other(self):
         rec = running()

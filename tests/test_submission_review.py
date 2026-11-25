@@ -377,6 +377,12 @@ class TestCheck(unittest.TestCase):
         out = self.check(mbox, task)
         self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
         self.assertIn("no review loop", out["reason"])
+        # No reviewer ran: no verdict and no charge, a failure of the pipeline.
+        self.loop.side_effect = review_loop.ReviewersUnavailable("the reviewers were unavailable")
+        out = self.check(mbox, task)
+        self.assertEqual((out["status"], out["failure_class"], out["stage"]),
+                         ("unreviewed", None, "submission_check"))
+        self.assertNotIn("verdict", out)
         self.loop.side_effect = None
         self.assertEqual(self.check(mbox, task)["verdict"], "pass")
 

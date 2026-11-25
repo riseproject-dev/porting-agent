@@ -123,8 +123,10 @@ jobs:
                 --proposal ../in/proposal.json --out ../in/rerun.json
             jq -r '"rerun=" + (.rerun|tostring), "rerun_fork=" + .fork_name' ../in/rerun.json >> "$GITHUB_OUTPUT"
           elif [ "$(jq -r .status ../in/preflight.json)" = unreviewed ]; then
-            # A held Result of a worker run of the earlier pipeline: no review
-            # loop was run on it; it is relaunched, with nothing charged.
+            # A held Result that no review covers (a worker run of the earlier
+            # pipeline, or a loop that records unavailable reviewers or a
+            # review by the worker itself): it is relaunched, with nothing
+            # charged.
             jq '{status:"unreviewed", failure_class:null, reason, stage:"preflight"}' \
               ../in/preflight.json > ../in/outcome.json
           elif [ "$(jq -r .publish ../in/preflight.json)" != true ]; then

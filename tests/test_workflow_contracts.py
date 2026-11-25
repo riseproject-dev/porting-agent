@@ -1187,9 +1187,11 @@ class TestPiExtensions(unittest.TestCase):
         overrides = subagents["agentOverrides"]
         # Reviewers inherit the parent's model and read only: the series is committed,
         # so the diff is a file, and nothing asks a supervisor who is absent.
-        self.assertEqual(overrides["reviewer"],
-                         {"tools": "read, grep, find, ls"})
-        self.assertEqual(overrides["worker"], {"tools": "read, grep, find, ls, bash, edit, write"})
+        # `tools` is an array: pi-subagents 0.89.0 refuses the comma-separated string
+        # (tests/test_pi_subagents_config.py validates the whole config).
+        self.assertEqual(overrides["reviewer"], {"tools": ["read", "grep", "find", "ls"]})
+        self.assertEqual(overrides["worker"],
+                         {"tools": ["read", "grep", "find", "ls", "bash", "edit", "write"]})
         self.assertEqual(set(overrides), {"reviewer", "worker"})
         lock = workflow("worker.lock.yml")["jobs"]["agent"]
         # The Docker of the ubuntu-24.04 image (28.0.4) lacks `image inspect --platform`,
@@ -1287,7 +1289,7 @@ class TestHistoryAndReports(unittest.TestCase):
 
     def test_the_publish_jobs_check_and_keep_the_report(self):
         worker = (WORKFLOWS / "worker.md").read_text()
-        self.assertIn("--report ../in/report.json --out ../in/worker-gate.json", worker)
+        self.assertIn('--report ../in/report.json "${log_args[@]}" --out ../in/worker-gate.json', worker)
         self.assertEqual(worker.count("--report ../in/report.json"), 4)
         for name in ("worker.lock.yml", "publish-retry.yml"):
             with self.subTest(workflow=name):

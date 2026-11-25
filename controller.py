@@ -1266,12 +1266,23 @@ def terminal_task(c: dict, aw: dict, queue_state: str, *, now: datetime,
         # with nothing charged. A free relaunch at the same version is
         # counted on the task, so the free relaunches of one version are
         # bounded across graphs.
-        free = details["pipeline_failure"].get("free_count")
-        if free:
-            fresh["pipeline_free"] = {"version": details["pipeline_failure"]["version"],
-                                      "count": free}
+        failure = details["pipeline_failure"]
+        if failure.get("review_free"):
+            # A Result that no review covers: its free relaunches are counted
+            # in their own field (`review_free`), and the count of the version
+            # gate (`pipeline_free`) is carried on untouched, so the two kinds
+            # of failure never reset each other.
+            fresh["review_free"] = failure["review_free"]
+            if aw.get("pipeline_free"):
+                fresh["pipeline_free"] = aw["pipeline_free"]
         else:
-            fresh.pop("pipeline_free", None)
+            if failure.get("free_count"):
+                fresh["pipeline_free"] = {"version": failure["version"],
+                                          "count": failure["free_count"]}
+            else:
+                fresh.pop("pipeline_free", None)
+            if aw.get("review_free"):
+                fresh["review_free"] = aw["review_free"]
         match engine.dispatch(engine.try_apply_transition(
                 c, "reallocate_after_pipeline_failure", policy=policy, now=iso,
                 cause_id=f"queue-{queue_state}",
@@ -1320,7 +1331,7 @@ def _fresh_task(c: dict, aw: dict, now: datetime) -> dict:
     generation, revision = int(c.get("generation", 0)), c["revision"] + 1
     # The free relaunches of a version belong to the graph that failed: only
     # `reallocate_after_pipeline_failure` carries them on (`terminal_task`).
-    aw = {k: v for k, v in aw.items() if k != "pipeline_free"}
+    aw = {k: v for k, v in aw.items() if k not in ("pipeline_free", "review_free")}
     return dict(aw, dedupe_key=tasks.task_key(c["contribution_id"], generation, revision,
                                                    aw["task"], engine.head_reruns(c)["flaky"]),
                 generation=generation, revision=revision, requested_at=now.isoformat(),

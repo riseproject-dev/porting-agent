@@ -1381,6 +1381,28 @@ def _rewrite_problem(rec: dict, outcome: dict, worker_run_id: str | None) -> str
     return None
 
 
+_UNREVIEWED_WHY = {"unreviewed": "the Result was not independently reviewed: its review loop is "
+                                 "missing, or no reviewer launch bears it out"}
+REVIEW_FREE_MAX = len(PIPELINE_RELEASE_BACKOFF)
+
+
+def _unreviewed_details(aw: dict, why: str) -> dict:
+    """The details of the terminal task of a Result that no review covers
+    (``unreviewed``, ``verified``): a failure of the pipeline, so the next
+    graph is allocated with nothing charged
+    (``reallocate_after_pipeline_failure``). The free relaunches are counted on
+    the task in its own field (``review_free``, apart from ``pipeline_free``,
+    which the version gate of the failures before the agent resets) and are at
+    most ``REVIEW_FREE_MAX`` before each charged retry: the next Result with no
+    review is a task without a usable Result, charged by ``allocate_task_retry``
+    (which, within ``task_recovery``, starts the count again)."""
+    used = int(aw.get("review_free") or 0)
+    if used >= REVIEW_FREE_MAX:
+        return {"why": f"{why}; its {REVIEW_FREE_MAX} free relaunches are spent"}
+    return {"pipeline_failure": {"version": "review-loop", "free_count": 0,
+                                 "review_free": used + 1}, "why": why}
+
+
 def _unusable_submission_result(rec: dict, why: str, *, now: str,
                                 policy: dict) -> tuple[dict, list[tuple[str, dict]]]:
     """A rewrite Result that is not usable: a task without a usable
@@ -1422,6 +1444,18 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
     ``reject_submission_rewrite``: the reasons are recorded and become the
     pending feedback of the next development task; nothing is posted. An
     outcome that is not usable is a task without a usable Result."""
+    if outcome.get("status") == "unreviewed":
+        # The trusted check found no review of the rewrite (the reviewers could
+        # not run, or the worker reviewed its own series): a failure of the
+        # pipeline, relaunched with nothing charged.
+        new, event, decision = _terminal_task(
+            rec, rec.get("active_task") or {}, "result_unusable",
+            now=datetime.fromisoformat(now), policy=policy,
+            details=_unreviewed_details(rec.get("active_task") or {},
+                                        "the rewrite was not independently reviewed"))
+        if new is None:
+            raise lifecycle.TransitionError(f"an unreviewed rewrite Result: {decision}")
+        return new, [("contributions", new), ("events", event)]
     why = (_rewrite_problem(rec, outcome, worker_run_id)
            if outcome.get("status") == submission.REWRITE
            else f"the rewrite Result is not usable: {outcome.get('status')}: "
@@ -1439,8 +1473,8 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
         new, event, decision = _terminal_task(
             rec, rec.get("active_task") or {}, "result_unusable",
             now=datetime.fromisoformat(now), policy=policy,
-            details={"pipeline_failure": {"version": "review-loop", "free_count": 0},
-                     "why": "the rewrite passed a check that read no review loop"})
+            details=_unreviewed_details(rec.get("active_task") or {},
+                                        "the rewrite passed a check that read no review loop"))
         if new is None:
             raise lifecycle.TransitionError(f"a rewrite Result of the retired review: {decision}")
         return new, [("contributions", new), ("events", event)]
@@ -1863,11 +1897,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 rec, task, SimpleNamespace(now=datetime.fromisoformat(now), tracking_issues={},
                                            issues=[]), now)
             aw["feedback_evidence_ids"] = list(rec.get("pending_feedback_evidence_ids") or [])
+            # The count of the held task is the one it had when it was held.
+            if (rec.get("pending_publication") or {}).get("review_free"):
+                aw["review_free"] = rec["pending_publication"]["review_free"]
         new, event, decision = _terminal_task(
             rec, aw or {}, "result_unusable",
             now=datetime.fromisoformat(now), policy=policy,
-            details={"pipeline_failure": {"version": "review-loop", "free_count": 0},
-                     "why": "the Result is a patch held for a review that no longer exists"})
+            details=_unreviewed_details(aw or {}, _UNREVIEWED_WHY.get(
+                status, "the Result is a patch held for a review that no longer exists")))
         if new is None:
             raise lifecycle.TransitionError(f"a Result of the retired review: {decision}")
         return new, [("contributions", new), ("events", event)]

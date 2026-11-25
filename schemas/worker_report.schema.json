@@ -218,7 +218,7 @@
     "review_loop": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The review loop of the run (at most 3 rounds of fresh read-only reviewers, each followed by a fix pass): how many rounds ran, the digest of the series each round reviewed, why the loop stopped, and every finding the reviewers made with what became of it. Required of a Result that delivers a series; trusted code publishes nothing while a P0 finding is open, a P0 finding is closed only by a later round than the one that raised it, and the last round must have reviewed exactly the series that is delivered.",
+      "description": "The review loop of the run (at most 3 rounds of fresh read-only reviewers, each followed by a fix pass): how many rounds ran, the digest of the series each round reviewed, why the loop stopped, and every finding the reviewers made with what became of it. Required of a Result that delivers a series; `reviewers_unavailable` (with 0 rounds) records that the `subagent` tool was missing or no reviewer child could be launched, and the worker did not review the series itself: trusted code publishes nothing and relaunches the task with nothing charged. Trusted code publishes nothing while a P0 finding is open, a P0 finding is closed only by a later round than the one that raised it, and the last round must have reviewed exactly the series that is delivered.",
       "required": [
         "rounds",
         "round_digests",
@@ -252,7 +252,8 @@
             "optional_only",
             "decision_needed",
             "cap_reached",
-            "deadline"
+            "deadline",
+            "reviewers_unavailable"
           ]
         },
         "findings": {

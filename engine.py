@@ -1826,6 +1826,12 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         # A Result held for publication carries the feedback of its task.
         rec["pending_publication"] = dict(rec["pending_publication"],
                                           feedback_evidence_ids=carried)
+    if "pending_publication" in values and rec.get("pending_publication"):
+        # ... and the free relaunches of a missing review it has had.
+        free = (before.get("active_task") or {}).get("review_free") \
+            or (before.get("pending_publication") or {}).get("review_free")
+        if free:
+            rec["pending_publication"] = dict(rec["pending_publication"], review_free=free)
 
     charged_elsewhere = tuple(name for name in t.charges if not _charge(rec, name, ctx))
     if e.task in ("allocate", "reallocate") and rec.get("active_task"):

@@ -413,8 +413,10 @@ def preflight(*, record: dict, task: dict, proposal: dict, fork_lookup: Callable
     A patch is pushed only with the review loop its worker's report records
     (``review_loop.check``): the publish-only retry reaches here without the
     worker gate, so a patch without a usable loop is refused here too. A
-    report with no ``review_loop`` at all is the earlier contract's: status
-    ``unreviewed``, which the reconciler relaunches with nothing charged."""
+    report with no ``review_loop`` at all is the earlier contract's, and a loop
+    that records no review (``review_loop.ReviewersUnavailable``) is no
+    review: both are status ``unreviewed``, which the reconciler relaunches
+    with nothing charged."""
     try:
         check_proposal(proposal, record, task, allow_no_change=True)
     except (PublishRejected, schemas.SchemaError) as e:
@@ -439,6 +441,13 @@ def preflight(*, record: dict, task: dict, proposal: dict, fork_lookup: Callable
                     "reason": "the worker report records no review loop: the Result is of a "
                               "worker run of the earlier pipeline", "fork_name": ""}
         review_loop.check(report, series_digest=proposal.get("patch_digest"))
+    except review_loop.ReviewersUnavailable as e:
+        # No review ran (the reviewers could not be launched, or the worker
+        # reviewed the series itself): a failure of the pipeline, relaunched
+        # with nothing charged like a report of the earlier contract.
+        return {"publish": False, "status": "unreviewed", "failure_class": None,
+                "reason": f"the patch was not independently reviewed: {e}"[:2000],
+                "fork_name": ""}
     except (worker_report.ReportError, review_loop.LoopError) as e:
         return {"publish": False, "status": "rejected", "failure_class": "validation",
                 "reason": f"the patch has no usable review loop: {e}"[:2000], "fork_name": ""}

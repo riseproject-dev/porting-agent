@@ -20,6 +20,13 @@ findings, not that the reviews happened.
   round confirmed it fixed or withdrew it), never by the worker itself; a
   P0 finding that is deferred is not closed. A loop that fails the check
   makes the Result a rejected proposal, so nothing is pushed.
+  A loop that records ``stopped_because: "reviewers_unavailable"``, or that
+  reports rounds the agent's own event log does not bear out (fewer successful
+  launches of the ``reviewer`` agent through the ``subagent`` tool than rounds,
+  see ``reviewer_launches``), is not a failed review but no review:
+  ``ReviewersUnavailable``. It is a failure of the pipeline, not of the task, and
+  the Result is relaunched with nothing charged. Nothing the worker wrote in
+  prose is read for this: only its structured field and the log's tool events.
 * ``comment_body`` is the summary of the loop posted, once and without retry,
   as a comment on the commit the worker's publication pushed; it shows in the
   development PR of that commit.
@@ -32,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -42,10 +50,24 @@ from common import APP_COMMIT_NAME
 COMMENT_MARKER = "<!-- upstreaming-review-loop:{} -->"
 COMMENT_AUTHOR = APP_COMMIT_NAME
 _OPEN = ("open", "deferred")
+UNAVAILABLE = "reviewers_unavailable"
+# The start of the text of a failed tool result that carries no `isError` flag.
+_ERROR_TEXT = re.compile(r"(?:error:|failed to |unknown agent|builtin override\b)", re.IGNORECASE)
+
 
 
 class LoopError(ValueError):
     """The review loop of a delivered series is missing or inconsistent."""
+
+
+class ReviewersUnavailable(LoopError):
+    """No review ran because the reviewers could not be launched, or the
+    log shows no successful reviewer launch for the rounds reported: a failure
+    of the pipeline, not a review of the task. ``stage`` is where it was found."""
+
+    def __init__(self, message: str, stage: str = "review_loop"):
+        super().__init__(message)
+        self.stage = stage
 
 
 class OpenP0(LoopError):
@@ -59,14 +81,19 @@ class OpenP0(LoopError):
 
 
 def check(report: dict | None, *, series_digest: str | None, text_digest: str | None = None,
-          delivers_series: bool = True) -> dict | None:
+          delivers_series: bool = True, launches: int | None = None) -> dict | None:
     """The review loop of ``report`` when it is usable, ``None`` when the
     task delivers no series and records none. ``series_digest`` is the
     SHA-256 of the series the Result delivers (``None`` only when it delivers
     none). Raises ``LoopError`` when a delivered series has no loop, no round
     ran, the last round did not review exactly the delivered series (and, when
     ``text_digest`` is given, the delivered text), or the
-    loop contradicts itself, and ``OpenP0`` when a P0 finding is open."""
+    loop contradicts itself, and ``OpenP0`` when a P0 finding is open.
+    ``launches`` is ``reviewer_launches`` of the agent's log, ``None`` when
+    there is no log: an absent log decides nothing, and the loop is judged by
+    the report alone. ``ReviewersUnavailable`` is raised when the report says
+    no reviewer ran, or when the log shows fewer successful reviewer launches
+    than rounds."""
     loop = (report or {}).get("review_loop")
     if loop is None:
         if delivers_series:
@@ -74,6 +101,13 @@ def check(report: dict | None, *, series_digest: str | None, text_digest: str | 
         return None
     if not delivers_series:
         return loop
+    if loop["stopped_because"] == UNAVAILABLE:
+        raise ReviewersUnavailable("the worker reports that its reviewers were unavailable, so "
+                                   "no review ran")
+    if launches is not None and loop["rounds"] >= 1 and launches < loop["rounds"]:
+        raise ReviewersUnavailable(
+            f"the agent's log shows {launches} successful launches of the reviewer agent for "
+            f"{loop['rounds']} reported rounds, so no independent review ran", stage="agent_log")
     rounds = loop["rounds"]
     if rounds < 1:
         raise LoopError("no review round ran on the delivered series")
@@ -113,6 +147,67 @@ def check(report: dict | None, *, series_digest: str | None, text_digest: str | 
     return loop
 
 
+def _launches(args: Any) -> int:
+    """The reviewer children one ``subagent`` call asks for: the single
+    ``agent``, or the entries of ``tasks``."""
+    if not isinstance(args, dict):
+        return 0
+    asked = [args.get("agent")]
+    if isinstance(args.get("tasks"), list):
+        asked += [t.get("agent") for t in args["tasks"] if isinstance(t, dict)]
+    return sum(1 for name in asked if name == "reviewer")
+
+
+def _failed(event: dict) -> bool:
+    """Whether the ``tool_execution_end`` ``event`` is an error result: flagged
+    ``isError``, or a text that names an error as pi-subagents words one."""
+    result = event.get("result")
+    if event.get("isError") or (isinstance(result, dict) and result.get("isError")):
+        return True
+    content = result.get("content") if isinstance(result, dict) else None
+    text = " ".join(c.get("text", "") for c in content or []
+                    if isinstance(c, dict) and isinstance(c.get("text"), str)).lstrip()
+    return bool(_ERROR_TEXT.match(text))
+
+
+def reviewer_launches(log: str) -> int:
+    """How many reviewer children the agent launched successfully, read from
+    the JSON events of its stdio log: the ``reviewer`` agents asked for by
+    every ``subagent`` tool call (``agent``, or the entries of ``tasks``)
+    whose ``tool_execution_end`` is neither flagged ``isError`` nor an error
+    text. Lines that are not events are ignored, and so is a timestamp before
+    the JSON; the count is evidence only, never a verdict on the findings."""
+    asked: dict[str, int] = {}
+    done = 0
+    for line in log.splitlines():
+        start = line.find('{"type":"tool_execution_')
+        if start < 0:
+            continue
+        try:
+            event = json.loads(line[start:])
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("toolName") != "subagent":
+            continue
+        call = str(event.get("toolCallId"))
+        if event.get("type") == "tool_execution_start":
+            asked[call] = _launches(event.get("args"))
+        elif event.get("type") == "tool_execution_end" and call in asked and not _failed(event):
+            done += asked.pop(call)
+    return done
+
+
+def log_launches(path: Path | None) -> int | None:
+    """``reviewer_launches`` of the log file ``path``, or ``None`` when there
+    is no regular readable log: an absent log decides nothing."""
+    try:
+        if path is None or path.is_symlink() or not path.is_file():
+            return None
+        return reviewer_launches(path.read_text(errors="replace"))
+    except OSError:
+        return None
+
+
 def _rounds(count: int) -> str:
     return f"{count} round" + ("" if count == 1 else "s")
 
@@ -127,7 +222,8 @@ def comment_body(loop: dict, head: str) -> str:
                "optional_only": "only optional notes were left",
                "cap_reached": "the cap of 3 rounds was reached",
                "deadline": "no time was left for another round",
-               "decision_needed": "a decision was needed"}.get(loop["stopped_because"],
+               "decision_needed": "a decision was needed",
+               UNAVAILABLE: "the reviewers were unavailable"}.get(loop["stopped_because"],
                                                                 loop["stopped_because"])
     lines = [
         f"The patch at commit `{head}` was reviewed before it was pushed, in "

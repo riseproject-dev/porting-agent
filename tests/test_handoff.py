@@ -593,6 +593,26 @@ class TestLivePath(unittest.TestCase):
                                  ["resume_submission_review", "request_submission_rewrite"])
                 self.assertEqual(world.state, "handoff.agent_running")
 
+    def test_an_unreviewed_rewrite_is_relaunched_free_a_bounded_number_of_times(self):
+        """No reviewer ran on the rewrite: the failure is the pipeline's, so
+        nothing is charged (`task_recovery` stays), until its free relaunches
+        are spent."""
+        world = submitted()
+        make = world.rewrite_outcome
+        budget = dict(world.record["budget"])
+        for used in range(3):
+            first = world.record["active_task"]["dedupe_key"]
+            out = world.tick(at(2), publications=[make(status="unreviewed", failure_class=None,
+                                                       reason="no reviewer ran")])
+            self.assertEqual(world.kinds(out), ["reallocate_after_pipeline_failure"])
+            self.assertEqual(world.state, "handoff.agent_running")
+            self.assertEqual(world.record["budget"], budget)
+            self.assertNotEqual(world.record["active_task"]["dedupe_key"], first)
+            self.assertEqual(world.record["active_task"]["review_free"], used + 1)
+        out = world.tick(at(3), publications=[make(status="unreviewed", failure_class=None,
+                                                   reason="no reviewer ran")])
+        self.assertEqual(world.kinds(out), ["allocate_task_retry"])
+
     def test_a_review_of_another_revision_or_state_is_late(self):
         world = submitted()
         late = world.rewrite_outcome()
