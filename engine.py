@@ -2236,6 +2236,134 @@ def with_current_names(record: dict) -> tuple[dict, list[str]]:
     return new, renamed
 
 
+# The `changed_files` of a patch proposal was checked against two different
+# sets: the worker gate compared it with the paths of the whole series, the
+# fork publisher with the net delta from `expected_head`, so no rewrite whose
+# series touches a file already on the branch could pass both. Each side
+# rejected such a proposal with one of these reasons, as `reject_patch_proposal`,
+# which charged `no_progress`. One contract (the net delta) replaced both, and
+# the record migration refunds the charges of these rejections.
+CONTRADICTED_REJECTIONS = ("mbox paths do not match proposal changed_files",
+                           "proposal claims files ")
+# The publisher still rejects a claim that differs from the delta with the
+# second reason, and under the one contract that is a genuine mistake of the
+# worker, which `no_progress` must limit. Only a rejection recorded before this
+# time is the contradiction's: the time is a few hours after the change that
+# ended it ships, so that a worker run that began under the earlier code and is
+# folded after the deploy is still covered. Never move it.
+CONTRADICTION_CUTOFF = "2026-11-25T14:00:00+00:00"
+REPAIR_PARK_PREFIX = "repair budgets exhausted"
+# The budgets whose exhaustion parks a development record after the refresh.
+REPAIR_PARK_BUDGETS = ("no_progress", "work_total", "repair_attempts_cluster")
+
+
+def before_cutoff(at: Any) -> bool:
+    """Whether an ISO time is before ``CONTRADICTION_CUTOFF``."""
+    try:
+        return datetime.fromisoformat(str(at)) < datetime.fromisoformat(CONTRADICTION_CUTOFF)
+    except ValueError:
+        return False
+
+
+def contradicted_rejection(event: dict) -> bool:
+    """Whether a committed event is a `reject_patch_proposal` recorded before
+    ``CONTRADICTION_CUTOFF`` that charged `no_progress` for one of
+    ``CONTRADICTED_REJECTIONS``."""
+    details = event.get("details") if isinstance(event, dict) else None
+    if not isinstance(details, dict) or event.get("kind") != "reject_patch_proposal":
+        return False
+    reason = details.get("reason")
+    return isinstance(reason, str) and reason.startswith(CONTRADICTED_REJECTIONS) \
+        and "no_progress" in (details.get("charged") or []) and before_cutoff(event.get("at"))
+
+
+def _charged_no_progress(event: dict) -> bool:
+    return "no_progress" in ((event.get("details") or {}).get("charged") or [])
+
+
+def contradicted_refresh(events: list[dict], refunded_before: set[int], *, policy: dict
+                         ) -> int | None:
+    """The sequence of the latest `refresh_on_exhaustion` that the
+    contradiction spent, or ``None``: it exhausted `no_progress` alone, no
+    refund returned it before, and every one of the `no_progress` charges
+    before it that filled the budget was a contradicted rejection."""
+    refreshes = [e for e in events if e.get("kind") == "refresh_on_exhaustion"]
+    if not refreshes:
+        return None
+    refresh = refreshes[-1]
+    if refresh["sequence"] in refunded_before \
+            or (refresh.get("details") or {}).get("exhausted") != ["no_progress"]:
+        return None
+    limit = lc.budget_limit("no_progress", policy)
+    before = [e for e in events if e["sequence"] < refresh["sequence"] and _charged_no_progress(e)]
+    filled = before[len(before) - limit:]
+    if len(filled) < limit or not all(contradicted_rejection(e) for e in filled):
+        return None
+    return refresh["sequence"]
+
+
+def refund_contradicted(record: dict, events: list[dict], refunded_before: set[int], *,
+                        policy: dict, now: str) -> tuple[dict, dict] | None:
+    """``record`` with the charges of the contradicted rejections among
+    ``events`` (the events of the contribution, oldest first, and the
+    sequences already refunded) returned, and what changed, or ``None`` when
+    nothing is returned.
+
+    A charge is returned only while it still counts: the count of
+    `no_progress` is the number of its charges since it last started again,
+    so only the contradicted rejections among the newest
+    `budget.no_progress_streak` charges that were not refunded are refunded,
+    and no count goes below zero. When the `no_progress` streak that the
+    latest `refresh_on_exhaustion` started again was made of contradicted
+    rejections alone, the automatic refresh it used is returned too
+    (`automatic_refresh_used` is cleared, once: the sequence of that refresh
+    is in ``refunded_before`` afterwards). A record parked
+    for exhausted repair budgets after a development patch whose budgets all
+    remain after the refund returns to `development.fix_needed` with no Work
+    (the next tick requests it), and keeps everything else; the invariants of
+    that state are checked, and a record that would violate them stays
+    parked."""
+    budget = record.get("budget")
+    if not isinstance(budget, dict):
+        return None
+    streak = int(budget.get("no_progress_streak", 0))
+    charging = [e for e in events if e["sequence"] not in refunded_before
+                and _charged_no_progress(e)]
+    counted = {e["sequence"] for e in charging[len(charging) - streak:]} if streak else set()
+    refunded = [e["sequence"] for e in events
+                if e["sequence"] in counted and contradicted_rejection(e)]
+    new = copy.deepcopy(record)
+    returned = {}
+    if refunded:
+        new["budget"] = dict(new["budget"])
+        before = int(new["budget"].get("no_progress_streak", 0))
+        new["budget"]["no_progress_streak"] = max(0, before - len(refunded))
+        returned["no_progress"] = before - new["budget"]["no_progress_streak"]
+    refresh = contradicted_refresh(events, refunded_before, policy=policy) \
+        if new.get("automatic_refresh_used") else None
+    if refresh is not None:
+        new["automatic_refresh_used"] = False
+    if not returned.get("no_progress") and refresh is None:
+        return None
+    unparked = False
+    reason = new.get("parked_reason")
+    if (new.get("phase") == "parked" and new.get("previous_phase") == "development"
+            and isinstance(reason, str) and reason.startswith(REPAIR_PARK_PREFIX)
+            and not new.get("pending_publication") and not new.get("active_work")):
+        ctx = Context(new, "development.fix_needed", policy, now)
+        if all(remains(name, ctx) for name in REPAIR_PARK_BUDGETS):
+            moved = dict(new, phase="development", activity="fix_needed",
+                         parked_reason=None, previous_phase=None)
+            if not lc.requirement_problems("development.fix_needed", moved) \
+                    and state_problem(moved) is None:
+                new, unparked = moved, True
+    facts = {"returned": returned, "refunded": refunded, "unparked": unparked}
+    if refresh is not None:
+        facts["refresh_returned"] = True
+        facts["refresh_event"] = refresh
+    return new, facts
+
+
 # --------------------------------------------------------------------------
 # Writes beside a row
 #

@@ -1,0 +1,35 @@
+{
+  "at": "2026-11-24T15:47:26.090893+00:00",
+  "cause": {
+    "id": "45419712403",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "charged": [
+      "no_progress"
+    ],
+    "failure_class": "validation",
+    "from_state": "development.agent_running",
+    "reason": "mbox paths do not match proposal changed_files",
+    "result_status": "rejected",
+    "to_state": "development.fix_needed",
+    "verb": "reject_patch_proposal"
+  },
+  "from": {
+    "activity": "agent_running",
+    "revision": 6
+  },
+  "kind": "reject_patch_proposal",
+  "revision_bumped": true,
+  "run": {
+    "attempt": 1,
+    "id": 45429283790
+  },
+  "schema_version": 1,
+  "sequence": 31,
+  "to": {
+    "activity": "fix_needed",
+    "revision": 7
+  }
+}

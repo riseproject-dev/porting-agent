@@ -68,6 +68,11 @@ RECORDED_KINDS = {
                                "the retired `blocked_reason`, `next_poll_at`, and the fence of the "
                                "CI run a rerun answered are removed. Its state, revision, and "
                                "evidence are unchanged."),
+    "record_rejections_refunded": ("Returned the `no_progress` charges of proposals that the "
+                                   "worker gate and the publisher rejected for contradicting "
+                                   "checks of the changed files, and, when only those charges "
+                                   "had parked this contribution, returned it to repair; the automatic "
+                                   "refresh those rejections used is returned too."),
     "record_names_migrated": ("Recorded this contribution under the current names of the "
                               "planning phase and its plan. Its state, revision, and evidence are "
                               "unchanged."),

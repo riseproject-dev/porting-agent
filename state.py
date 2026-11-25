@@ -637,6 +637,88 @@ def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
     return new, event
 
 
+# --------------------------------------------------------------------------
+# Refund of the rejections of the changed_files contradiction
+#
+# The worker gate and the fork publisher once disagreed about the
+# `changed_files` of a rewrite, so a valid proposal was rejected by one of
+# them and charged `no_progress` (``engine.CONTRADICTED_REJECTIONS``). The
+# record migration reads the committed events of a contribution, returns the
+# charges of those rejections (``engine.refund_contradicted``) and, for a
+# record parked only because they exhausted the repair budgets, returns it to
+# `development.fix_needed` with no Work. The sequences it refunded are in the
+# event it appends (`details.refunded`), so it never refunds one twice and the
+# record carries no marker.
+
+REFUND_MIGRATION = "changed-files-contract"
+REFUND_MIGRATED = "record_rejections_refunded"
+
+
+def contribution_events(root: Path, contribution_id: str) -> list[dict]:
+    """The committed events of a contribution, oldest first."""
+    directory = Path(root) / STATE_ROOT / "events" / contribution_file_id(contribution_id)
+    events: list[dict] = []
+    if not directory.is_dir():
+        return events
+    for path in sorted(directory.glob("*.json")):
+        if path.is_symlink() or not path.is_file():
+            raise StateError(f"{path.name}: not a regular file")
+        try:
+            events.append(json.loads(path.read_text(encoding="utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise StateError(f"{path}: not UTF-8 JSON ({error})") from error
+    return sorted((e for e in events if isinstance(e, dict) and isinstance(e.get("sequence"), int)),
+                  key=lambda e: e["sequence"])
+
+
+def needs_rejection_refund(record: Any) -> bool:
+    """Whether a record may hold charges of the contradiction: it was created
+    before ``engine.CONTRADICTION_CUTOFF`` and counts a streak of
+    `no_progress`, is parked for exhausted repair budgets, or used its
+    automatic refresh. Only then are its events read."""
+    if not isinstance(record, dict) or not isinstance(record.get("budget"), dict):
+        return False
+    if not engine.before_cutoff(record.get("created_at")):
+        return False
+    reason = record.get("parked_reason")
+    return int(record["budget"].get("no_progress_streak") or 0) > 0 \
+        or bool(record.get("automatic_refresh_used")) \
+        or (isinstance(reason, str) and reason.startswith(engine.REPAIR_PARK_PREFIX))
+
+
+def migrate_rejection_refund(record: dict, events: list[dict], *, policy: dict, now: str
+                             ) -> tuple[dict, dict] | None:
+    """The record with the charges of the rejections of the contradiction
+    returned, and the event that records them (`details.refunded` names their
+    sequences, `details.refresh_event` the refresh it returned), or ``None``
+    when nothing unrefunded is counted. Raises ``StateError`` for a result the
+    schema or the table refuses."""
+    done = set()
+    for e in events:
+        if e.get("kind") != REFUND_MIGRATED:
+            continue
+        details = e.get("details") or {}
+        done.update(n for n in details.get("refunded", []) if isinstance(n, int))
+        if isinstance(details.get("refresh_event"), int):
+            done.add(details["refresh_event"])
+    result = engine.refund_contradicted(record, events, done, policy=policy, now=now)
+    if result is None:
+        return None
+    new, facts = result
+    new["updated_at"] = now
+    errors = schemas.errors("contribution", new)
+    if errors:
+        raise StateError("no reviewed refund for this record: " + "; ".join(errors[:5]))
+    problem = engine.state_problem(new)
+    if problem:
+        raise StateError(f"no reviewed refund for this record: {problem}")
+    event = lifecycle._event(record, new, REFUND_MIGRATED, "migration", REFUND_MIGRATION, now, False)
+    event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
+                        **facts}
+    schemas.validate("event", event)
+    return new, event
+
+
 def _awaits_migration(path: str, record: Any) -> bool:
     """Whether a committed state file is in a shape the record migrations
     rewrite."""
@@ -735,6 +817,15 @@ def _pending_record_migrations(root: Path, policy: dict, *, now: str | None = No
                 errors = schemas.errors("contribution", record)
                 if errors:
                     raise StateError("; ".join(errors[:5]))
+            if needs_rejection_refund(current):
+                refund = migrate_rejection_refund(
+                    current, contribution_events(root, cid), policy=policy, now=stamp)
+                if refund:
+                    current, event = refund
+                    pending = [entry for entry in pending
+                               if not (entry[0] == rel and entry[1] == "contributions")]
+                    pending.append((rel, "contributions", current))
+                    pending.append(("", "events", event))
         except (StateError, KeyError, TypeError) as error:
             raise StateError(f"{rel}: {error}") from error
     missing = sorted(set(renamed) - seen)
