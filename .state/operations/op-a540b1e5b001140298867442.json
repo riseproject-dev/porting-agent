@@ -1,0 +1,37 @@
+{
+  "capacity_reservation": null,
+  "contribution_id": "luhenry--d2vm/3",
+  "created_at": "2026-11-25T15:03:07.610421+00:00",
+  "discovery": [
+    {
+      "at": "2026-11-25T15:03:07.610421+00:00",
+      "detail": "new attempts read back on b393cc111205dd693b669458942646c53ed7311a",
+      "result": "confirmed"
+    }
+  ],
+  "external_ids": {
+    "attempt:45588297911": 2
+  },
+  "kind": "ci_rerun",
+  "operation_id": "op-a540b1e5b001140298867442",
+  "policy_version": "2026-11-18.1-proposed",
+  "proposed": {
+    "marker": "ci-rerun:45588297911@1"
+  },
+  "reason_ids": [
+    "ci-1469259163-45588297911-1",
+    "work:luhenry--d2vm/3@g1.r14:development_repair",
+    "publish-attempt:1"
+  ],
+  "resolution": null,
+  "revision": 14,
+  "schema_version": 1,
+  "status": "confirmed",
+  "target": {
+    "expected_head": "b393cc111205dd693b669458942646c53ed7311a",
+    "ref": "riscv64-dev",
+    "repository": "riseproject-upstreaming/d2vm",
+    "repository_id": 1469259163
+  },
+  "updated_at": "2026-11-25T15:03:07.610421+00:00"
+}

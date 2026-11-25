@@ -1,0 +1,44 @@
+{
+  "at": "2026-11-25T15:04:28.062369+00:00",
+  "cause": {
+    "id": "45633563428",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "charged": [
+      "flaky_reruns"
+    ],
+    "from_state": "development.agent_running",
+    "reason": "the failed jobs are rerun on the exact head",
+    "report_evidence_id": "report-luhenry--d2vm--3-r14-45633563428",
+    "rerun": {
+      "operation": "op-a540b1e5b001140298867442",
+      "runs": [
+        {
+          "from_attempt": 1,
+          "run_attempt": 2,
+          "run_id": 45588297911
+        }
+      ],
+      "status": "rerun"
+    },
+    "result_status": "no_change",
+    "to_state": "development.waiting_ci",
+    "verb": "request_ci_rerun"
+  },
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "request_ci_rerun",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45640842798
+  },
+  "schema_version": 1,
+  "sequence": 56,
+  "to": {
+    "activity": "waiting_ci"
+  }
+}
