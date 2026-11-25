@@ -118,8 +118,24 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
             raise WorkerGateError("patch digest mismatch")
         text = mbox.decode("utf-8", "strict")
         actual_paths = _patch_paths(text)
-        if sorted(actual_paths) != sorted(changed):
-            raise WorkerGateError("mbox paths do not match proposal changed_files")
+        # ``changed_files`` is the net delta from ``expected_head`` to the
+        # series applied (``git diff --name-only --no-renames``), which the
+        # trusted publisher rebuilds and compares exactly. The gate has only
+        # the mbox, so it bounds the claim: every path the series touches is
+        # in scope, and an append (whose delta is the series itself) claims
+        # only paths the series touches. The claim may be empty: a rewrite
+        # that only rewords commits has no delta, and the publisher compares
+        # the claim with the delta exactly, empty or not. A rewrite is built on ``base_sha``,
+        # so its delta also names the files it drops from the branch, which
+        # no mbox shows; the publisher alone checks those.
+        outside = [path for path in actual_paths
+                   if not any(fnmatch.fnmatchcase(path, item) for item in allowed)]
+        if outside:
+            raise WorkerGateError(f"mbox paths outside approved scope: {outside[:3]}")
+        unknown = sorted(set(changed) - set(actual_paths))
+        if unknown and operation == "append":
+            raise WorkerGateError(
+                f"mbox paths do not include proposal changed_files: {unknown[:3]}")
         if task.get("upstream_facing") and "{debug}" in text:
             raise WorkerGateError("debug commit is forbidden on an upstream-facing branch")
         additions = "\n".join(
@@ -232,7 +248,8 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
         "status": gate_status,
         "failure_class": failure_class,
         "reason": proposal.get("diagnosis") if gate_status != "accepted" else None,
-        "changed_files": actual_paths,
+        "changed_files": changed,
+        "series_paths": actual_paths,
         "patch_digest": proposal.get("patch_digest"),
         "image": image,
         "commands": len(commands),

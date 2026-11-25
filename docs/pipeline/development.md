@@ -56,6 +56,8 @@ The last round must have reviewed exactly the series that is published, and noth
 
 Before any token, the trusted worker gate validates the Result's structural scope, its debug commits, and its reproduction. It has no destination token and no publication path of its own. The [commit rules]({{ '/pipeline/contribution-guidelines/' | relative_url }}#how-the-rules-are-enforced) are part of the gate.
 
+The `changed_files` of the proposal are the net delta from `expected_head` to the series applied, for an append and for a rewrite. The gate, which has only the mbox, requires every path of the series and every claimed file to be in the approved scope, and for an append every claimed file to be a path of the mbox; the trusted publisher then requires the claim to equal `git diff --name-only --no-renames` from `expected_head` to the rebuilt candidate exactly.
+
 For a patch, the gate also checks the review loop (`review_loop.check`). It is the agent's own account, so the gate checks its shape and its P0 findings, not that the reviews happened:
 
 - at least one round ran, and the loop did not stop for a decision;

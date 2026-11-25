@@ -922,8 +922,17 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
   task's `contribution_id`, `revision`, `expected_head` and `ref`. `operation` is
   `append` (new commits on top of `expected_head`), `rewrite` (a series on
   top of `base_sha`, only if `allowed_operations` contains it) or `none`.
-  `changed_files` lists every path your series changes relative to
-  `expected_head` (for `rewrite`, relative to it as well). For a repair or
+  `changed_files` is the net change of your series against `expected_head`,
+  for `append` and for `rewrite` alike: exactly the paths of
+  `git diff --name-only --no-renames <expected_head> HEAD`, run in `fork/`
+  once the series is final. It is not the list of paths the mbox touches: a
+  `rewrite` series built on `base_sha` often touches files that are already
+  on the branch (they stay in the delta only if their final content differs
+  from `expected_head`), and a file the series drops from the branch is in the
+  delta although no patch of the mbox names it. A file that a series changes
+  and then reverts is not in it. A `rewrite` that only rewords commits has an
+  empty list. The trusted publisher compares the list with
+  that diff exactly. For a repair or
   revision task, `reason_ids` must include every task `reason_ids` entry.
   Include `reproduction` with the exact image digest, `architecture: riscv64`,
   exact commands/exit statuses/log digests, enforced resource limits, and,

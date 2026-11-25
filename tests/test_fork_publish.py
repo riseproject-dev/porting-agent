@@ -345,7 +345,7 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
         self.task.update(expected_head=head3, revision=2)
         self.record["revision"] = 2
         out = self.run_publish(self.proposal(operation="rewrite", expected_revision=2, expected_head=head3,
-                                             changed_files=[], patch_digest=None), mbox=b"", scope=scope)
+                                             changed_files=[".github/workflows/wheels.yml", "src/a.c"], patch_digest=None), mbox=b"", scope=scope)
         self.assertEqual(out.status, "published", out.reason)
         self.assertEqual(self.fork_head(), self.base)
         # Empty append is refused.

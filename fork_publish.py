@@ -300,7 +300,7 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         rep = publisher.validate_update(work, base=record["upstream"]["base_sha"], expected_head=expected,
                                         candidate=cand, scope=sc)
         delta = _git(work, "diff", "--name-only", "--no-renames", expected, cand).stdout.decode().split()
-        if claimed and set(delta) != claimed:
+        if set(delta) != claimed:
             rep.problems.append(f"proposal claims files {sorted(claimed)} but series changes {sorted(delta)}")
         digest = hashlib.sha256(mbox).hexdigest()
         if proposal.get("patch_digest") and proposal["patch_digest"] != digest:
