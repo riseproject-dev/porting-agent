@@ -1,0 +1,40 @@
+{
+  "at": "2026-11-25T08:10:56.267419+00:00",
+  "cause": {
+    "id": "changed-files-contract",
+    "type": "migration"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "parked.idle",
+    "refresh_event": 34,
+    "refresh_returned": true,
+    "refunded": [
+      44,
+      46
+    ],
+    "returned": {
+      "no_progress": 2
+    },
+    "to_state": "development.fix_needed",
+    "unparked": true
+  },
+  "from": {
+    "activity": "idle",
+    "parked_reason": "repair budgets exhausted: no_progress, after the automatic refresh",
+    "phase": "parked"
+  },
+  "kind": "record_rejections_refunded",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45573937303
+  },
+  "schema_version": 1,
+  "sequence": 49,
+  "to": {
+    "activity": "fix_needed",
+    "parked_reason": null,
+    "phase": "development"
+  }
+}

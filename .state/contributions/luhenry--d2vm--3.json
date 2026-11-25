@@ -1,14 +1,14 @@
 {
   "active_operation_id": null,
   "active_work": null,
-  "activity": "idle",
+  "activity": "fix_needed",
   "admission_class": "architecture_correctness",
   "admission_override": null,
-  "automatic_refresh_used": true,
+  "automatic_refresh_used": false,
   "budget": {
     "attempts_used": 8,
     "clusters": {},
-    "no_progress_streak": 2,
+    "no_progress_streak": 0,
     "planning_attempts": 0,
     "policy_id": "2026-11-18.1-proposed",
     "reruns": {
@@ -43,7 +43,7 @@
     "primary": null,
     "submitter": null
   },
-  "parked_reason": "repair budgets exhausted: no_progress, after the automatic refresh",
+  "parked_reason": null,
   "paused": false,
   "paused_at": null,
   "paused_at_commit": null,
@@ -54,10 +54,10 @@
   ],
   "pending_human_action": null,
   "pending_publication": null,
-  "phase": "parked",
+  "phase": "development",
   "plan_evidence_id": "plan-luhenry--d2vm--3-r9",
   "prerequisite_ids": [],
-  "previous_phase": "development",
+  "previous_phase": null,
   "processed_pr_conversation_comment_ids": [],
   "processed_publications": [
     14837588488,
@@ -116,7 +116,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-24T23:54:05.500486+00:00",
+  "updated_at": "2026-11-25T08:10:56.267419+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
