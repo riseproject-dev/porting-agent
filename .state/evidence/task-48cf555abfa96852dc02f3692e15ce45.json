@@ -1,0 +1,224 @@
+{
+  "collected_at": "2026-11-25T13:30:13.726915+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "admission_class": "architecture_correctness",
+    "allowed_operations": [
+      "append",
+      "rewrite"
+    ],
+    "allowed_paths": [
+      "builder.go",
+      "cmd/d2vm/*",
+      "cmd/d2vm/run/*",
+      "pkg/qemu/*",
+      "templates/*",
+      "grub_efi.go",
+      "grub_common.go",
+      "config.go",
+      "dockerfile.go",
+      ".goreleaser.yaml",
+      "README.md",
+      "docs/content/reference/*",
+      ".github/workflows/*",
+      "e2e/*",
+      "Makefile",
+      "config_test.go"
+    ],
+    "base_ref": "main",
+    "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
+    "context": {
+      "commit_rules": {
+        "body_line_max_length": null,
+        "body_required": false,
+        "max_commits": 3,
+        "signed_off_by_required": false,
+        "title_capitalization": "lower",
+        "title_max_length": null,
+        "title_prefix_required": false,
+        "title_prefixes": [
+          "feat:",
+          "fix:",
+          "docs:",
+          "chore:",
+          "actions:",
+          "tests:",
+          "templates:",
+          "goreleaser:",
+          "Makefile:",
+          "run/qemu:",
+          "run/hetzner:",
+          "run/vbox:",
+          "run:",
+          "build:",
+          "deps:",
+          "luks:",
+          "centos:",
+          "chore(ci):",
+          "build(deps):",
+          "[skip ci] docs:"
+        ],
+        "title_trailing_period": "forbidden"
+      },
+      "history": {
+        "evidence_id": "history-48cf555abfa96852dc02f3692e15ce45",
+        "path": ".state/evidence/history-48cf555abfa96852dc02f3692e15ce45.json",
+        "sha256": "ab80b20e61bd84a086fabd2ede815d5387a519e2f7d1902a670463223f7f259d"
+      },
+      "reason_evidence": [
+        {
+          "evidence_id": "ci-1469259163-45588297911-1",
+          "kind": "ci",
+          "limitations": [
+            "see problems",
+            "job 'Test Templates (quay.io/centos/centos:stream)' failed (failure)",
+            "required job 'riscv64' absent"
+          ],
+          "summary": ".github/workflows/ci.yaml run 45588297911 attempt 1: failed"
+        },
+        {
+          "data": {
+            "dependency_graph": {
+              "assessment": "The tool succeeded, but the graph has no node for d2vm under any identity (project name, repository URL, package name, identity name, upstream repository): this is missing data, not an empty dependency set, and no direct, transitive or reverse edge of d2vm can be taken from the graph. The graph holds Ubuntu resolute packages for amd64, arm64 and riscv64, so it was used for what it can answer: the host tools d2vm calls at run time (parted, kpartx, e2fsprogs, dosfstools, cryptsetup, qemu-utils, util-linux, udev, docker.io) and Go 1.25 all have riscv64 binaries; the Ubuntu guest packages the riscv64 template path installs (linux-image-virtual, grub-efi-riscv64-bin) exist for riscv64; extlinux and grub-pc-bin are amd64 only, which the code already reflects by refusing syslinux and grub-bios off x86; qemu-system-riscv and the qemu-efi-riscv64 firmware exist on amd64 hosts. cryptsetup-initramfs shows no riscv64 binding in the query result; whether that is an architecture-all package recorded only under two architectures or a real gap is not decided by the graph, and the CI luks cases on riscv64 (ubuntu:24.04, debian:13) passed at the development head. linux-image-riscv64 is a Debian package and is outside this Ubuntu-only graph; it was verified by the passing debian:13 riscv64 e2e job instead. Compared with the checkout: go.mod (go 1.25) lists 17 direct and 34 indirect modules, all pure Go (no cgo import, no assembly file, only a windows build tag pair in pkg/docker), and CGO_ENABLED=0 GOARCH=riscv64 go build ./cmd/d2vm at 7184ff1 produced a static RISC-V ELF in this run. Build-…"
+            },
+            "proposal": {
+              "admission_class": "architecture_correctness",
+              "allowed_paths": [
+                "builder.go",
+                "cmd/d2vm/*",
+                "cmd/d2vm/run/*",
+                "pkg/qemu/*",
+                "templates/*",
+                "grub_efi.go",
+                "grub_common.go",
+                "config.go",
+                "dockerfile.go",
+                ".goreleaser.yaml",
+                "README.md",
+                "docs/content/reference/*",
+                ".github/workflows/*",
+                "e2e/*",
+                "Makefile",
+                "config_test.go"
+              ],
+              "architecture_precedent": "Shared host without an architecture axis: every Linux job runs on one ubuntu-latest amd64 runner with docker/setup-qemu-action and apt qemu-system; there is no architecture list in any workflow and no native per-architecture runner row. arm64 (PR 44) is the precedent and has no CI row at all: its support consists of the goarch entry in .goreleaser.yaml, the linux/arm64 platform case restricted to grub-efi, and template package selection. Recommendation, as steered by the owner: add riscv64 to the same lists (goarch, platform switches, template package selection) and add no CI row, neither a shared-host QEMU row nor an ubuntu-24.04-riscv runner row.",
+              "decision": "develop",
+              "fork_guards": "None. Neither workflow has a github.repository condition. Publishing steps are conditioned on refs/tags/v or refs/heads/main and need secrets, so on fork pull requests the test and build jobs run and release jobs are skipped (confirmed by both runs on the development fork). Two jobs use linka-cloud/free-disk-space@main, a third-party action pinned to a branch. The test steps are skipped unless the last commit changes Go or template files.",
+              "path_coverage": [
+                {
+                  "area": "build",
+                  "assessment": "The Go build needs no change: CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build ./cmd/d2vm succeeds at 7184ff1 (verified in this run) and go.mod and go.sum stay as they are. The Makefile is listed only because the development head added an E2E_PLATFORM pass-through to the e2e target for the riscv64 CI rows; with those rows removed on the owner's request the Makefile must return to its base content, so the series should end with no Makefile change. The goreleaser download stays goreleaser_Linux_x86_64 because releases are built on the amd64 runner. The Dockerfile (golang:1.25 builder, ubuntu:20…",
+                  "paths": [
+                    "Makefile"
+                  ]
+                },
+                {
+                  "area": "test",
+                  "assessment": "No riscv64 test is added: the owner ruled that riscv64 gets no CI rows and no cross-testing code because arm64 has none (review comments 4680087010 and 4680099837; PR 44 confirms arm64 was merged without CI or e2e changes). .github/workflows/ci.yaml and e2e/e2e_test.go are listed because the development head changed them (platform axis with two linux/riscv64 rows, qemu-efi-riscv64, -platform flag, riscv64 skips and timeout) and they must return to base content; the expected net change against base is none. config_test.go is listed for one conditional case only: Test Templates (debian) failed …",
+                  "paths": [
+                    ".github/workflows/*",
+                    "e2e/*",
+                    "config_test.go"
+                  ]
+                },
+                {
+                  "area": "release",
+                  "assessment": "Release graph: v* tag, ci.yaml jobs release (make build, make release with goreleaser v1.10.1: archives, checksums, GPG signatures, GitHub release, Homebrew formula) and release-image (docker build and push, amd64 only), docs.yaml for the site. The only release change is .goreleaser.yaml: riscv64 in builds.goarch next to amd64 and arm64 (already at the development head) plus an ignore list for goos windows and darwin with goarch riscv64, which answers the owner's review question; goreleaser v1.10.1 skips those invalid pairs anyway, so the result is one new archive, d2vm_<version>_linux_riscv6…",
+                  "paths": [
+                    ".goreleaser.yaml"
+                  ]
+                },
+                {
+                  "area": "packaging",
+                  "assessment": "No packaging path needs a change. go.mod and go.sum are unchanged because no dependency is added and all 51 modules are pure Go. The goreleaser archive and brew sections (listed under release) already handle any GOARCH. The Dockerfile image is amd64 only and stays so, as for arm64; a riscv64 image would need a different source for the docker CLI than docker:dind and multi-platform buildx in the Makefile and workflow, which is outside what the owner asked for (riscv64 follows arm64). The sparsecat helper embedded by cmd/d2vm/run/util.go through go generate is built for linux amd64 and arm64 fo…",
+                  "paths": []
+                },
+                {
+                  "area": "documentation",
+                  "assessment": "README.md (also the site index through the docs/content/index.md symlink) states the supported --platform values, the bootloader default per architecture and an install snippet that maps every non-x86_64 machine to arm64; all three are updated at the development head and stay in the series, with wording that does not promise a riscv64 release archive before a release exists. docs/content/reference/d2vm_build.md, d2vm_convert.md and d2vm_run_qemu.md are generated from the flag help by make cli-docs and checked by the docs-up-to-date CI job (which passed at the head), so they change together wi…",
+                  "paths": [
+                    "README.md",
+                    "docs/content/reference/*"
+                  ]
+                },
+                {
+                  "area": "native_sources",
+                  "assessment": "There is no assembly or cgo; the architecture-specific source is Go switches and Dockerfile templates. Changed at the development head and kept: builder.go (NewBuilder maps linux/riscv64 to arch riscv64 and names it in the error), cmd/d2vm/flags.go (validateFlags accepts linux/riscv64, defaults to and only allows grub-efi like arm64; flag help), cmd/d2vm/run/qemu.go (default arch riscv64 on a riscv64 host, help text), pkg/qemu/qemu.go (default arch, GOARCH mapping, virt machine, UEFI firmware on pflash because -bios is the SBI slot on riscv64, -cpu rv64 without KVM), templates/debian.Dockerfi…",
+                  "paths": [
+                    "builder.go",
+                    "cmd/d2vm/*",
+                    "cmd/d2vm/run/*",
+                    "pkg/qemu/*",
+                    "templates/*",
+                    "grub_efi.go",
+                    "grub_common.go",
+                    "config.go",
+                    "dockerfile.go"
+                  ]
+                }
+              ],
+              "risks": [
+                "The cause of the Test Templates (debian) failure is not verified because the job log was not readable in this planning run; the plan gives the order of checks instead of a diagnosis.",
+                "Without CI rows riscv64 can regress unnoticed, exactly like arm64 today; this is the owner's explicit choice. The evidence that the port works is the two passing riscv64 e2e jobs on head 6578833 and local emulated runs.",
+                "The linka-cloud maintainer asks external contributors for e2e coverage (PR 72, PR 90). A later submission to linka-cloud/d2vm may be asked for the tests the owner of luhenry/d2vm declined; the removed e2e changes remain available in the history of the development branch.",
+                "templates/debian.Dockerfile now installs linux-image-<dpkg architecture>; on amd64 this is unchanged, on arm64 it changes linux-image-amd64 (wrong there) to linux-image-arm64. That is a behaviour change for arm64 that should be named in the commit body.",
+                "On riscv64 d2vm must run natively as root: the fallback that re-executes inside the linkacloud/d2vm image has no riscv64 image (as on arm64).",
+                "README points at linka-cloud release archives; a riscv64 archive exists only after a linka-cloud release that includes this change.",
+                "Open linka-cloud PR 92 edits boot loader and config files and would conflict with a later submission there if it merges first.",
+                "go vet fails on cmd/d2vm/run/hetzner.go with Go 1.26 (non-constant format strings) on base; CI pins Go 1.25, where the Tests job passes. Not part of this contribution."
+              ],
+              "target_matrix": "Host: static linux/riscv64 d2vm binary from goreleaser (CGO disabled). Guest: --platform linux/riscv64 with bootloader grub-efi only (GPT, FAT32 ESP, removable riscv64-efi GRUB image), split boot and LUKS as on arm64, for Ubuntu 24.04 and Debian 13 images (verified) and other Ubuntu releases with a riscv64 base image (not exercised). Run: d2vm run qemu --arch riscv64 on machine virt with edk2 on pflash, KVM on a riscv64 host and TCG with -cpu rv64 elsewhere. Out of scope: syslinux, grub-bios and grub (BIOS plus EFI), Alpine and RHEL family guests on riscv64, d2vm run hetzner and vbox, the Homebrew formula, the Docker image, any CI row."
+            }
+          },
+          "evidence_id": "plan-luhenry--d2vm--3-r9",
+          "kind": "plan",
+          "limitations": [],
+          "reference": {
+            "path": ".state/evidence/plan-luhenry--d2vm--3-r9.json",
+            "sha256": "f3c6aca3a8b5c418b5c14f30af0b0be4dac3439fec334aa04a87ec9baeace3d2"
+          },
+          "summary": "Plan refresh for luhenry/d2vm (fork of linka-cloud/d2vm, Go). Decision develop, class architecture_correctness. The development head 6578833 already implements linux/riscv64 as a grub-efi-only platform after the arm64 precedent (linka-cloud PR 44) and both CI runs booted ubuntu:24.04 and debian:13 riscv64 images. The owner's review asks to drop the riscv64 CI rows and the riscv64 e2e cross-testing (arm64 has none) and to exclude windows and darwin riscv64 in goreleaser. The refreshed plan keeps platform support, goreleaser goarch and documentation, returns .github/workflows/ci.yaml, e2e/e2e_test.go and the Makefile to base, and adds an explicit goreleaser ignore list (goreleaser v1.10.1 skips those pairs anyway, verified in source). Open point: Test Templates (debian) failed in both runs; the job log could not be read with this run's read-only tools, the rendered Debian template is identical on amd64 and the Kali row passed, so the cause is unverified and the developer must read the log first. No riscv64 history upstream, no ecosystem report, no project-graph node for d2vm. The riscv64-draft branch was not read."
+        }
+      ],
+      "requested_at": "2026-11-25T13:30:13.726915+00:00",
+      "tracking_issue": {
+        "description": "### Upstream repository\n\nhttps://github.com/luhenry/d2vm\n\n### Packages\n\n_No response_\n\n### Upstream target branch\n\n_No response_\n\n### Additional notes\n\nYou MUST NOT look at riscv64-draft at ALL. You ARE NOT ALLOWED to look at it. ",
+        "description_digest": "1dc460f7d5fa47d53093644c327e86fca29c4ce79174c6a61e554ad751c1629b",
+        "id": 6563486409,
+        "number": 3,
+        "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
+      }
+    },
+    "contribution_id": "luhenry--d2vm/3",
+    "dedupe_key": "luhenry--d2vm/3@g1.r14:development_repair",
+    "distributions": [],
+    "expected_head": "b393cc111205dd693b669458942646c53ed7311a",
+    "feedback_evidence_ids": [],
+    "fork": "riseproject-upstreaming/d2vm",
+    "fork_name": "d2vm",
+    "fork_repository_id": 1469259163,
+    "generation": 1,
+    "instructions": "Diagnose the failing fork CI identified by reason_ids on the expected head and propose a focused fix within scope. Review the committed series with the review loop of the worker prompt before you return it. Return the proposal and patch series as the artifact.",
+    "legacy_scope_extension": false,
+    "reason_ids": [
+      "ci-1469259163-45588297911-1",
+      "plan-luhenry--d2vm--3-r9"
+    ],
+    "ref": "riscv64-dev",
+    "review_scope_extension": false,
+    "revision": 14,
+    "task": "development_repair",
+    "tracking_issue": 3,
+    "upstream": "luhenry/d2vm",
+    "upstream_facing": false,
+    "upstream_repository_id": 1468806020
+  },
+  "digests": {
+    "task_id": "48cf555abfa96852dc02f3692e15ce45f19794f480da68890eb8e9dd278fa2db"
+  },
+  "evidence_id": "task-48cf555abfa96852dc02f3692e15ce45",
+  "kind": "task",
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "Task file of the development_repair task luhenry--d2vm/3@g1.r14:development_repair"
+}

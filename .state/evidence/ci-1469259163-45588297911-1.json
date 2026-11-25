@@ -1,0 +1,263 @@
+{
+  "ci": {
+    "artifacts": [],
+    "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
+    "event": "pull_request",
+    "expected_wheels": [],
+    "head_sha": "b393cc111205dd693b669458942646c53ed7311a",
+    "jobs": [
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115486400,
+        "name": "Docs up to date",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "executed": true,
+        "job_id": 139115486687,
+        "name": "Test Templates (quay.io/centos/centos:stream)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115486692,
+        "name": "Tests",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115486889,
+        "name": "Test Templates (kalilinux)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115486891,
+        "name": "Build",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115486924,
+        "name": "Build Docker Image",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115486955,
+        "name": "Test Templates (debian)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115486976,
+        "name": "Test Templates (ubuntu)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487016,
+        "name": "End to end Tests (debian:13)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487097,
+        "name": "End to end Tests (almalinux:10)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487108,
+        "name": "Test Templates (almalinux)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487112,
+        "name": "End to end Tests (ubuntu:24.04)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487123,
+        "name": "Test Templates (centos)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487162,
+        "name": "End to end Tests (rockylinux:9)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487194,
+        "name": "Test Templates (alpine)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487195,
+        "name": "End to end Tests (alpine:3.23)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487201,
+        "name": "End to end Tests (debian:12)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "cancelled",
+        "executed": false,
+        "interrupted": true,
+        "job_id": 139115487225,
+        "name": "Test Templates (rockylinux)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487228,
+        "name": "End to end Tests (centos:8)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487286,
+        "name": "End to end Tests (quay.io/centos/centos:stream10)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 139115487433,
+        "name": "End to end Tests (ubuntu:22.04)",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "skipped",
+        "executed": false,
+        "job_id": 139122613549,
+        "name": "Release Docker Image",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "skipped",
+        "executed": false,
+        "job_id": 139122613959,
+        "name": "Release Binaries",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      }
+    ],
+    "repository": "riseproject-upstreaming/d2vm",
+    "repository_id": 1469259163,
+    "run_attempt": 1,
+    "run_id": 45588297911,
+    "test_merge_sha": null,
+    "workflow_id": 428256129,
+    "workflow_path": ".github/workflows/ci.yaml",
+    "workflow_sha": null
+  },
+  "collected_at": "2026-11-25T13:30:13.726915+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "debug_present": false,
+  "evidence_id": "ci-1469259163-45588297911-1",
+  "kind": "ci",
+  "limitations": [
+    "see problems",
+    "job 'Test Templates (quay.io/centos/centos:stream)' failed (failure)",
+    "required job 'riscv64' absent"
+  ],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": ".github/workflows/ci.yaml run 45588297911 attempt 1: failed"
+}
