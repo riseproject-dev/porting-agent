@@ -132,7 +132,7 @@ class TestRetiredStates(unittest.TestCase):
                 self.assertIn(lc.HELD_RESULT, edge.transition.effects.clears,
                               f"{edge.source} --{edge.verb}--> {edge.target}")
 
-    def test_a_review_that_could_not_run_becomes_a_failed_work(self):
+    def test_a_review_that_could_not_run_becomes_a_failed_task(self):
         record = state.migrate_record_fields(live(), now=NOW)[0]
         record.update(phase="development", activity="waiting_human", handoff_approval=None,
                       clean_head_sha=None, submission_rewrite_id=None,

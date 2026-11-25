@@ -22,7 +22,7 @@ from tests.helpers import (
     awaiting_submission,
     ci_record,
     contribution,
-    holding_work,
+    holding_task,
     policy,
     refusal,
     resolve_command,
@@ -180,8 +180,8 @@ def scenario(state, verb, t):
         facts.add("proposal_rejected_or_blocked")
     # The invariants the state requires (``lifecycle.REQUIRES``).
     requires = lc.LIFECYCLE[state].requires
-    if {"work", "work_or_publication"} & set(requires) \
-            and not {lc.NO_WORK, "no task requested"} & set(t.guard):
+    if {"task", "task_or_publication"} & set(requires) \
+            and not {lc.NO_TASK, "no task requested"} & set(t.guard):
         rec["active_work"] = copy.deepcopy(SAMPLE["active_work"])
     if "publication" in requires:
         rec["pending_publication"] = copy.deepcopy(SAMPLE["pending_publication"])
@@ -196,7 +196,7 @@ def scenario(state, verb, t):
         if not literal and name in SAMPLE and not engine._derived(name, None)[0] \
                 and not (name in engine.REASON_VALUES and command):
             values[name] = copy.deepcopy(SAMPLE[name])
-    if e.work in ("allocate", "reallocate"):
+    if e.task in ("allocate", "reallocate"):
         values["active_work"] = copy.deepcopy(SAMPLE["active_work"])
     if "pending_publication.exhausted" in e.sets or "publish_recovery" in t.charges:
         rec["pending_publication"] = copy.deepcopy(SAMPLE["pending_publication"])
@@ -284,9 +284,9 @@ class TestTableIsExercised(unittest.TestCase):
                 self.assertEqual(engine.state_key(new), target)
                 self.assertEqual(new["revision"], rec["revision"] + (e.revision == "bump"))
                 self.assertEqual(new["generation"], rec["generation"] + (e.generation == "bump"))
-                if e.work == "clear":
+                if e.task == "clear":
                     self.assertIsNone(new["active_work"])
-                elif e.work in ("allocate", "reallocate"):
+                elif e.task in ("allocate", "reallocate"):
                     self.assertEqual(new["active_work"]["dedupe_key"],
                                      SAMPLE["active_work"]["dedupe_key"])
                 else:
@@ -303,7 +303,7 @@ class TestTableIsExercised(unittest.TestCase):
                         continue  # a part of a field, tested in TestTableDecisions
                     if name not in sets:
                         self.assertFalse(get(new, name), f"{name} is not cleared")
-                if lc.WORK_FEEDBACK in e.sets:
+                if lc.TASK_FEEDBACK in e.sets:
                     self.assertEqual(new["active_work"]["feedback_evidence_ids"],
                                      rec.get("pending_feedback_evidence_ids") or [])
                 if lc.RERUNS in e.sets:
@@ -494,7 +494,7 @@ class TestTableDecisions(unittest.TestCase):
                                        values={"active_work": dict(SAMPLE["active_work"])},
                                        **kwargs)
 
-    def test_work_carries_the_feedback_present_at_allocation(self):
+    def test_task_carries_the_feedback_present_at_allocation(self):
         rec = self.fix_needed(pending_feedback_evidence_ids=["review-1", "review-2"])
         out = self.request(rec, "request_patch")
         self.assertTrue(out.accepted, out.reason)
@@ -534,7 +534,7 @@ class TestTableDecisions(unittest.TestCase):
                          (SHA_C, upstream["revision"] + 1))
         self.assertEqual(revised.record["pending_feedback_evidence_ids"], ["review-9"])
 
-    def test_a_publish_retry_and_a_fresh_work_graph_carry_the_same_feedback(self):
+    def test_a_publish_retry_and_a_fresh_task_graph_carry_the_same_feedback(self):
         running = self.request(self.fix_needed(pending_feedback_evidence_ids=["review-1"]),
                                "request_patch").record
         retry = take(
@@ -551,7 +551,7 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(published.record["pending_feedback_evidence_ids"], [])
         again = take(
             running, "allocate_work_retry", policy=POLICY, now=NOW,
-            facts={"work_terminal_without_result"},
+            facts={"task_terminal_without_result"},
             values={"active_work": dict(SAMPLE["active_work"], attempt=1)})
         self.assertTrue(again.accepted, again.reason)
         self.assertEqual(again.record["active_work"]["feedback_evidence_ids"], ["review-1"])
@@ -571,7 +571,7 @@ class TestTableDecisions(unittest.TestCase):
                 self.assertNotIn(lc.CARRIED_FEEDBACK, t.effects.clears, e.verb)
         self.assertEqual(lc.check_table(POLICY), [])
 
-    def test_work_that_carries_feedback_takes_no_ci_rerun(self):
+    def test_task_that_carries_feedback_takes_no_ci_rerun(self):
         fact = {"failure_not_caused_by_patch"}
         plain = self.request(self.fix_needed(), "request_patch").record
         rerun = take(plain, "request_ci_rerun", policy=POLICY, now=NOW,
@@ -783,7 +783,7 @@ class TestTableDecisions(unittest.TestCase):
                          "no_progress is exhausted")
         # Exactly one of the rows of the state applies in each case.
         for rec, evidence in ((review_only, passing), (failing, bad), (stuck, passing)):
-            applying = [e.verb for e in lc.due_work_edges("development.fix_needed")
+            applying = [e.verb for e in lc.due_task_edges("development.fix_needed")
                         if refusal(rec, e.verb, policy=POLICY, now=NOW, facts=self.FACTS,
                                           ci_evidence=evidence) is None]
             self.assertEqual(len(applying), 1, applying)
@@ -811,12 +811,12 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(revision.event["details"]["charged"],
                          ["repair_attempts_cluster", "work_total"])
         for record, evidence in ((rec, None), (failing, bad)):
-            applying = [e.verb for e in lc.due_work_edges("upstream_review.fix_needed")
+            applying = [e.verb for e in lc.due_task_edges("upstream_review.fix_needed")
                         if refusal(record, e.verb, policy=POLICY, now=NOW, facts=facts,
                                           ci_evidence=evidence) is None]
             self.assertEqual(len(applying), 1, applying)
 
-    def test_patch_work_needs_the_fork_and_admission_checks_the_scope(self):
+    def test_patch_task_needs_the_fork_and_admission_checks_the_scope(self):
         no_fork = self.fix_needed(fork=None)
         # A record without its fork violates its state: no task is requested.
         refused = self.request(no_fork, "request_patch")
@@ -867,7 +867,7 @@ class TestTableDecisions(unittest.TestCase):
         self.assertTrue(readmitted.accepted, readmitted.reason)
         self.assertEqual(engine.state_key(readmitted.record), "development.fix_needed")
         sources = {e.source for e in lc.table_edges()
-                   if e.transition.effects.work == "allocate" and lc.LIFECYCLE[e.source].writes}
+                   if e.transition.effects.task == "allocate" and lc.LIFECYCLE[e.source].writes}
         self.assertEqual(sources, {"development.fix_needed", "upstream_review.fix_needed"})
 
 
@@ -907,12 +907,12 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                 fix, "request_patch", policy=POLICY, now=NOW,
                 facts={"worker_slot_free", "capacity_available"},
                 values={"active_work": dict(SAMPLE["active_work"]),
-                        lc.WORK_FEEDBACK: ["review-1"]})
+                        lc.TASK_FEEDBACK: ["review-1"]})
         with self.assertRaises(lc.TransitionError):
             take(rec, "record_head_change", policy=POLICY, now=NOW,
                                     facts={"candidate_head_changed"})
 
-    def test_work_is_allocated_only_with_the_bound_upstream_identity(self):
+    def test_task_is_allocated_only_with_the_bound_upstream_identity(self):
         rec = contribution(phase="planning", activity="idle", fork=None)
         work = dict(SAMPLE["active_work"])
         for missing in ("repository_id", "base_ref", "base_sha"):
@@ -977,7 +977,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual(kept.record["budget"]["attempts_used"], 24)
         self.assertNotIn("restarted", kept.event["details"])
 
-    def test_pause_clears_work_and_resume_clears_the_flag_first(self):
+    def test_pause_clears_task_and_resume_clears_the_flag_first(self):
         rec = contribution(phase="development", activity="agent_running",
                            active_work=dict(SAMPLE["active_work"]))
         pause = commands.parse('/upstreaming pause reason="hold on"')
@@ -1385,7 +1385,7 @@ class TestSingleWritePath(unittest.TestCase):
                     phase=key.split(".")[0], activity=key.split(".")[1])))
 
     def test_no_fork_write_is_admitted_at_the_submission_gate(self):
-        running, identity = holding_work(contribution(activity="agent_running"))
+        running, identity = holding_task(contribution(activity="agent_running"))
         args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
                     ref="riscv64-dev", repository="riseproject-upstreaming/proj", **identity)
         self.assertIsNone(lc.publication_check(running, **args))
@@ -1405,7 +1405,7 @@ class TestSingleWritePath(unittest.TestCase):
         self.assertIsNone(lc.publication_check(building, **dict(args, ref="riscv64")))
 
     def test_development_writes_only_the_development_branch(self):
-        rec, identity = holding_work(contribution(activity="agent_running"))
+        rec, identity = holding_task(contribution(activity="agent_running"))
         args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
                     ref="riscv64", repository="riseproject-upstreaming/proj", **identity)
         self.assertEqual(lc.publication_check(rec, **args), "ref 'riscv64' is not 'riscv64-dev'")
@@ -1413,17 +1413,17 @@ class TestSingleWritePath(unittest.TestCase):
         self.assertEqual(lc.publication_check(legacy, **dict(args, ref="riscv64-dev")),
                          "the recorded development branch is not 'riscv64-dev'")
 
-    def test_the_publication_check_always_compares_the_work_id(self):
-        rec, identity = holding_work(contribution(activity="agent_running"))
+    def test_the_publication_check_always_compares_the_task_id(self):
+        rec, identity = holding_task(contribution(activity="agent_running"))
         args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
                     ref="riscv64-dev", repository="riseproject-upstreaming/proj")
         self.assertIsNone(lc.publication_check(rec, **args, **identity))
-        self.assertEqual(lc.publication_check(rec, **args, **dict(identity, work_key="other")),
+        self.assertEqual(lc.publication_check(rec, **args, **dict(identity, task_key="other")),
                          "the requested task is another task")
         self.assertEqual(lc.publication_check(dict(rec, active_work=None), **args, **identity),
                          "no requested task or pending publication")
         # The task identity is required: no call skips the task id.
-        for missing in ("work_key", "expected_generation"):
+        for missing in ("task_key", "expected_generation"):
             with self.subTest(missing=missing), self.assertRaises(TypeError):
                 lc.publication_check(rec, **args, **{k: v for k, v in identity.items()
                                                      if k != missing})

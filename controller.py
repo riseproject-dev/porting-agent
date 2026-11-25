@@ -37,8 +37,8 @@ import lifecycle
 import recovery
 import schemas
 import state
-import work as work_queue
-import work_task
+import task_build
+import tasks
 from commands import URGENT, Command
 from common import (
     CONTROL_REPO,
@@ -68,7 +68,7 @@ class Inputs:
     upstream_pr_observations: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
-    # The queue graphs (``work.graph_id``) of a task that already returned a
+    # The queue graphs (``tasks.graph_id``) of a task that already returned a
     # Result or that the queue holds as terminal. A terminal graph is never
     # submitted again: a task allocated under one takes `allocate_work_retry`
     # or `exhaust_recovery` in the same tick.
@@ -125,7 +125,7 @@ def _actionable(c: dict) -> str | None:
     if c["phase"] == "upstream_review" and c["activity"] == "fix_needed":
         return "upstream_revision"
     if engine.state_key(c) == "handoff.review_due":
-        return work_queue.SUBMISSION_REWRITE
+        return tasks.SUBMISSION_REWRITE
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
     if engine.state_key(c) == "planning.idle":
@@ -139,7 +139,7 @@ def _actionable(c: dict) -> str | None:
 # 18 hours covers the three with time to spare. No row reads
 # it: a task whose graph ends without a usable Result is recovered by
 # `allocate_work_retry` and `exhaust_recovery`.
-WORK_DEADLINE_HOURS = 18
+TASK_DEADLINE_HOURS = 18
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0,
             "development_repair": 1,
@@ -175,7 +175,7 @@ def task_for(verb: str, record: dict) -> str:
     if verb == "dispatch_planning":
         return "planning"
     if verb == "request_submission_rewrite":
-        return work_queue.SUBMISSION_REWRITE
+        return tasks.SUBMISSION_REWRITE
     if verb in ("request_upstream_revision", "request_review_revision"):
         return "upstream_revision"
     if verb == "request_repair" or record.get("pending_feedback_evidence_ids"):
@@ -1089,7 +1089,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     for c in by_id.values():
         if c["contribution_id"] in skip:
             continue
-        with isolation.contribution(c["contribution_id"], "work_selection"):
+        with isolation.contribution(c["contribution_id"], "task_selection"):
             if c["contribution_id"] in source_blocked:
                 continue
             kind = _actionable(c)
@@ -1148,7 +1148,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             # allocated or charged: it is a failure of the pipeline, not of
             # the contribution, and the check is made again in the next tick
             # (after a change of the code, or of what the task is built from).
-            unbuildable = work_task.dry_run(allocated, evidence or {})
+            unbuildable = task_build.dry_run(allocated, evidence or {})
             if unbuildable:
                 cause = (f"the task file could not be built: {unbuildable}; a failure of the "
                          "pipeline, not of the contribution")
@@ -1170,7 +1170,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     for _p, _t, kind, c, verb in candidates:
         if c["contribution_id"] in skip:
             continue
-        with isolation.contribution(c["contribution_id"], "work_selection"):
+        with isolation.contribution(c["contribution_id"], "task_selection"):
             if slots <= 0:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": "no worker slot"})
                 continue
@@ -1185,7 +1185,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             claimed = c
             ci = evidence.get(claimed.get("last_ci_evidence_id") or "")
             cluster = engine.recorded_failing_job(claimed, ci)[1]
-            request = _work_request(claimed, kind, inputs, now)
+            request = _task_request(claimed, kind, inputs, now)
             source = engine.state_key(claimed)
             claimed = _stage(res, by_id, engine.applied(engine.try_apply_transition(
                 claimed, verb, policy=policy, now=now, cause_id=request["dedupe_key"],
@@ -1202,7 +1202,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             expected = (list(c.get("pending_feedback_evidence_ids") or [])
                         if _carries_feedback(source, verb)
                         else [])
-            if kind not in work_queue.SUBMISSION_TASKS and carried != expected:
+            if kind not in tasks.SUBMISSION_TASKS and carried != expected:
                 raise lifecycle.TransitionError(
                     f"{verb}: the task carries {carried}, not {expected}")
             # A row that keeps the revision can name a task whose graph already
@@ -1211,14 +1211,14 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             # and a fresh graph is allocated within `work_recovery`
             # (`allocate_work_retry`), or the contribution waits for a human
             # (`exhaust_recovery`).
-            claimed = _retry_spent_work(claimed, inputs, res, policy)
+            claimed = _retry_spent_task(claimed, inputs, res, policy)
             by_id[c["contribution_id"]] = claimed
             if not claimed.get("active_work"):
                 slots += 1
                 continue
             aw = claimed["active_work"]
             work = {
-                "type": "submit_work",
+                "type": "submit_task",
                 "dedupe_key": aw["dedupe_key"],
                 "contribution_id": c["contribution_id"],
                 "generation": aw["generation"],
@@ -1229,7 +1229,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "feedback_evidence_ids": list(aw.get("feedback_evidence_ids") or []),
                 "effect_contract": (
                     {"kind": "none"}
-                    if kind == "planning" or kind in work_queue.SUBMISSION_TASKS
+                    if kind == "planning" or kind in tasks.SUBMISSION_TASKS
                     else {
                         "kind": "fork_branch",
                         "repository": (claimed.get("fork") or {}).get("name"),
@@ -1245,7 +1245,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     return res
 
 
-def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
+def terminal_task(c: dict, aw: dict, queue_state: str, *, now: datetime,
                   policy: dict, details: dict | None = None
                   ) -> tuple[dict | None, dict | None, str]:
     """The table's row for a requested task whose graph is terminal without a
@@ -1256,9 +1256,9 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
     iso = now.isoformat()
     if engine.state_key(c) not in lifecycle.LIFECYCLE:
         return None, None, f"A terminal task in {engine.state_key(c)}, a state the table does not have"
-    facts = {"work_terminal_without_result"}
+    facts = {"task_terminal_without_result"}
     details = {"queue_state": queue_state, "work": aw["dedupe_key"]} | (details or {})
-    fresh = _fresh_work(c, aw, now)
+    fresh = _fresh_task(c, aw, now)
     if details.get("pipeline_failure"):
         # The last Claim failed before its agent for a failure of the
         # pipeline, which has since been corrected, or a human launched the
@@ -1277,7 +1277,7 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                 cause_id=f"queue-{queue_state}",
                 facts=facts | {"pipeline_failure", "pipeline_failure_cleared"},
                 values={"active_work": fresh}, details=details),
-                ("controller", "terminal_work")):
+                ("controller", "terminal_task")):
             case engine.Applied() as out:
                 return (out.record, out.event,
                         "new revision for a task whose last Claim failed before its agent for a "
@@ -1285,7 +1285,7 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
             case engine.Skip(refused):
                 return None, None, f"A terminal task: {refused.detail}"
             case engine.Bug(refused):
-                raise engine.TransitionRefused(refused, ("controller", "terminal_work"))
+                raise engine.TransitionRefused(refused, ("controller", "terminal_task"))
     # `allocate_work_retry` is guarded by the bound upstream identity. A
     # record without it never reaches this point: it holds a task only once a
     # row guarded by the same identity allocated it, the identity is cleared
@@ -1295,7 +1295,7 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
     match engine.dispatch(engine.try_apply_transition(
             c, "allocate_work_retry", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
             facts=facts, values={"active_work": fresh}, details=details),
-            ("controller", "terminal_work")):
+            ("controller", "terminal_task")):
         case engine.Applied() as out:
             attempt = out.record["active_work"]["attempt"]
             limit = lifecycle.budget_limit("work_recovery", policy)
@@ -1306,43 +1306,43 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
             out = engine.applied(engine.try_apply_transition(
                 c, "exhaust_recovery", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
                 facts=facts, details=details | {"exhausted": spent}),
-                ("controller", "terminal_work"))
+                ("controller", "terminal_task"))
             return out.record, out.event, "automatic task recovery exhausted; waiting for a human"
         case engine.Skip(refused):
             return None, None, f"A terminal task: {refused.detail}"
         case engine.Bug(refused):
-            raise engine.TransitionRefused(refused, ("controller", "terminal_work"))
+            raise engine.TransitionRefused(refused, ("controller", "terminal_task"))
 
 
-def _fresh_work(c: dict, aw: dict, now: datetime) -> dict:
+def _fresh_task(c: dict, aw: dict, now: datetime) -> dict:
     """The task request that replaces the terminal task ``aw`` of ``c``: a
     fresh graph at the next revision."""
     generation, revision = int(c.get("generation", 0)), c["revision"] + 1
     # The free relaunches of a version belong to the graph that failed: only
-    # `reallocate_after_pipeline_failure` carries them on (`terminal_work`).
+    # `reallocate_after_pipeline_failure` carries them on (`terminal_task`).
     aw = {k: v for k, v in aw.items() if k != "pipeline_free"}
-    return dict(aw, dedupe_key=work_queue.work_key(c["contribution_id"], generation, revision,
+    return dict(aw, dedupe_key=tasks.task_key(c["contribution_id"], generation, revision,
                                                    aw["task"], engine.head_reruns(c)["flaky"]),
                 generation=generation, revision=revision, requested_at=now.isoformat(),
-                deadline_at=(now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
+                deadline_at=(now + timedelta(hours=TASK_DEADLINE_HOURS)).isoformat(),
                 dispatched_run_id=None)
 
 
-def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:
+def _retry_spent_task(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:
     """``record`` once the task it was just allocated no longer names a graph
     in ``inputs.spent_graphs``: each spent graph takes ``allocate_work_retry``
     (a fresh graph at a new revision) or ``exhaust_recovery``, which
     clears the task."""
     while record.get("active_work") and \
-            work_queue.graph_id(record["active_work"]["dedupe_key"]) in inputs.spent_graphs:
+            tasks.graph_id(record["active_work"]["dedupe_key"]) in inputs.spent_graphs:
         spent = record["active_work"]["dedupe_key"]
-        new, event, decision = terminal_work(record, record["active_work"], "spent",
+        new, event, decision = terminal_task(record, record["active_work"], "spent",
                                              now=inputs.now, policy=policy)
         if new is None:
             raise lifecycle.TransitionError(f"A task {spent} is spent: {decision}")
         res.stage("contributions", new)
         res.stage("events", event)
-        res.report.setdefault("spent_work", []).append(
+        res.report.setdefault("spent_task", []).append(
             {"contribution": record["contribution_id"], "work": spent, "decision": decision})
         record = new
     return record
@@ -1351,7 +1351,7 @@ def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dic
 def _carries_feedback(state: str, verb: str) -> bool:
     """Whether the allocation row ``verb`` of ``state`` sets the pending
     feedback its task carries (``active_work.feedback_evidence_ids``)."""
-    return lifecycle.WORK_FEEDBACK in lifecycle.find_edge(state, verb).transition.effects.sets
+    return lifecycle.TASK_FEEDBACK in lifecycle.find_edge(state, verb).transition.effects.sets
 
 
 class MissingEvidence(LookupError):
@@ -1428,7 +1428,7 @@ def _due_allocation(due: dict, allocations: tuple[str, ...], facts: frozenset, c
     match engine.dispatch(engine.try_apply_one_of(
             due, allocations, policy=policy, now=now, facts=facts, ci_evidence=ci,
             open_operations=ops,
-            prepare=lambda verb: {"values": {"active_work": _work_request(
+            prepare=lambda verb: {"values": {"active_work": _task_request(
                 due, task_for(verb, due), inputs, now)}}),
             ("controller", "_due_allocation"), "|".join(allocations)):
         case engine.Applied() as allocation:
@@ -1455,7 +1455,7 @@ def _exhaust(due: dict, out: engine.Applied, ci: dict | None, by_id: dict, res: 
         {"contribution": due["contribution_id"], "verb": out.verb, **details})
 
 
-def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
+def _task_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
     """The requested task (``active_work``) for ``kind`` at the record's
     generation and revision. Its reason ids are the pending feedback it
     carries, then the CI evidence and the plan."""
@@ -1463,7 +1463,7 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
 
     generation, revision = int(record.get("generation", 0)), record["revision"]
     reason_ids: list[str] = []
-    if kind in work_queue.SUBMISSION_TASKS:
+    if kind in tasks.SUBMISSION_TASKS:
         # The plan (with its contribution guidelines) and the CI evidence
         # of the candidate head the rewrite and the review describe.
         reason_ids = [i for i in (record.get("plan_evidence_id"),
@@ -1476,11 +1476,11 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
     if not reason_ids and record.get("plan_evidence_id"):
         reason_ids = [record["plan_evidence_id"]]
     request = {
-        "dedupe_key": work_queue.work_key(record["contribution_id"], generation, revision, kind,
+        "dedupe_key": tasks.task_key(record["contribution_id"], generation, revision, kind,
                                           engine.head_reruns(record)["flaky"]),
         "task": kind, "generation": generation, "revision": revision, "attempt": 1,
         "requested_at": now,
-        "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
+        "deadline_at": (inputs.now + timedelta(hours=TASK_DEADLINE_HOURS)).isoformat(),
         "dispatched_run_id": None, "reason_ids": reason_ids}
     frozen_issue = record["tracking_issue"]
     keys = ("id", "number", "url", "description", "description_digest")
@@ -1883,7 +1883,7 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
 def _refused_by_work_total(refused) -> bool:
     """Whether the refusal of a launch is that of `work_total` (the budget
     the row of `development.fix_needed` adds to `operation_launch`)."""
-    return isinstance(refused, engine.Refused) and refused.guard == lifecycle.WORK_TOTAL_REMAINS
+    return isinstance(refused, engine.Refused) and refused.guard == lifecycle.TASK_TOTAL_REMAINS
 
 
 _NO_PR_MISMATCH = ("the development PR of the recorded head could not be opened: no PR is "

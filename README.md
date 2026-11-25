@@ -37,7 +37,7 @@ python -m triggers audit
 python -m commands parse FILE
 python -m capacity observe
 python -m controller observe --offline
-python -m work plan --out PLAN.json --control-repo-id ID
+python -m tasks plan --out PLAN.json --control-repo-id ID
 python -m reconcile --offline
 ```
 

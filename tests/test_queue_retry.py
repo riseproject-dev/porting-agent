@@ -17,7 +17,7 @@ import yaml
 
 import queue_result
 import reconcile
-import work
+import tasks
 from tests.helpers import contribution, policy
 
 DEDUPE = "luhenry--d2vm/3@g1.r3:development_patch"
@@ -38,7 +38,7 @@ def run(run_id: int, created: str, status: str = "completed", conclusion: str = 
 
 
 def projection(state: str = "available", attempts: int = 1, retry=RETRY_MS) -> dict:
-    graph = work.graph_id(DEDUPE)
+    graph = tasks.graph_id(DEDUPE)
     item = {"kind": "Work", "work_id": "b7ec5153", "graph_id": graph, "pool": "default",
             "state": state, "attempts": attempts}
     if retry is not None:
@@ -48,12 +48,12 @@ def projection(state: str = "available", attempts: int = 1, retry=RETRY_MS) -> d
 
 
 class TestWorkRetries(unittest.TestCase):
-    def test_a_cancelled_claim_leaves_available_work_to_retry(self):
+    def test_a_cancelled_claim_leaves_available_task_to_retry(self):
         retries = queue_result.work_retries(projection())
-        self.assertEqual(retries, {work.graph_id(DEDUPE): {
+        self.assertEqual(retries, {tasks.graph_id(DEDUPE): {
             "attempts": 1, "max_attempts": 3, "retry_at": RETRY_AT}})
 
-    def test_only_available_work_after_a_claim_is_a_retry(self):
+    def test_only_available_task_after_a_claim_is_a_retry(self):
         for state, attempts, retry in (("claimed", 2, RETRY_MS), ("available", 0, None),
                                        ("cancelled", 3, RETRY_MS), ("available", 1, None),
                                        ("available", True, RETRY_MS)):
@@ -61,7 +61,7 @@ class TestWorkRetries(unittest.TestCase):
                 self.assertEqual(queue_result.work_retries(projection(state, attempts, retry)), {})
         self.assertEqual(queue_result.work_retries(None), {})
 
-    def test_a_retry_time_out_of_range_skips_that_work_only(self):
+    def test_a_retry_time_out_of_range_skips_that_task_only(self):
         # datetime.fromtimestamp refuses a time past year 9999: that one
         # task is left out and reported, and the others are still read.
         p = projection()
@@ -69,11 +69,11 @@ class TestWorkRetries(unittest.TestCase):
                                  retry_not_before=10 ** 20)
         skipped: list[str] = []
         retries = queue_result.work_retries(p, skipped)
-        self.assertEqual(list(retries), [work.graph_id(DEDUPE)])
+        self.assertEqual(list(retries), [tasks.graph_id(DEDUPE)])
         self.assertEqual(len(skipped), 1)
         self.assertIn("porting:far", skipped[0])
         self.assertIn(str(10 ** 20), skipped[0])
-        self.assertEqual(list(queue_result.work_retries(p)), [work.graph_id(DEDUPE)])
+        self.assertEqual(list(queue_result.work_retries(p)), [tasks.graph_id(DEDUPE)])
 
 
 class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
@@ -92,7 +92,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         self.runs = [run(45257187396, "2026-11-23T20:13:50Z")]
 
     def recover(self, now, runs=None, retries=True, record=None):
-        graph = work.graph_id(DEDUPE)
+        graph = tasks.graph_id(DEDUPE)
         p = projection()
         return reconcile.dispatch_recovery(
             {"c": copy.deepcopy(record or self.record)}, runs=runs or self.runs,
@@ -166,7 +166,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         later = projection(attempts=2, retry=int(at("2026-11-24T00:30:00+00:00").timestamp() * 1000))
         relaunch, staged, report = reconcile.dispatch_recovery(
             {"c": copy.deepcopy(self.record)}, runs=runs,
-            queue_works={work.graph_id(DEDUPE): "available"},
+            queue_works={tasks.graph_id(DEDUPE): "available"},
             now=at("2026-11-24T00:46:00+00:00"), policy=policy(),
             queue_retries=queue_result.work_retries(later))
         self.assertEqual(staged, [])
@@ -175,7 +175,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         # Without the retry those three runs would exhaust the recovery.
         _relaunch, staged, _report = reconcile.dispatch_recovery(
             {"c": copy.deepcopy(self.record)}, runs=runs,
-            queue_works={work.graph_id(DEDUPE): "available"},
+            queue_works={tasks.graph_id(DEDUPE): "available"},
             now=at("2026-11-24T00:46:00+00:00"), policy=policy())
         self.assertEqual([r["kind"] for kind, r in staged if kind == "events"],
                          ["exhaust_recovery"])
@@ -199,7 +199,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
     def test_a_claimed_retry_is_left_to_the_worker(self):
         relaunch, staged, report = reconcile.dispatch_recovery(
             {"c": copy.deepcopy(self.record)}, runs=self.runs,
-            queue_works={work.graph_id(DEDUPE): "claimed"},
+            queue_works={tasks.graph_id(DEDUPE): "claimed"},
             now=at("2026-11-23T23:30:00+00:00"), policy=policy(),
             queue_retries=queue_result.work_retries(projection("claimed", 2)))
         self.assertEqual((relaunch, staged, report), ([], [], []))

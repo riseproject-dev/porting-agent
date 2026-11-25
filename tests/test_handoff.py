@@ -1933,7 +1933,7 @@ class TestNoReceipt(unittest.TestCase):
             self.assertLess(minute, 600, f"stuck in {state}")
         return rows, minute
 
-    def test_every_work_state_has_an_exit(self):
+    def test_every_task_state_has_an_exit(self):
         for state, (pending, resume, exhaust) in self.STATES.items():
             for pause_at in (None, 48):
                 with self.subTest(state=state, pause=pause_at):
@@ -1953,7 +1953,7 @@ class TestNoReceipt(unittest.TestCase):
                     world.tick(at(minute + 1), receipts=[world.run_workflow()])
                     self.assertNotIn(world.state, (state, "handoff.waiting_human"))
 
-    def test_the_rewrite_work_has_an_exit(self):
+    def test_the_rewrite_task_has_an_exit(self):
         for world, state in ((submitted(), "handoff.agent_running"),):
             self.assertEqual(world.state, state)
             out = world.tick(at(1), comments=[comment("/upstreaming pause", cid=930)])

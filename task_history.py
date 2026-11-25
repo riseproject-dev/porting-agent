@@ -49,7 +49,7 @@ rather than the task held. A condensed entry names the evidence file that
 holds it in full (``evidence_path``).
 
 The task payload names the record by pinned commit and SHA-256
-(``work.cmd_plan``); a trusted pre-agent step fetches and verifies it.
+(``tasks.cmd_plan``); a trusted pre-agent step fetches and verifies it.
 """
 
 from __future__ import annotations
@@ -627,7 +627,7 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
     return _degrade(doc)
 
 
-def _work_order(entry: dict) -> tuple:
+def _task_order(entry: dict) -> tuple:
     """The order of the task a report entry describes: its generation, its
     revision, then the time it is placed at.
 
@@ -638,7 +638,7 @@ def _work_order(entry: dict) -> tuple:
     The newest report and the newest-published fallback of
     ``protected_reports`` rely on it, so a report stored late (a late
     Result, a held one stored at the hold) never passes for a newer task's
-    one; ``tests.test_work_history`` pins both."""
+    one; ``tests.test_task_history`` pins both."""
     work = entry.get("work") or {}
     generation, revision = work.get("generation", 0), work.get("revision")
     return (generation if isinstance(generation, int) else 0,
@@ -670,12 +670,12 @@ def protected_reports(record: dict, timeline: list[dict]) -> tuple[dict | None, 
     reports = [t for t in timeline if t["kind"] == "worker_report"]
     if not reports:
         return None, None
-    latest = max(reports, key=_work_order)
+    latest = max(reports, key=_task_order)
     head = lifecycle.recorded_head(record)
     published = [t for t in reports if t.get("head_after")]
     on_head = [t for t in reports if head and report_head(t) == head]
     candidates = on_head or published
-    head_report = max(candidates, key=_work_order) if candidates else None
+    head_report = max(candidates, key=_task_order) if candidates else None
     return latest, head_report
 
 

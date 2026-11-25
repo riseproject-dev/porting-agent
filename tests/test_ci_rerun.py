@@ -334,7 +334,7 @@ class TestPublish(unittest.TestCase):
                           op["target"]["expected_head"]), ("ci_rerun", "confirmed", 2, SHA_A))
         self.assertIsNone(ci_rerun.receipt_problem(out, repair_record()))
 
-    def test_a_task_without_the_work_identity_is_stale_and_never_written(self):
+    def test_a_task_without_the_task_identity_is_stale_and_never_written(self):
         for drop in (("generation", "dedupe_key"), ("generation",), ("dedupe_key",)):
             with self.subTest(drop=drop):
                 api = FakeApi([run(5)])

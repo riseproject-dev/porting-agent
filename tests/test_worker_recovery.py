@@ -13,7 +13,7 @@ from pathlib import Path
 import capacity
 import engine
 import reconcile
-import work
+import tasks
 import worker_recovery
 from tests.helpers import NOW, contribution, policy
 
@@ -36,7 +36,7 @@ class TestDispatcherAcceptedLaunchRecovery(unittest.TestCase):
             "dispatched_run_id": None,
             "reason_ids": ["plan-1"], "generation": 0, "feedback_evidence_ids": []
         }
-        graph = work.graph_id(record["active_work"]["dedupe_key"])
+        graph = tasks.graph_id(record["active_work"]["dedupe_key"])
         relaunch, staged, report = reconcile.dispatch_recovery(
             {"c": record},
             runs=[{
@@ -71,7 +71,7 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
                 "plan-closeio--ciso8601--1-r2",
             ], "generation": 0, "feedback_evidence_ids": []
         }
-        self.graph = work.graph_id(self.record["active_work"]["dedupe_key"])
+        self.graph = tasks.graph_id(self.record["active_work"]["dedupe_key"])
         self.runs = [
             {
                 "id": 45005112315,
@@ -191,7 +191,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
         project = json.loads((FIXTURE / "project.json").read_text())
         return record, operations, project
 
-    def test_a_blocker_without_requested_work_is_a_late_result(self):
+    def test_a_blocker_without_requested_task_is_a_late_result(self):
         """The record names the blocked run as its proposal, but holds no task
         for it and is at a later revision: the Result matches nothing and
         takes `record_late_effect`, once."""

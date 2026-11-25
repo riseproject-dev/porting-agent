@@ -431,7 +431,7 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
     """Rerun the failed jobs of the exact head for a ``no_change`` Result,
     after the final check before a fork write (``lifecycle.publication_check``),
     and return the outcome the reconciler folds."""
-    from work import task_identity
+    from tasks import task_identity
 
     fork, head = task["fork"], task["expected_head"]
     try:
@@ -439,14 +439,14 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
     except collect.CollectError as error:
         return _outcome("infra_error", f"could not read the fork head: {error}",
                         failure_class="infrastructure")
-    generation, work_key = task_identity(task)
+    generation, task_key = task_identity(task)
     if generation is None:
         return _outcome("rejected", "publication check: the task names no task identity",
                         failure_class="stale")
     why = lifecycle.publication_check(record, expected_revision=task["revision"],
                                       expected_head=head, observed_head=observed,
                                       ref=task.get("ref"), repository=fork,
-                                      expected_generation=generation, work_key=work_key)
+                                      expected_generation=generation, task_key=task_key)
     if why:
         return _outcome("rejected", f"publication check: {why}", failure_class="stale")
     try:
@@ -480,7 +480,7 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
                         rerun={"status": "nothing_to_rerun", "runs": []})
     receipt = request(api, fork, head, runs, sleep=sleep)
     reason_ids = [str(record.get("last_ci_evidence_id") or "no-ci-evidence"),
-                  f"work:{work_key or task.get('revision')}",
+                  f"work:{task_key or task.get('revision')}",
                   f"publish-attempt:{fork_publish.dispatched_attempt()}"]
     op = operation(record, head, runs, reason_ids, policy, now)
     if receipt["status"] == "rerun":

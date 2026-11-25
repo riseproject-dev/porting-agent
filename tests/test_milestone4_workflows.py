@@ -11,7 +11,7 @@ import yaml
 
 import capacity
 import controller
-import work
+import tasks
 from common import load_policy
 
 ROOT = Path(__file__).parents[1]
@@ -118,8 +118,8 @@ class TestNativeQueueContracts(unittest.TestCase):
         )
         self.assertEqual(len(result.requested_effects), 1)
         staged = [record for kind, record in result.staged if kind == "contributions"][-1]
-        request = work.request_from_active(staged)
-        node = work.node(
+        request = tasks.request_from_active(staged)
+        node = tasks.node(
             request,
             staged,
             control_repo_id="1",

@@ -222,7 +222,7 @@ class TestPatchResults(unittest.TestCase):
                          ["reject_patch_proposal"])
         self.assertEqual(rejected["pending_feedback_evidence_ids"], ["review-1"])
 
-    def test_a_no_change_result_of_patch_work_is_published_by_the_rerun(self):
+    def test_a_no_change_result_of_patch_task_is_published_by_the_rerun(self):
         """A `development_patch` task (requested without pending feedback) may
         take `request_ci_rerun` like a repair task: the trusted publication job
         admits its `no_change` Result (`ci_rerun.preflight`), and the
@@ -250,7 +250,7 @@ class TestPatchResults(unittest.TestCase):
                 self.assertIsNone(engine.state_problem(new))
                 self.assertEqual(kinds(tick(new, verdict="passed")), ["nominate_for_handoff"])
 
-    def test_a_published_patch_clears_exactly_the_feedback_its_work_carried(self):
+    def test_a_published_patch_clears_exactly_the_feedback_its_task_carried(self):
         rec = running(pending_feedback_evidence_ids=["review-1", "review-2"])
         rec["active_work"]["feedback_evidence_ids"] = ["review-1"]
         new, staged = reconcile.apply_publication(
@@ -307,7 +307,7 @@ class TestPatchResults(unittest.TestCase):
         self.assertIn("did not join the scope", event["details"]["scope_extension_not_recorded"])
         self.assertEqual(engine.state_key(new), "development.waiting_ci")
 
-    def test_publish_retries_then_the_human_wait_then_fresh_work(self):
+    def test_publish_retries_then_the_human_wait_then_fresh_task(self):
         rec = running()
         out = tick(rec, [dict(publication(rec, "infra_error"), publication_artifact_id=1)],
                    observe=False)
@@ -543,7 +543,7 @@ class TestUncertainPublication(unittest.TestCase):
         return final(out, self.rec), {op["operation_id"]: op}, op
 
     def test_an_uncertain_publication_is_held_until_it_is_confirmed(self):
-        import work
+        import tasks
         rec = self.rec
         key = rec["active_work"]["dedupe_key"]
         held, ops, op = self.hold()
@@ -555,7 +555,7 @@ class TestUncertainPublication(unittest.TestCase):
         self.assertIsNone(engine.state_problem(held))
         # No task recovery takes the completed graph of the task whose
         # Result is held.
-        out = tick(held, observe=False, operations=ops, queue={work.graph_id(key): "completed"})
+        out = tick(held, observe=False, operations=ops, queue={tasks.graph_id(key): "completed"})
         self.assertNotIn("allocate_work_retry", kinds(out))
         self.assertNotIn("exhaust_recovery", kinds(out))
         self.assertEqual(final(out, held), held)
@@ -651,7 +651,7 @@ class TestObservation(unittest.TestCase):
     """`development.waiting_ci` is observed by its rows; `development.fix_needed`
     only for a moved head and for review feedback on the recorded head."""
 
-    def test_a_head_that_moved_while_work_ran_is_recorded_after_the_stale_result(self):
+    def test_a_head_that_moved_while_task_ran_is_recorded_after_the_stale_result(self):
         rec = running()
         self.assertNotEqual(rec["fork"]["head_sha"], SHA_B)
         stale = publication(rec, "rejected_stale")
@@ -671,7 +671,7 @@ class TestObservation(unittest.TestCase):
         later = tick(after, head=SHA_B)
         self.assertEqual(later.report["requested_effects"], [])
 
-    def test_a_review_while_work_is_due_is_carried_by_the_next_work(self):
+    def test_a_review_while_task_is_due_is_carried_by_the_next_task(self):
         failed = next(e for kind, e in tick(record(), verdict="failed").staged
                       if kind == "evidence")
         for evidence, verb in ((None, "request_patch"), (failed["evidence_id"], "request_repair")):
@@ -692,7 +692,7 @@ class TestObservation(unittest.TestCase):
                 self.assertIn("review-2-1-77", after["active_work"]["feedback_evidence_ids"])
                 self.assertEqual(after["revision"], rec["revision"] + 1)
 
-    def test_a_review_on_a_paused_record_while_work_is_due_is_read_after_the_resume(self):
+    def test_a_review_on_a_paused_record_while_task_is_due_is_read_after_the_resume(self):
         """While paused nothing new starts: a review that would bump the
         revision is not recorded (its ids stay unfenced) and no task is
         requested; the resume reads it again and records it."""
@@ -859,7 +859,7 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(observed.staged, [])
         self.assertEqual(observed.report[0]["ci"]["state"], "access_wait")
 
-    def test_a_head_that_moved_while_work_is_due_waits_for_its_ci(self):
+    def test_a_head_that_moved_while_task_is_due_waits_for_its_ci(self):
         """A push while a task is due takes `record_head_change` from
         `development.fix_needed` to `development.waiting_ci`: the new head
         is recorded at a new revision, the CI evidence of the old head is
@@ -889,7 +889,7 @@ class TestObservation(unittest.TestCase):
         out = tick(dict(rec, last_ci_evidence_id=None), head=SHA_A)
         self.assertEqual(kinds(out), ["request_patch"])
 
-    def test_a_push_while_work_is_due_for_a_review_is_answered_after_ci_passes(self):
+    def test_a_push_while_task_is_due_for_a_review_is_answered_after_ci_passes(self):
         """A push while a task is due for a review keeps the review pending;
         once CI passes on the new head, `return_for_feedback` makes a task due
         again and the repair that carries the review is requested."""
@@ -947,7 +947,7 @@ class TestObservation(unittest.TestCase):
         self.assertEqual((engine.state_key(after), after["pending_human_action"]["kind"]),
                          ("development.waiting_human", "work_budget_exhausted"))
 
-    def test_passing_ci_with_pending_feedback_while_paused_requests_no_work(self):
+    def test_passing_ci_with_pending_feedback_while_paused_requests_no_task(self):
         rec = record(pending_feedback_evidence_ids=["review-1"], paused=True,
                      paused_reason="hold", paused_by="human", paused_at=NOW)
         # While paused the CI result is read but the record is not moved on:
@@ -1009,7 +1009,7 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
                           current["pending_human_action"]["counter"]),
                          ("development.waiting_human", None, "dispatch_recovery"))
 
-    def test_work_waiting_for_its_history_is_not_charged_for_a_while(self):
+    def test_task_waiting_for_its_history_is_not_charged_for_a_while(self):
         """The dispatcher defers a task whose history is not committed: the
         runs that deferred it charge nothing until ``reconcile.HISTORY_WAIT``
         has passed since the request, and then the dispatch is decided as
@@ -1050,7 +1050,7 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
                          "relaunch: no dispatcher run")
 
-    def test_work_whose_task_file_cannot_be_built_is_held_not_charged(self):
+    def test_task_whose_task_file_cannot_be_built_is_held_not_charged(self):
         """A task the queue does not hold, allocated by code that did not check
         that its task can be built, is a failure of the pipeline: nothing is
         launched, charged or waited for, and the alert says so, until the
@@ -1088,18 +1088,18 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
                            now=T + timedelta(minutes=minutes))
                 self.assertEqual((out.staged, out.report["dispatch_relaunch"]), ([], expected))
 
-    def test_terminal_work_is_reallocated_within_its_budget(self):
+    def test_terminal_task_is_reallocated_within_its_budget(self):
         rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair"))
-        import work
-        out = tick(rec, observe=False, queue={work.graph_id(rec["active_work"]["dedupe_key"]):
+        import tasks
+        out = tick(rec, observe=False, queue={tasks.graph_id(rec["active_work"]["dedupe_key"]):
                                               "completed"})
         self.assertEqual(kinds(out), ["allocate_work_retry"])
         self.assertEqual(final(out, rec)["active_work"]["attempt"], 2)
 
-    def test_no_deadline_ends_requested_work(self):
+    def test_no_deadline_ends_requested_task(self):
         rec = running(active_work=dict(WORK, deadline_at="2026-11-01T00:00:00+00:00"))
         out = tick(rec, observe=False)
-        self.assertEqual((out.staged, out.report.get("timed_out_work")), ([], None))
+        self.assertEqual((out.staged, out.report.get("timed_out_task")), ([], None))
 
 
 JOB = "Build - ubuntu-24.04-riscv (riscv64)"
@@ -1119,7 +1119,7 @@ def attempt_tick(rec, attempt, verdict, **kw):
 
 def submitted(output):
     return [e["dedupe_key"] for e in output.report["requested_effects"]
-            if e["type"] == "submit_work"]
+            if e["type"] == "submit_task"]
 
 
 class TestFlakyRerun(unittest.TestCase):
@@ -1158,7 +1158,7 @@ class TestFlakyRerun(unittest.TestCase):
         self.assertEqual(after["pending_feedback_evidence_ids"], ["review-2-1-77"])
 
     def test_a_confirmed_rerun_is_awaited_then_acted_on(self):
-        import work
+        import tasks
         out = tick(self.running, [self.result(rerun_outcome(self.running))], verdict="failed",
                    evidence=self.evidence)
         self.assertEqual(kinds(out), ["request_ci_rerun"])
@@ -1171,7 +1171,7 @@ class TestFlakyRerun(unittest.TestCase):
         self.assertEqual(submitted(out), [])
         operations = {op["operation_id"]: op}
         # The snapshot still shows the failed attempt 1: nothing is decided.
-        queue = {work.graph_id(self.work): "completed"}
+        queue = {tasks.graph_id(self.work): "completed"}
         for minutes in (10, 20):
             later = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue,
                          operations=operations, now=T + timedelta(minutes=minutes))
@@ -1241,17 +1241,17 @@ class TestFlakyRerun(unittest.TestCase):
         self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
                          ["schedule_publish_retry"])
 
-    def test_work_that_returned_a_result_is_never_allocated_again(self):
+    def test_task_that_returned_a_result_is_never_allocated_again(self):
         """An allocation that would name a task graph the queue holds as
         terminal, or that returned a Result in this tick, is a terminal task
         without a usable Result: a fresh graph is allocated, never a
         resubmission."""
-        import work
+        import tasks
         due = record("fix_needed", last_ci_evidence_id=observed_ci_id())
-        key = work.work_key(due["contribution_id"], 0, due["revision"], "development_repair")
-        fresh = work.work_key(due["contribution_id"], 0, due["revision"] + 1, "development_repair")
+        key = tasks.task_key(due["contribution_id"], 0, due["revision"], "development_repair")
+        fresh = tasks.task_key(due["contribution_id"], 0, due["revision"] + 1, "development_repair")
         out = tick(due, observe=False, evidence=self.evidence,
-                   queue={work.graph_id(key): "completed"})
+                   queue={tasks.graph_id(key): "completed"})
         self.assertEqual(kinds(out), ["request_repair", "allocate_work_retry"])
         self.assertEqual(submitted(out), [fresh])
         out = tick(due, [dict(publication(due, "published"),
@@ -1555,15 +1555,15 @@ class TestSpentWork(unittest.TestCase):
         """A record waiting for CI at a revision whose repair task already
         ran: the graph of the repair task failing CI requests at the kept
         revision is completed in the queue."""
-        import work
+        import tasks
         waiting = record(last_ci_evidence_id=None)
         out = tick(waiting, verdict="failed", evidence=self.evidence)
         self.assertEqual(kinds(out), ["record_ci_failure", "request_repair"])
         key = final(out, waiting)["active_work"]["dedupe_key"]
         self.assertIn(f".r{waiting['revision']}:", key)
-        return waiting, key, {work.graph_id(key): "completed"}
+        return waiting, key, {tasks.graph_id(key): "completed"}
 
-    def test_spent_work_at_a_kept_revision_is_repaired_on_a_fresh_graph(self):
+    def test_spent_task_at_a_kept_revision_is_repaired_on_a_fresh_graph(self):
         waiting, key, queue = self.spent_repair()
         # The same head fails again, and the repair task at the kept
         # revision names the spent graph.
@@ -1583,7 +1583,7 @@ class TestSpentWork(unittest.TestCase):
         self.assertEqual(set(charged["allocate_work_retry"]), {"work_recovery", "work_total"})
         self.assertEqual(submitted(out), [rec["active_work"]["dedupe_key"]])
         self.assertNotIn(key, submitted(out))
-        self.assertEqual(out.report["controller"]["spent_work"][0]["work"], key)
+        self.assertEqual(out.report["controller"]["spent_task"][0]["work"], key)
 
     def test_spent_work_without_work_recovery_waits_for_a_human(self):
         waiting, key, queue = self.spent_repair()
@@ -1604,15 +1604,15 @@ class TestSpentWork(unittest.TestCase):
         # A revision Result that left the revision unchanged (`no_change` or
         # stale) is followed by failing CI at the same revision: the revision
         # task names the graph that already returned that Result.
-        import work
+        import tasks
         rec = record("fix_needed", phase="upstream_review", revision=3,
                      last_ci_evidence_id=observed_ci_id())
         rec["upstream_pr"] = {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
                               "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
                               "base_ref": "main", "registered_by": OWNER}
-        key = work.work_key(rec["contribution_id"], 0, 3, "upstream_revision")
+        key = tasks.task_key(rec["contribution_id"], 0, 3, "upstream_revision")
         out = tick(rec, observe=False, evidence=self.evidence,
-                   queue={work.graph_id(key): "completed"})
+                   queue={tasks.graph_id(key): "completed"})
         self.check(out)
         self.assertEqual(kinds(out), ["request_upstream_revision", "allocate_work_retry"])
         new = final(out, rec)
@@ -1690,7 +1690,7 @@ class TestRefreshKeepsFeedback(unittest.TestCase):
         self.assertEqual(out.event["kind"], "refresh_planning")
         self.assert_planning_follows(out.record)
 
-    def test_patch_work_carries_the_pending_feedback(self):
+    def test_patch_task_carries_the_pending_feedback(self):
         due = record("fix_needed", pending_feedback_evidence_ids=["review-1"])
         out = tick(due, observe=False)
         self.assertEqual(kinds(out), ["request_patch"])
@@ -1735,7 +1735,7 @@ class TestNoLegacyDevelopmentWrites(unittest.TestCase):
                           out.record["pending_feedback_evidence_ids"]),
                          ("development.fix_needed", rec["revision"] + 1, "ci-1", ["review-1"]))
 
-    def test_the_selection_requests_no_work_outside_the_table(self):
+    def test_the_selection_requests_no_task_outside_the_table(self):
         legacy = record("idle")
         res = controller.tick(contributions={"c": legacy}, operations={}, consumed={},
                               projects={}, policy=POLICY,

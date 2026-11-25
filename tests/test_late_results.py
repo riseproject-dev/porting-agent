@@ -87,10 +87,10 @@ def identity(record):
     """The task identity a Result of ``record`` carries back: that of the
     task it holds, else that of the task ``running`` held before a stop
     cleared it."""
-    held_work = record.get("active_work") or {}
-    generation = held_work.get("generation", record.get("generation", 0))
-    if held_work.get("dedupe_key"):
-        return {"generation": generation, "dedupe_key": held_work["dedupe_key"]}
+    held_task = record.get("active_work") or {}
+    generation = held_task.get("generation", record.get("generation", 0))
+    if held_task.get("dedupe_key"):
+        return {"generation": generation, "dedupe_key": held_task["dedupe_key"]}
     task = "planning" if record.get("phase") == "planning" else "development_repair"
     return {"generation": generation, "dedupe_key": f"{record['contribution_id']}@0:{task}"}
 
@@ -217,7 +217,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         self.assertEqual(events(again), [])
         self.assertEqual(final(again, after), after)
 
-    def test_park_abandon_and_pause_during_running_work(self):
+    def test_park_abandon_and_pause_during_running_task(self):
         # A pause from an `agent_running` state leads to the state in which
         # the task is due again.
         expected = {"park": "parked.idle", "abandon": "closed.idle",
@@ -236,7 +236,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                 with self.subTest(phase=phase, verb=verb, result=name):
                     self.assert_recorded_only(record, name)
 
-    def test_states_that_request_no_work(self):
+    def test_states_that_request_no_task(self):
         human = {"kind": "task_without_outcome", "requested_at": NOW, "reminded_at": None,
                  "escalated_at": None, "counter": None}
         records = {
@@ -264,7 +264,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                         else:
                             self.assert_recorded_only(rec, name)
 
-    def test_working_state_without_matching_work(self):
+    def test_working_state_without_matching_task(self):
         for phase, activity in (("development", "fix_needed"), ("development", "waiting_ci"),
                                 ("upstream_review", "fix_needed")):
             record = contribution(phase=phase, activity=activity, plan_evidence_id="plan-1")
@@ -279,7 +279,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         idle = contribution(phase="planning", activity="idle", fork=None)
         for name in RESULTS:
             with self.subTest(state="planning.idle", result=name):
-                self.assert_recorded_before_new_work(idle, name)
+                self.assert_recorded_before_new_task(idle, name)
 
     def assert_recorded_before_planning_begins(self, record, name):
         """A request in `queued.idle` begins its planning in the tick that
@@ -295,7 +295,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                          dict(record, processed_publications=[], updated_at=after["updated_at"]))
         self.assertEqual(after["processed_publications"], [999])
 
-    def assert_recorded_before_new_work(self, record, name):
+    def assert_recorded_before_new_task(self, record, name):
         """Where a planning run is due, the same tick requests it after the
         Result is recorded. Nothing of the Result reaches the record."""
         output = tick(record, [publication(record, name)])
@@ -312,7 +312,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
              dict(record["budget"], attempts_used=record["budget"]["attempts_used"] + 1), [999]))
         self.assertEqual([k for k, _ in output.staged if k in ("operations", "evidence")], [])
 
-    def test_requested_work_and_trusted_publication_still_fold(self):
+    def test_requested_task_and_trusted_publication_still_fold(self):
         record = running("development")
         output = tick(record, [publication(record, "published")])
         self.assertEqual([e["kind"] for e in events(output)], ["record_publish_success"])
@@ -330,17 +330,17 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
         self.assertEqual(final(output, retry)["pending_publication"], pending)
 
-    def test_a_result_of_work_of_another_phase_is_late(self):
-        """Each phase requests its own task only (`reconcile.WORK_PHASE`)."""
+    def test_a_result_of_task_of_another_phase_is_late(self):
+        """Each phase requests its own task only (`reconcile.TASK_PHASE`)."""
         import submission
         development = running("development")
         planning = running("planning")
         held = {"worker_run_id": "555", "attempts": 1, "last_reason": "x",
                 "next_attempt_at": NOW, "exhausted": False}
-        planning_work = dict(planning["active_work"])
+        planning_task = dict(planning["active_work"])
         cases = (
             # A task the record holds whose task belongs to another phase.
-            ("A planning task in development", dict(development, active_work=planning_work),
+            ("A planning task in development", dict(development, active_work=planning_task),
              "published", "late Result: the planning task is not requested in the development phase"),
             ("A patch task in upstream review",
              dict(running("upstream_review"), active_work=dict(WORK)), "published",
@@ -371,17 +371,17 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                                        generation=record["active_work"]["generation"])
                 self.assertEqual(reconcile.result_mismatch(record, pub), why)
         # The event names why.
-        record = dict(development, active_work=planning_work)
+        record = dict(development, active_work=planning_task)
         pub = dict(publication(record, "published"),
                    task=dict(publication(record, "published")["task"],
-                             dedupe_key=planning_work["dedupe_key"]))
+                             dedupe_key=planning_task["dedupe_key"]))
         output = tick(record, [pub], capacity_ok=False)
         [late] = events(output)
         self.assertEqual((late["kind"], late["details"]["why"]),
                          ("record_late_effect", "late Result: the planning task is not requested in "
                                                 "the development phase"))
 
-    def test_work_held_where_no_row_folds_a_result_is_late(self):
+    def test_task_held_where_no_row_folds_a_result_is_late(self):
         """Only a state with a Result row folds a Result: a task a record holds
         in any other state has no row for its Result."""
         dev = running("development")
@@ -549,7 +549,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                           record["processed_publications"]),
                          ("development.fix_needed", 3, [999]))
 
-    def test_work_state_without_recorded_work_folds_nothing(self):
+    def test_task_state_without_recorded_task_folds_nothing(self):
         """Without a requested task no Result matches, at any revision. The
         record breaks its state (`agent_running` requires a task): the tick
         stops it first, as the heal of a broken record, and the Result is
@@ -570,7 +570,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                     after = final(output, record)
                     self.assertTrue(after["paused"])
                     self.assertTrue(after["paused_reason"].startswith(
-                        f"invariant_violation: {phase}.agent_running requires work"))
+                        f"invariant_violation: {phase}.agent_running requires task"))
                     self.assertEqual(after["revision"], record["revision"])
 
 
@@ -628,14 +628,14 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
     INJECTIONS = {
         "publication": "reconcile.apply_publication",
         "late_result": "reconcile.engine.record_late_effect",
-        # Not ``work.graph_id``: the tick also derives the graphs of the
+        # Not ``tasks.graph_id``: the tick also derives the graphs of the
         # task ids the publications name, outside any contribution's step.
         "dispatch_recovery": "reconcile._committed_history",
         "observed_head": "observe_ci.collect.branch_head",
         "observed_ci": "observe_ci.collect.evaluate_snapshot",
         "command": "controller.authorize_followup",
         "table_command": "controller._apply_table_command",
-        "work_selection": "controller._actionable",
+        "task_selection": "controller._actionable",
     }
 
     def test_an_injected_error_in_any_step_never_stops_the_tick(self):

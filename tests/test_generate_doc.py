@@ -150,11 +150,11 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
                 self.assertTrue(label.startswith(generate_doc.PHASE_LABELS[phase]))
                 if spec.kind in lifecycle.REMINDER_KINDS:
                     self.assertIn("waiting for a human", label)
-                elif spec.kind in ("work", "auto_wait"):
+                elif spec.kind in ("running", "auto_wait"):
                     self.assertRegex(label, r"\((next: [a-z_]+.*|waiting (for|until) .+)\)$")
                 self.assertNotIn("capacity wait", label)
 
-    def test_work_that_is_due_names_the_guard_it_waits_on(self):
+    def test_task_that_is_due_names_the_guard_it_waits_on(self):
         from tests.helpers import contribution
         label = generate_doc.status_label(contribution(activity="fix_needed"))
         self.assertEqual(label, "Development (next: request_patch, once worker slot free; "

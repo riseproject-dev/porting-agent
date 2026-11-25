@@ -30,10 +30,10 @@ from unittest import mock
 import capacity
 import engine
 import reconcile
+import task_build
 import task_file
-import work
-import work_history
-import work_task
+import task_history
+import tasks
 from common import canonical_json
 from tests import helpers
 from tests import live_d2vm as live
@@ -53,20 +53,20 @@ def old_payload() -> dict:
     task with the references it named at the pinned control commit, and the
     resource scope and effect contract."""
     record, evidence = live.fresh()
-    request = work.request_from_active(record)
+    request = tasks.request_from_active(record)
 
     def reference(eid: str) -> dict:
         path = f".state/evidence/{eid}.json"
         raw = (live.DIRECTORY / "evidence" / f"{eid}.json").read_bytes()
-        return {"repository": work.CONTROL_REPO, "ref": OLD_CONTROL_REF, "path": path,
+        return {"repository": tasks.CONTROL_REPO, "ref": OLD_CONTROL_REF, "path": path,
                 "sha256": hashlib.sha256(raw).hexdigest(),
-                "url": f"https://raw.githubusercontent.com/{work.CONTROL_REPO}/"
+                "url": f"https://raw.githubusercontent.com/{tasks.CONTROL_REPO}/"
                        f"{OLD_CONTROL_REF}/{path}"}
-    paths, context = work.payload_inputs(request, record, evidence, plan_reference=reference)
+    paths, context = tasks.payload_inputs(request, record, evidence, plan_reference=reference)
     history = reference(live.HISTORY)
     history.pop("url")
     context["history"] = dict(history, evidence_id=live.HISTORY)
-    return work.payload(request, record, control_repo_id=LIVE_CONTROL_REPO_ID,
+    return tasks.payload(request, record, control_repo_id=LIVE_CONTROL_REPO_ID,
                         allowed_paths=paths, context=context)
 
 
@@ -91,8 +91,8 @@ class TestTheIncident(unittest.TestCase):
 
     def test_the_task_file_holds_every_field_of_that_payload(self):
         record, evidence = live.fresh()
-        data = work_task.build_data(record, evidence,
-                                    file_digest=work_task.file_digest_reader(None, evidence))
+        data = task_build.build_data(record, evidence,
+                                    file_digest=task_build.file_digest_reader(None, evidence))
         old = old_payload()
         for name in ("resource_scope", "effect_contract"):
             old.pop(name)
@@ -103,20 +103,20 @@ class TestTheIncident(unittest.TestCase):
             for name in ("repository", "ref", "url"):
                 reference.pop(name, None)
         self.assertEqual(data, old)
-        self.assertLess(len(canonical_json(data).encode()), work_task.TASK_FILE_MAX_BYTES)
+        self.assertLess(len(canonical_json(data).encode()), task_build.TASK_FILE_MAX_BYTES)
 
     def test_the_queue_payload_is_a_reference_of_a_fixed_size(self):
         record, evidence = live.fresh()
-        request = work.request_from_active(record)
-        payload = work.queue_payload(
+        request = tasks.request_from_active(record)
+        payload = tasks.queue_payload(
             request, control_repo_id=LIVE_CONTROL_REPO_ID,
             reference=task_file.reference(live.WORK, "a" * 40, "b" * 64))
         size = len(compact(payload))
         self.assertLess(size, 1024)
-        self.assertLessEqual(size, work.MAX_QUEUE_PAYLOAD_BYTES)
-        self.assertEqual(work_task.dry_run(record, evidence), None)
+        self.assertLessEqual(size, tasks.MAX_QUEUE_PAYLOAD_BYTES)
+        self.assertEqual(task_build.dry_run(record, evidence), None)
 
-    def test_the_dispatcher_no_longer_skips_the_work_it_skipped(self):
+    def test_the_dispatcher_no_longer_skips_the_task_it_skipped(self):
         """With the task file committed beside the history, the dispatcher
         of the incident's task reads it at its own commit and stages the
         reference, which the worker resolves to the task of the incident."""
@@ -126,11 +126,11 @@ class TestTheIncident(unittest.TestCase):
             evidence_dir = root / ".state" / "evidence"
             evidence_dir.mkdir(parents=True)
             for eid, item in evidence.items():
-                (evidence_dir / f"{eid}.json").write_bytes(work_task.file_bytes(item))
-            task = work_task.build(
+                (evidence_dir / f"{eid}.json").write_bytes(task_build.file_bytes(item))
+            task = task_build.build(
                 record, evidence, policy=POLICY, now="2026-11-24T17:20:00+00:00",
-                file_digest=work_task.file_digest_reader(root, evidence))
-            (root / work_task.path(task["evidence_id"])).write_bytes(work_task.file_bytes(task))
+                file_digest=task_build.file_digest_reader(root, evidence))
+            (root / task_build.path(task["evidence_id"])).write_bytes(task_build.file_bytes(task))
             evidence[task["evidence_id"]] = task
             snapshot = type("S", (), {"contributions": {"c": record}, "evidence": evidence})
             out = root / "plan.json"
@@ -140,7 +140,7 @@ class TestTheIncident(unittest.TestCase):
                     mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
                         [], 0, stdout="d" * 40)), \
                     mock.patch("builtins.print") as printed:
-                self.assertEqual(work.cmd_plan(args), 0)
+                self.assertEqual(tasks.cmd_plan(args), 0)
             selection = json.loads(printed.call_args.args[0])
             [node] = json.loads(out.read_text())["nodes"]
             resolved = task_file.resolve(
@@ -200,7 +200,7 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
         self.assertEqual(events[41]["kind"], "exhaust_recovery")
         self.assertIn("15601 bytes", events[41]["details"]["why"])
 
-    def test_the_wait_ends_without_a_human_and_the_work_is_requested_again(self):
+    def test_the_wait_ends_without_a_human_and_the_task_is_requested_again(self):
         out = self.tick()
         events = self.staged(out, "events")
         self.assertEqual([e["kind"] for e in events], ["rearm_dispatch", "request_patch"])
@@ -240,11 +240,11 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
         record = [r for r in self.staged(out, "contributions")][-1]
         key = record["active_work"]["dedupe_key"]
         evidence = {e["evidence_id"]: e for e in self.staged(out, "evidence")}
-        history, task = evidence[work_history.evidence_id(key)], evidence[
-            work_task.evidence_id(key)]
+        history, task = evidence[task_history.evidence_id(key)], evidence[
+            task_build.evidence_id(key)]
         self.assertEqual((history["kind"], task["kind"]), ("work_history", "task"))
         self.assertEqual(task["data"]["context"]["history"]["sha256"], hashlib.sha256(
-            work_task.file_bytes(history)).hexdigest())
+            task_build.file_bytes(history)).hexdigest())
         self.assertEqual(task["data"]["dedupe_key"], key)
         self.assertEqual(task["data"]["task"], "development_repair")
         self.assertEqual(task["data"]["reason_ids"], [live.REVIEW, live.PLAN])
@@ -252,19 +252,19 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
         self.assertEqual(kinds, ["human_relay", "plan"])
         self.assertTrue(task["data"]["review_scope_extension"])
         self.assertEqual(task["data"]["context"]["tracking_issue"]["number"], 3)
-        self.assertLess(len(canonical_json(task).encode()), work_task.TASK_FILE_MAX_BYTES)
+        self.assertLess(len(canonical_json(task).encode()), task_build.TASK_FILE_MAX_BYTES)
         [entry] = out.report["work_task"]
         self.assertEqual((entry["work"], entry["evidence_id"]), (key, task["evidence_id"]))
         # The reference the dispatcher stages for it is within the bound.
-        request = work.request_from_active(record)
-        payload = work.queue_payload(
+        request = tasks.request_from_active(record)
+        payload = tasks.queue_payload(
             request, control_repo_id=LIVE_CONTROL_REPO_ID,
             reference=task_file.reference(key, "a" * 40, "b" * 64))
         self.assertLess(len(compact(payload)), 1024)
         # The history and the task file are what the wait never had: the
         # earlier ones are the task of the incident's.
         self.assertIn(live.HISTORY, self.evidence)
-        self.assertNotIn(work_history.evidence_id(key), self.evidence)
+        self.assertNotIn(task_history.evidence_id(key), self.evidence)
 
     def test_a_wait_that_recorded_this_version_of_the_code_takes_nothing(self):
         record = copy.deepcopy(self.record)
@@ -304,7 +304,7 @@ class TestTheRequestWithoutATaskFile(unittest.TestCase):
     """A task the controller could not queue is never allocated or charged: the
     request that failed at r10 would have been held before it was charged."""
 
-    def test_work_whose_task_cannot_be_built_is_held_before_it_is_charged(self):
+    def test_task_whose_task_cannot_be_built_is_held_before_it_is_charged(self):
         record = live.record("df439c0")
         # A task no queue could take: the description was never frozen.
         record["tracking_issue"] = {k: v for k, v in record["tracking_issue"].items()
@@ -327,7 +327,7 @@ class TestAResultWhoseTaskCouldNotBeResolved(unittest.TestCase):
 
     def fold(self, task):
         record, evidence = live.record("900e2b9"), live.evidence()
-        request = work.request_from_active(record)
+        request = tasks.request_from_active(record)
         pub = {"status": "infra_error", "failure_class": "infrastructure",
                "reason": "the task file could not be read", "stage": "result", "task": task,
                "worker_run_id": "999", "publication_run_id": "999",
@@ -340,17 +340,17 @@ class TestAResultWhoseTaskCouldNotBeResolved(unittest.TestCase):
             out = reconcile.tick(
                 helpers.NoReadApi(), snapshot, policy=POLICY, now=NOW, publications=[pub],
                 pressure=capacity.Pressure(ok=True), observe=True, dispatcher_runs=[],
-                queue_works={work.graph_id(request["dedupe_key"]): "completed"},
+                queue_works={tasks.graph_id(request["dedupe_key"]): "completed"},
                 work_results={}, pipeline=FIXED)
         return [e["kind"] for e in staged(out, "events")], out.report["publications"]
 
     def test_the_claim_folds_like_the_resolved_task(self):
         record, _evidence = live.fresh()
-        request = work.request_from_active(record)
-        claim = work.queue_payload(
+        request = tasks.request_from_active(record)
+        claim = tasks.queue_payload(
             request, control_repo_id=LIVE_CONTROL_REPO_ID,
             reference=task_file.reference(live.WORK, "a" * 40, "b" * 64))
-        resolved = work.payload(request, record, control_repo_id=LIVE_CONTROL_REPO_ID,
+        resolved = tasks.payload(request, record, control_repo_id=LIVE_CONTROL_REPO_ID,
                                 allowed_paths=[], context={})
         kinds, report = self.fold(claim)
         self.assertEqual(kinds, ["schedule_publish_retry"])

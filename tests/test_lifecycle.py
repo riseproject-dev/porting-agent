@@ -17,7 +17,7 @@ from tests.helpers import (
     SHA_B,
     apply_command,
     contribution,
-    holding_work,
+    holding_task,
     policy,
     take,
 )
@@ -43,7 +43,7 @@ class TestRevision(unittest.TestCase):
         self.assertIsNone(out.record["last_ci_evidence_id"])
 
     def test_a_moved_head_stales_a_proposal(self):
-        rec, identity = holding_work(contribution())
+        rec, identity = holding_task(contribution())
         self.assertIsNone(lifecycle.publication_check(rec, expected_revision=rec["revision"],
                                                       expected_head=SHA_A, observed_head=SHA_A,
                                                       ref="riscv64-dev", repository="riseproject-upstreaming/proj",
@@ -61,12 +61,12 @@ class TestRevision(unittest.TestCase):
 class TestPublicationCheck(unittest.TestCase):
     def args(self, **kw):
         a = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A, ref="riscv64-dev",
-                 repository="riseproject-upstreaming/proj", **holding_work(contribution())[1])
+                 repository="riseproject-upstreaming/proj", **holding_task(contribution())[1])
         a.update(kw)
         return a
 
     def test_ok(self):
-        self.assertIsNone(lifecycle.publication_check(holding_work(contribution())[0],
+        self.assertIsNone(lifecycle.publication_check(holding_task(contribution())[0],
                                                       **self.args()))
 
     def test_rejects(self):

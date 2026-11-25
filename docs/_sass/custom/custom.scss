@@ -67,7 +67,7 @@ $log-link-color: if($color-scheme == dark, #8ab8ff, $purple-100);
     font-weight: 700;
   }
 
-  &--work {
+  &--running {
     @include state-kind($blue-100);
   }
 

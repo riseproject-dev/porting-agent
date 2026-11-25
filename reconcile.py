@@ -54,9 +54,9 @@ import schemas
 import state
 import steering
 import submission
-import work
-import work_history
-import work_task
+import task_build
+import task_history
+import tasks
 import worker_report
 from common import (
     DEV_REF,
@@ -225,7 +225,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     and the time they were recorded.
 
     A task the queue does not hold, whose task file is not committed and cannot
-    be built (``work_task.dry_run``: the controller allocated it before it
+    be built (``task_build.dry_run``: the controller allocated it before it
     checked) is held: nothing is launched, charged or waited for, an alert
     names the cause as a failure of the pipeline, and the check is made
     again in every tick.
@@ -262,7 +262,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     Returns (relaunch requests, staged records, report). No model is involved
     in deciding; a relaunch is an ordinary dispatcher run.
     """
-    import work
+    import tasks
     relaunch: list[dict] = []
     staged: list[tuple[str, dict]] = []
     report: list[dict] = []
@@ -276,25 +276,25 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             continue
         with isolation.contribution(c["contribution_id"], "dispatch_recovery"):
             aw = c["active_work"]
-            if c["phase"] == "handoff" and engine.state_key(c) not in SUBMISSION_WORK_STATES:
-                new = engine.record_beside(c, "handoff_work_dropped", now=iso, active_work=None)
+            if c["phase"] == "handoff" and engine.state_key(c) not in SUBMISSION_TASK_STATES:
+                new = engine.record_beside(c, "handoff_task_dropped", now=iso, active_work=None)
                 contributions[key] = new
                 staged.append(("contributions", new))
                 report.append({"contribution": c["contribution_id"], "task": aw["task"],
                                "decision": "cleared obsolete a task at handoff"})
                 continue
-            state = queue_works.get(work.graph_id(aw["dedupe_key"]))
+            state = queue_works.get(tasks.graph_id(aw["dedupe_key"]))
             if state not in (None, "available", "completed", "cancelled"):
                 continue      # a live Claim is resolved by the worker outcome
             requested = datetime.fromisoformat(aw["requested_at"])
             if state is None and evidence is not None \
-                    and work_task.evidence_id(aw["dedupe_key"]) not in evidence:
+                    and task_build.evidence_id(aw["dedupe_key"]) not in evidence:
                 # A task the queue does not hold and whose task file is not
                 # committed: when the controller cannot build the task (a task
                 # allocated by code that did not check), no worker can ever
                 # receive it, and that is a failure of the pipeline, not of the
                 # contribution: nothing is launched, charged or waited for.
-                unbuildable = work_task.dry_run(c, evidence)
+                unbuildable = task_build.dry_run(c, evidence)
                 if unbuildable:
                     why = (f"the task file could not be built: {unbuildable}; a failure of the "
                            "pipeline, not of the contribution")
@@ -313,13 +313,13 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                "decision": "waiting for the history and the task file of the task"})
                 continue
             if isinstance(history, dict):
-                for record_ in (history, evidence[work_task.evidence_id(aw["dedupe_key"])]):
+                for record_ in (history, evidence[task_build.evidence_id(aw["dedupe_key"])]):
                     try:
                         recorded = datetime.fromisoformat(str(record_.get("collected_at")))
                     except ValueError:
                         recorded = requested
                     requested = max(requested, recorded)
-            retry = (queue_retries or {}).get(work.graph_id(aw["dedupe_key"])) \
+            retry = (queue_retries or {}).get(tasks.graph_id(aw["dedupe_key"])) \
                 if state == "available" else None
             if retry is not None:
                 requested = max(requested, retry["retry_at"])
@@ -330,7 +330,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 entry["queue_retry"] = {"attempts": retry["attempts"],
                                         "max_attempts": retry.get("max_attempts"),
                                         "retry_at": retry["retry_at"].isoformat()}
-            graph = work.graph_id(aw["dedupe_key"])
+            graph = tasks.graph_id(aw["dedupe_key"])
             reading = (pipeline_failures or {}).get(graph)
             watched = pipeline_failures is not None and (
                 state == "cancelled" or (state == "available" and retry is not None))
@@ -351,7 +351,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 # (`allocate_work_retry`), and waits for a human otherwise
                 # (`exhaust_recovery`).
                 decided, waiting, details = _result_missing(
-                    state, work.graph_id(aw["dedupe_key"]), work_results, collected, now)
+                    state, tasks.graph_id(aw["dedupe_key"]), work_results, collected, now)
                 if details.get("worker_run"):
                     entry["worker_run"] = details["worker_run"]
                 if decided and state == "cancelled" and gate:
@@ -360,7 +360,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 if not decided:
                     report.append(entry | {"decision": waiting})
                     continue
-                new, event, decision = _terminal_work(c, aw, state, now=now, policy=policy,
+                new, event, decision = _terminal_task(c, aw, state, now=now, policy=policy,
                                                       details=details)
                 if new is None:
                     report.append(entry | {"decision": decision})
@@ -677,7 +677,7 @@ def work_result_readings(api: collect.Api, contributions: dict[str, dict],
         aw = c.get("active_work")
         if not isinstance(aw, dict) or not isinstance(aw.get("dedupe_key"), str):
             continue
-        graph = work.graph_id(aw["dedupe_key"])
+        graph = tasks.graph_id(aw["dedupe_key"])
         if graph in readings or (queue_works or {}).get(graph) != "completed":
             continue
         run_id = ((queue_runs or {}).get(graph) or {}).get("run_id")
@@ -747,7 +747,7 @@ def pipeline_failure_readings(api: collect.Api, contributions: dict[str, dict],
         return newest
 
     for aw in held:
-        graph = work.graph_id(aw["dedupe_key"])
+        graph = tasks.graph_id(aw["dedupe_key"])
         if graph in readings:
             continue
         state = (queue_works or {}).get(graph)
@@ -793,14 +793,14 @@ def _created_before(created: Any, moment: datetime) -> bool:
 
 def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | bool | None:
     """The committed ``work_history`` evidence of the requested task ``aw``,
-    ``False`` when its history or its task file (``work_task``) is not
+    ``False`` when its history or its task file (``task_build``) is not
     committed yet, ``None`` when it names no task id or ``evidence`` is not
     known."""
     if evidence is None or not aw.get("dedupe_key"):
         return None
-    if work_task.evidence_id(aw["dedupe_key"]) not in evidence:
+    if task_build.evidence_id(aw["dedupe_key"]) not in evidence:
         return False
-    return evidence.get(work_history.evidence_id(aw["dedupe_key"])) or False
+    return evidence.get(task_history.evidence_id(aw["dedupe_key"])) or False
 
 
 def dispatch_failure_recovery(contributions: dict[str, dict], *, queue_policy: dict | None,
@@ -956,41 +956,41 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
             raise engine.TransitionRefused(refused, ("reconcile", "_lost_dispatch"))
 
 
-def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
+def _terminal_task(c: dict, aw: dict, queue_state: str, *, now: datetime,
                    policy: dict, details: dict | None = None
                    ) -> tuple[dict | None, dict | None, str]:
     """The table's row for a requested task whose graph is terminal without a
-    usable Result (``controller.terminal_work``); ``details`` say why."""
-    return controller.terminal_work(c, aw, queue_state, now=now, policy=policy, details=details)
+    usable Result (``controller.terminal_task``); ``details`` say why."""
+    return controller.terminal_task(c, aw, queue_state, now=now, policy=policy, details=details)
 
 
-def _may_hold_work(rec: dict) -> bool:
+def _may_hold_task(rec: dict) -> bool:
     """Whether the record is in a state that can request a task at all: a
     working phase, or the submission rewrite of the handoff phase, and not
     paused."""
-    return (rec["phase"] in WORK_PHASES or engine.state_key(rec) in SUBMISSION_WORK_STATES) \
+    return (rec["phase"] in TASK_PHASES or engine.state_key(rec) in SUBMISSION_TASK_STATES) \
         and not rec.get("paused")
 
 
-def _holds_dispatched_work(rec: dict) -> bool:
+def _holds_dispatched_task(rec: dict) -> bool:
     """Whether a relaunch decided by dispatch recovery still applies once the
     record is observed: it holds a requested task, in a working phase or in a
     submission task state of the handoff phase."""
     return rec.get("active_work") is not None and (
-        rec["phase"] != "handoff" or engine.state_key(rec) in SUBMISSION_WORK_STATES)
+        rec["phase"] != "handoff" or engine.state_key(rec) in SUBMISSION_TASK_STATES)
 
 
 # The phase in which the table requests a task of each task.
-WORK_PHASE = {"planning": "planning", "development_patch": "development",
+TASK_PHASE = {"planning": "planning", "development_patch": "development",
               "development_repair": "development",
               "upstream_revision": "upstream_review",
-              work.SUBMISSION_REWRITE: "handoff"}
+              tasks.SUBMISSION_REWRITE: "handoff"}
 # The states of the handoff phase that hold a requested task: the rewrite of
 # the submission.
 SUBMISSION_REWRITE_STATE = lifecycle.SUBMISSION_REWRITE
-SUBMISSION_WORK_STATES = (SUBMISSION_REWRITE_STATE,)
+SUBMISSION_TASK_STATES = (SUBMISSION_REWRITE_STATE,)
 # The phases whose states can request a task outside the handoff phase.
-WORK_PHASES = frozenset({"planning", "provisioning", "development", "upstream_review"})
+TASK_PHASES = frozenset({"planning", "provisioning", "development", "upstream_review"})
 
 
 def result_mismatch(rec: dict, pub: dict) -> str | None:
@@ -1004,9 +1004,9 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     pause clear the task and the pending publication, so a matching revision
     alone does not prove a match.
     """
-    if rec["phase"] == "handoff" and engine.state_key(rec) not in SUBMISSION_WORK_STATES:
+    if rec["phase"] == "handoff" and engine.state_key(rec) not in SUBMISSION_TASK_STATES:
         return "late Result during handoff"
-    if not _may_hold_work(rec):
+    if not _may_hold_task(rec):
         return "late Result for a stopped contribution"
     if engine.waits_for_human(rec):
         # A wait for a human has no Result row; only its own rows leave it.
@@ -1019,7 +1019,7 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         # holds in another state has none of their rows.
         return f"late Result: {state} has no row that folds a Result"
     task = pub.get("task") or {}
-    generation, key = work.task_identity(task)
+    generation, key = tasks.task_identity(task)
     if generation is None:
         return "late Result: its task names no task identity"
     current = int(rec.get("generation", 0))
@@ -1036,7 +1036,7 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     if pub.get("status") == submission.REWRITE and rec["phase"] != "handoff":
         return f"late Result: a submission rewrite has no row in the {rec['phase']} phase"
     requested = rec.get("active_work")
-    if requested and WORK_PHASE.get(requested.get("task")) != rec["phase"]:
+    if requested and TASK_PHASE.get(requested.get("task")) != rec["phase"]:
         # Each phase requests its own task only: a Result of a task of another
         # phase has no row of this one.
         return (f"late Result: the {requested.get('task')} task is not requested in the "
@@ -1060,7 +1060,7 @@ def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str,
                  extra: dict | None = None) -> dict:
     """The audit event of ``record_late_effect`` for one Result."""
     task = pub.get("task") or {}
-    generation, key = work.task_identity(task)
+    generation, key = tasks.task_identity(task)
     return engine.record_late_effect(
         rec, policy=policy, now=now, cause_id=_result_cause(pub, pub.get("worker_run_id")),
         details={"result_status": pub.get("status"), "task_revision": task.get("revision"),
@@ -1386,7 +1386,7 @@ def _unusable_submission_result(rec: dict, why: str, *, now: str,
     """A rewrite Result that is not usable: a task without a usable
     Result (``allocate_work_retry``, then ``exhaust_recovery``)."""
     aw = rec.get("active_work") or {}
-    new, event, decision = _terminal_work(rec, aw, "result_unusable",
+    new, event, decision = _terminal_task(rec, aw, "result_unusable",
                                           now=datetime.fromisoformat(now), policy=policy)
     if new is None:
         raise lifecycle.TransitionError(f"an unusable submission Result: {decision}")
@@ -1436,7 +1436,7 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
         # began before the deploy): the rewrite was never reviewed, and it is
         # not accepted. It is a task without a usable Result of the pipeline
         # that dispatched it, relaunched with nothing charged.
-        new, event, decision = _terminal_work(
+        new, event, decision = _terminal_task(
             rec, rec.get("active_work") or {}, "result_unusable",
             now=datetime.fromisoformat(now), policy=policy,
             details={"pipeline_failure": {"version": "review-loop", "free_count": 0},
@@ -1577,7 +1577,7 @@ def pushed_report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, pol
     report the gate accepted that cannot be stored raises
     ``worker_report.ReportError``, so the contribution pauses and the
     Result stays unfolded."""
-    landed = WORK_RESULT_STATES[engine.state_key(rec)]["published"]
+    landed = TASK_RESULT_STATES[engine.state_key(rec)]["published"]
     if worker_report.head_after(outcome, landed, operation) is None \
             and worker_report.head_candidate(outcome, landed, operation) is None:
         return []
@@ -1672,7 +1672,7 @@ def _charged_launch(held: dict, outcome: dict) -> bool:
 # publish-only retry), so 60 artifacts can be collected again; the fence keeps
 # more than four times as many.
 PROCESSED_PUBLICATIONS = 256
-WORK_RESULT_STATES = {
+TASK_RESULT_STATES = {
     "development.agent_running": {"published": "record_publish_success",
                                   "success": ("published",),
                                   "failed": ("infra_error", "uncertain"),
@@ -1841,11 +1841,11 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     that folds it clears ``pending_publication``.
     A refused row raises ``TransitionError``.
     """
-    rows = WORK_RESULT_STATES.get(engine.state_key(rec))
+    rows = TASK_RESULT_STATES.get(engine.state_key(rec))
     if rows is None:
         raise lifecycle.TransitionError(
             f"the Result of patch or revision task is folded in "
-            f"{' or '.join(WORK_RESULT_STATES)} only, not in {engine.state_key(rec)}")
+            f"{' or '.join(TASK_RESULT_STATES)} only, not in {engine.state_key(rec)}")
     status, fclass = outcome.get("status"), outcome.get("failure_class")
     if status in ("verified", "unreviewed"):
         # The Result of a worker run that began before the review loop: its
@@ -1859,11 +1859,11 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             # it was held, so the request that replaces it is rebuilt from the
             # record, like an allocation of the same task.
             task = (outcome.get("task") or {}).get("task") or "development_repair"
-            aw = controller._work_request(
+            aw = controller._task_request(
                 rec, task, SimpleNamespace(now=datetime.fromisoformat(now), tracking_issues={},
                                            issues=[]), now)
             aw["feedback_evidence_ids"] = list(rec.get("pending_feedback_evidence_ids") or [])
-        new, event, decision = _terminal_work(
+        new, event, decision = _terminal_task(
             rec, aw or {}, "result_unusable",
             now=datetime.fromisoformat(now), policy=policy,
             details={"pipeline_failure": {"version": "review-loop", "free_count": 0},
@@ -3005,7 +3005,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # without one (``work_results``).
     # 1c. Requested tasks whose dispatch never reached the queue: relaunch the
     # dispatcher (bounded), then wait for a human.
-    collected = frozenset(work.graph_id(key) for key in (
+    collected = frozenset(tasks.graph_id(key) for key in (
         (pub.get("task") or {}).get("dedupe_key") for pub in publications)
         if isinstance(key, str))
     relaunch, staged, rep = dispatch_recovery(contributions, runs=dispatcher_runs, queue_works=queue_works,
@@ -3052,7 +3052,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         out.report["dispatch_relaunch"] = [
             item for item in out.report["dispatch_relaunch"]
             if "contribution_id" not in item
-            or _holds_dispatched_work(contributions[by_cid[item["contribution_id"]]])]
+            or _holds_dispatched_task(contributions[by_cid[item["contribution_id"]]])]
 
     # 3. Commands, intake and work selection (controller). The failing CI job
     # of a head is decided from the evidence the record names, including the
@@ -3115,7 +3115,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # recorded, so nothing is retried or expired meanwhile.
                 continue
             if pp and not pp.get("exhausted") and not engine.stopped(c) \
-                    and engine.state_key(c) in WORK_RESULT_STATES \
+                    and engine.state_key(c) in TASK_RESULT_STATES \
                     and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
                 # `schedule_publish_retry` held the Result and charged
                 # `publish_recovery` when its publication failed; the retry
@@ -3157,10 +3157,10 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # one that still fails once the task has waited
     # ``STEERING_FAILURE_GRACE`` is read without.
     if observe:
-        out.report["work_history"] = work_histories(
+        out.report["work_history"] = task_histories(
             api, contributions, out, snap, policy=policy, now=iso,
             tracking_issues=tracking_issues or {}, skip=skip)
-        out.report["work_task"] = work_task_files(
+        out.report["work_task"] = task_files(
             contributions, out, snap, policy=policy, now=iso, skip=skip)
     out.staged = observe_ci.dedupe(out.staged)
     return out
@@ -3177,7 +3177,7 @@ STEERING_BYTES_PER_CONTRIBUTION = 256 * 1024
 HISTORY_BYTES_PER_TICK = 1024 * 1024
 # The bytes a ``work_history`` record takes at most (the document and the
 # fields around it).
-HISTORY_RECORD_BYTES = work_history.HISTORY_MAX_BYTES + 8 * 1024
+HISTORY_RECORD_BYTES = task_history.HISTORY_MAX_BYTES + 8 * 1024
 # The bound of the ``human_steering`` records one contribution stages in one
 # tick (the byte bounds above are reached first).
 STEERING_RECORDS_PER_TICK = 64
@@ -3201,11 +3201,11 @@ def _waited(record: dict, now: str) -> timedelta:
         return timedelta(0)
 
 
-def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOutput,
+def task_histories(api: collect.Api, contributions: dict[str, dict], out: TickOutput,
                    snap: Snapshot, *, policy: dict, now: str, tracking_issues: dict,
                    skip: frozenset[str]) -> list[dict]:
     """Stage the ``work_history`` evidence of every requested task that has
-    none yet (``work_history.evidence_id`` of its task id), with the
+    none yet (``task_history.evidence_id`` of its task id), with the
     ``human_steering`` evidence of the text collected for it first. The
     record as this tick leaves it is used, so a task allocated in this tick is
     covered. What is staged is bounded in bytes per contribution and per
@@ -3228,7 +3228,7 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     # the commit; any other task whose history this tick records was
     # deferred by an earlier dispatcher run.
     submitted = {item.get("dedupe_key") for item in out.report.get("requested_effects") or []
-                 if item.get("type") == "submit_work"}
+                 if item.get("type") == "submit_task"}
     report = []
     budget = HISTORY_BYTES_PER_TICK
     for cid in sorted(latest):
@@ -3236,10 +3236,10 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
             continue
         record = latest[cid]
         with isolation.contribution(cid, "work_history"):
-            request = work.request_from_active(record)
+            request = tasks.request_from_active(record)
             if request is None:
                 continue
-            eid = work_history.evidence_id(request["dedupe_key"])
+            eid = task_history.evidence_id(request["dedupe_key"])
             if eid in evidence:
                 continue
             if budget < HISTORY_RECORD_BYTES:
@@ -3287,7 +3287,7 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                 if not new["data"]["deferred"]:
                     break
             deferred = steering.pending(record, collected, evidence)
-            history = work_history.build(record, record["active_work"], evidence,
+            history = task_history.build(record, record["active_work"], evidence,
                                          policy=policy, now=now, deferred=deferred,
                                          unreadable=collected.get("unreadable") or [])
             evidence[eid] = history
@@ -3325,9 +3325,9 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     return report
 
 
-def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snapshot, *,
+def task_files(contributions: dict[str, dict], out: TickOutput, snap: Snapshot, *,
                     policy: dict, now: str, skip: frozenset[str]) -> list[dict]:
-    """Stage the ``task`` evidence (``work_task``) of every requested task
+    """Stage the ``task`` evidence (``task_build``) of every requested task
     whose history is recorded and that has no task file yet, in the commit
     that records the history: the record as this tick leaves it is used, so
     a task allocated in this tick is covered. A task whose history is not
@@ -3343,8 +3343,8 @@ def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snaps
     evidence = dict(snap.evidence)
     evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
     submitted = {item.get("dedupe_key") for item in out.report.get("requested_effects") or []
-                 if item.get("type") == "submit_work"}
-    digest = work_task.file_digest_reader(
+                 if item.get("type") == "submit_task"}
+    digest = task_build.file_digest_reader(
         snap.root, evidence,
         frozenset(r["evidence_id"] for kind, r in out.staged if kind == "evidence"))
     report = []
@@ -3360,24 +3360,24 @@ def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snaps
             continue
         record = latest[cid]
         with isolation.contribution(cid, "work_task"):
-            request = work.request_from_active(record)
+            request = tasks.request_from_active(record)
             if request is None:
                 continue
-            eid = work_task.evidence_id(request["dedupe_key"])
+            eid = task_build.evidence_id(request["dedupe_key"])
             if eid in evidence:
                 continue
-            if work_history.evidence_id(request["dedupe_key"]) not in evidence:
+            if task_history.evidence_id(request["dedupe_key"]) not in evidence:
                 report.append({"contribution": cid, "work": request["dedupe_key"],
                                "deferred": "the history of the task is not recorded yet"})
                 continue
-            if budget < work_task.TASK_FILE_MAX_BYTES + 4096:
+            if budget < task_build.TASK_FILE_MAX_BYTES + 4096:
                 report.append({"contribution": cid, "work": request["dedupe_key"],
                                "deferred": "the task files of this tick reached their byte bound"})
                 continue
             try:
-                task_record = work_task.build(record, evidence, policy=policy, now=now,
+                task_record = task_build.build(record, evidence, policy=policy, now=now,
                                               file_digest=digest)
-            except work_task.TaskFileError as error:
+            except task_build.TaskFileError as error:
                 message = (f"the task file of {request['dedupe_key']} could not be built: "
                            f"{error}; a failure of the pipeline, not of the contribution")
                 report.append({"contribution": cid, "work": request["dedupe_key"],

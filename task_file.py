@@ -5,7 +5,7 @@
 The work queue carries a fixed-size reference to the task file of a task
 (``task_file``: the control repository, the pinned commit, the path, the
 SHA-256 and the evidence id), and the controller commits the task itself as
-the ``task`` evidence file the reference names (``work_task``). Every reader
+the ``task`` evidence file the reference names (``task_build``). Every reader
 of a claimed task (the trusted pre-agent steps of the worker and the planner,
 the trusted jobs after them, the queue result resolver and
 the controller) resolves the claim's task with ``resolve``, and then sees the

@@ -10,13 +10,13 @@ from pathlib import Path
 
 import fork_publish
 import publisher
-import work
+import tasks
 from tests import helpers
 from tests.helpers import commit_files, contribution, git, init_repo, policy
 
 NOW = "2026-11-18T12:00:00+00:00"
 # The task the publisher's task answers.
-KEY = work.work_key("example--proj/12", 0, 0, "development_repair")
+KEY = tasks.task_key("example--proj/12", 0, 0, "development_repair")
 
 
 class _ForkFixture:
@@ -25,14 +25,14 @@ class _ForkFixture:
         root = Path(self.tmp.name)
         self.root = root
         # Upstream and fork as bare repos under root/<owner>/<name>.git
-        up_work = init_repo(root / "up-work")
-        self.base = commit_files(up_work, {".github/workflows/wheels.yml": "on: [push]\njobs: {}\n",
+        up_task = init_repo(root / "up-work")
+        self.base = commit_files(up_task, {".github/workflows/wheels.yml": "on: [push]\njobs: {}\n",
                                            "src/a.c": "int a;\n"})
         for name in ("example/proj", "riseproject-upstreaming/proj"):
             bare = root / f"{name}.git"
             bare.parent.mkdir(parents=True, exist_ok=True)
             git(root, "init", "-q", "--bare", "-b", "main", str(bare))
-            git(up_work, "push", "-q", str(bare), "HEAD:refs/heads/main", "HEAD:refs/heads/riscv64-dev")
+            git(up_task, "push", "-q", str(bare), "HEAD:refs/heads/main", "HEAD:refs/heads/riscv64-dev")
         self.fork_bare = root / "riseproject-upstreaming/proj.git"
         self._saved = (fork_publish.URL_TEMPLATE, list(fork_publish.TEST_EXTRA_CONFIG))
         fork_publish.URL_TEMPLATE = f"file://{root}/{{}}.git"
@@ -390,7 +390,7 @@ class TestFailureClasses(_ForkFixture, unittest.TestCase):
         self.assertEqual((out.status, out.failure_class), ("infra_error", "infrastructure"))
         self.assertEqual(self.fork_head(), self.base)
 
-    def test_a_task_without_the_work_identity_is_stale_and_never_written(self):
+    def test_a_task_without_the_task_identity_is_stale_and_never_written(self):
         for drop in (("generation", "dedupe_key"), ("generation",), ("dedupe_key",)):
             with self.subTest(drop=drop):
                 task = {k: v for k, v in self.task.items() if k not in drop}

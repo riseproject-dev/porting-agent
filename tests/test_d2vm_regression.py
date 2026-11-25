@@ -346,7 +346,7 @@ class TestTheSpentWorkTotal(unittest.TestCase):
         again = tick(final(out, rec))
         self.assertEqual((kinds(again), again.report.get("processing_errors")), ([], None))
 
-    def test_a_planned_operation_waits_for_the_work_loop_too(self):
+    def test_a_planned_operation_waits_for_the_task_loop_too(self):
         first = tick(dict(self.spent(), budget=live()["budget"]))
         [op] = [r for k, r in first.staged if k == "operations"]
         rec = final(first, live())

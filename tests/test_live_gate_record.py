@@ -155,7 +155,7 @@ class TestTheLiveRecordAndItsHistory(unittest.TestCase):
                          [])
         self.assertEqual((world.kinds(out), world.record), ([], before))
 
-    def test_the_rewrite_work_gets_its_history_in_the_submitting_tick(self):
+    def test_the_rewrite_task_gets_its_history_in_the_submitting_tick(self):
         world = self.world()
         paths = []
 

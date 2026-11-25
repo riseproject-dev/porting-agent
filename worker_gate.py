@@ -16,7 +16,7 @@ import review_loop
 import schemas
 import worker_report
 from common import validate_scope_paths
-from work import WRITE_TASKS
+from tasks import WRITE_TASKS
 
 MAX_MBOX_BYTES = 4 * 1024 * 1024
 FORBIDDEN_PATCH_TEXT = (

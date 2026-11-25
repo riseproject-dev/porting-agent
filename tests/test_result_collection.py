@@ -24,15 +24,15 @@ import engine
 import lifecycle as lc
 import queue_result
 import reconcile
-import work
+import tasks
 from tests.helpers import OWNER, SHA_A, contribution
-from tests.test_work_identity import POLICY, T, requested, result
+from tests.test_task_identity import POLICY, T, requested, result
 
 # One record in each state that holds a task, with its human wait.
 STATES = (
     ("planning", "agent_running", "planning", {"fork": None}),
     ("development", "agent_running", "development_repair", {"plan_evidence_id": "plan-1"}),
-    ("handoff", "agent_running", work.SUBMISSION_REWRITE, {}),
+    ("handoff", "agent_running", tasks.SUBMISSION_REWRITE, {}),
     ("upstream_review", "agent_running", "upstream_revision",
      {"upstream_pr": {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
                       "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
@@ -47,7 +47,7 @@ def held(phase, activity, task, over):
 
 
 def graph(record):
-    return work.graph_id(record["active_work"]["dedupe_key"])
+    return tasks.graph_id(record["active_work"]["dedupe_key"])
 
 
 def reading(status="completed", publication=False, ended=T - timedelta(minutes=5),
@@ -72,9 +72,9 @@ def kinds(staged):
 class TestWorkRuns(unittest.TestCase):
     """``queue_result.work_runs`` binds each completed graph to its run."""
 
-    def projection(self, **work_over):
+    def projection(self, **task_over):
         item = {"work_id": "w1", "graph_id": "g1", "state": "completed", "claim_id": "c1"}
-        item.update(work_over)
+        item.update(task_over)
         return {"works": {"w1": item},
                 "claims": {"c1": {"work_id": "w1", "dispatch_id": "d1"}},
                 "dispatches": {"d1": {"run": {"run_id": 77, "run_attempt": 1,
@@ -96,7 +96,7 @@ class TestWorkRuns(unittest.TestCase):
         self.assertEqual(queue_result.work_runs(self.projection(claim_id=None)),
                          {"g1": {"run_id": None}})
 
-    def test_only_completed_work(self):
+    def test_only_completed_task(self):
         for state in ("available", "claimed", "cancelled"):
             self.assertEqual(queue_result.work_runs(self.projection(state=state)), {})
 
@@ -272,8 +272,8 @@ class TestWorkResultReadings(unittest.TestCase):
     def test_only_held_completed_graphs_are_read_and_failures_are_isolated(self):
         one, two = held(*STATES[1]), held(*STATES[2])
         two["contribution_id"] = "example--other/3"
-        two["active_work"]["dedupe_key"] = work.work_key("example--other/3", 1, 5,
-                                                         work.SUBMISSION_REWRITE)
+        two["active_work"]["dedupe_key"] = tasks.task_key("example--other/3", 1, 5,
+                                                         tasks.SUBMISSION_REWRITE)
         idle = contribution(phase="handoff", activity="awaiting_submission", active_work=None)
         contributions = {"a": one, "b": two, "c": idle}
         queue = {graph(one): "completed", graph(two): "completed", "other": "completed"}

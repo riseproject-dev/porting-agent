@@ -163,8 +163,8 @@ class TestGate(unittest.TestCase):
                     worker_gate.WorkerGateError, f"review loop of the patch: .*{why}"):
                 self.validate(value)
 
-    def test_a_work_without_a_history_needs_the_same_report(self):
-        """Every task the controller queues carries its history (`work_task`
+    def test_a_task_without_a_history_needs_the_same_report(self):
+        """Every task the controller queues carries its history (`task_build`
         refuses to build a task without it); only a Work queued inline before
         task files existed has none. Its patch is accepted with a valid
         report whose `history_digest` is null, like any other, and a missing
@@ -367,14 +367,14 @@ class TestFirstPatch(unittest.TestCase):
         self.assertIsNone(done["pending_publication"])
         self.assertEqual(done["proposal_artifact"]["artifact_id"], 903)
 
-    def test_a_deferred_result_is_not_work_without_a_usable_result(self):
+    def test_a_deferred_result_is_not_task_without_a_usable_result(self):
         """The queue says the graph completed and the artifact is collected,
         but the Result is only deferred: dispatch recovery must not allocate
         a retry, bump the revision or charge `work_recovery`."""
-        import work
+        import tasks
 
         rec = self.first()
-        graph = work.graph_id(rec["active_work"]["dedupe_key"])
+        graph = tasks.graph_id(rec["active_work"]["dedupe_key"])
         out = tick(rec, [published(rec)], queue_works={graph: "completed"})
         after = final(out)
         self.assertNotIn("allocate_work_retry", kinds(out))
@@ -419,7 +419,7 @@ class TestPublishRetryGate(unittest.TestCase):
 
 
 class TestOldWork(unittest.TestCase):
-    def test_a_result_of_the_retired_review_is_work_without_a_usable_result_nothing_charged(self):
+    def test_a_result_of_the_retired_review_is_task_without_a_usable_result_nothing_charged(self):
         rec = running()
         result = dict(published(rec), status="verified")
         result.pop("operation")
@@ -451,7 +451,7 @@ class TestOldWork(unittest.TestCase):
         self.assertEqual(new["active_work"]["attempt"], 1)
         self.assertEqual(new["revision"], rec["revision"] + 1)
 
-    def test_work_that_carries_the_review_contract_publishes_like_any_other(self):
+    def test_task_that_carries_the_review_contract_publishes_like_any_other(self):
         rec = running()
         task = {"task": "development_patch", "review": "required", "contribution_id": CID,
                 "revision": 3, "expected_head": SHA_A, "fork": "riseproject-upstreaming/proj"}

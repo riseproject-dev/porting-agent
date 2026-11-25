@@ -17,7 +17,7 @@ import commit_rules
 import controller
 import plan_gate
 import schemas
-import work
+import tasks
 from common import sha256_text
 from tests.helpers import NOW, SHA_A, contribution, policy
 
@@ -347,19 +347,19 @@ class TestImmutableTrackingIssue(unittest.TestCase):
         rec["active_work"] = {"task": "development_repair", "reason_ids": ["review-1"],
                               "requested_at": NOW, "revision": rec["revision"],
                               "dedupe_key": "repair", "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "feedback_evidence_ids": []}
-        request = work.request_from_active(rec)
-        node = work.node(request, rec, control_repo_id="7", allowed_paths=["build.yml", "test.yml"],
+        request = tasks.request_from_active(rec)
+        node = tasks.node(request, rec, control_repo_id="7", allowed_paths=["build.yml", "test.yml"],
                          context={"reason_evidence": [{"evidence_id": "review-1",
                                                        "kind": "human_relay",
                                                        "summary": "Add the test workflow."}]})
         self.assertTrue(node["payload"]["review_scope_extension"])
         self.assertEqual(node["payload"]["allowed_paths"], ["build.yml", "test.yml"])
-        ordinary = work.node(request, rec, control_repo_id="7", allowed_paths=["build.yml"],
+        ordinary = tasks.node(request, rec, control_repo_id="7", allowed_paths=["build.yml"],
                              context={"reason_evidence": [{"evidence_id": "ci-1", "kind": "ci"}]})
         self.assertFalse(ordinary["payload"]["review_scope_extension"])
         self.assertTrue(ordinary["payload"]["legacy_scope_extension"])
         rec["scope_coverage_complete"] = True
-        complete = work.node(request, rec, control_repo_id="7", allowed_paths=["build.yml"],
+        complete = tasks.node(request, rec, control_repo_id="7", allowed_paths=["build.yml"],
                              context={"reason_evidence": [{"evidence_id": "ci-1", "kind": "ci"}]})
         self.assertFalse(complete["payload"]["legacy_scope_extension"])
 
@@ -370,12 +370,12 @@ class TestImmutableTrackingIssue(unittest.TestCase):
         rec["active_work"] = {"task": "planning", "reason_ids": [],
                               "requested_at": NOW, "revision": rec["revision"],
                               "dedupe_key": "refresh", "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "feedback_evidence_ids": []}
-        node = work.node(work.request_from_active(rec), rec, control_repo_id="7", allowed_paths=[])
+        node = tasks.node(tasks.request_from_active(rec), rec, control_repo_id="7", allowed_paths=[])
         self.assertEqual(node["payload"]["context"]["refresh"]["reason"], "audit dependencies")
         self.assertEqual(node["payload"]["context"]["existing_fork"]["pr_number"], 1)
         self.assertEqual(node["payload"]["expected_head"], SHA_A)
 
-    def test_full_description_url_and_links_frozen_into_work(self):
+    def test_full_description_url_and_links_frozen_into_task(self):
         body = "### Additional context\n\nhttps://github.com/example/proj/pull/31488\n" + "user context\n" * 500
         rec = contribution(phase="planning", activity="idle")
         # A record created before the description was frozen at intake.
@@ -385,7 +385,7 @@ class TestImmutableTrackingIssue(unittest.TestCase):
                                  inputs=controller.Inputs(now=datetime.fromisoformat(NOW), pressure=capacity.Pressure(ok=True),
                                                           tracking_issues={12: issue}))
         claimed = [r for k, r in result.staged if k == "contributions"][-1]
-        node = work.node(result.requested_effects[0], claimed, control_repo_id="7", allowed_paths=[".github/workflows/*"])
+        node = tasks.node(result.requested_effects[0], claimed, control_repo_id="7", allowed_paths=[".github/workflows/*"])
         frozen = node["payload"]["context"]["tracking_issue"]
         self.assertEqual(frozen["description"], body)
         self.assertEqual(frozen["url"], ISSUE_URL)

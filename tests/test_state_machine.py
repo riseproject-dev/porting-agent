@@ -128,13 +128,13 @@ class TestLifecycleTable(unittest.TestCase):
                       "parked.idle --abandon-->"):
             self.assertIn(lc.HELD_RESULT, stops[where].effects.clears, where)
         for where, t in stops.items():
-            if t.effects.work == "clear" or t.trigger == lc.Trigger.COMMAND:
+            if t.effects.task == "clear" or t.trigger == lc.Trigger.COMMAND:
                 self.assertIn(lc.HELD_RESULT, t.effects.clears, where)
             # `proposal_artifact` holds a published Result only; no stop clears it.
             self.assertNotIn("proposal_artifact", t.effects.clears, where)
         self.assertFalse(hasattr(lc, "HELD_PROPOSAL"))
         # The check reports a stop row, a rule, or a flag verb that keeps it.
-        keep = lc.Effects(work="clear", sets=("parked_reason", "previous_phase"))
+        keep = lc.Effects(task="clear", sets=("parked_reason", "previous_phase"))
         park = lc.RULES["park_contribution"].transition
         key = ("park_contribution", "parked.idle")
         with mock.patch.dict(lc.LIFECYCLE["development.agent_running"].transitions,
@@ -196,9 +196,9 @@ class TestLifecycleTable(unittest.TestCase):
     def without(self, entries, *names):
         return tuple(e for e in entries if e not in names)
 
-    def test_every_work_allocation_requires_the_bound_upstream_identity(self):
+    def test_every_task_allocation_requires_the_bound_upstream_identity(self):
         allocating = [e for e in lc.table_edges()
-                      if e.transition.effects.work in ("allocate", "reallocate")]
+                      if e.transition.effects.task in ("allocate", "reallocate")]
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_submission_rewrite",
@@ -222,12 +222,12 @@ class TestLifecycleTable(unittest.TestCase):
         resume = lc.find_edge("development.waiting_human", "resume_development").transition
         cases = (
             ("development.fix_needed", "request_patch",
-             {"sets": self.without(patch.effects.sets, lc.WORK_FEEDBACK)}, lc.WORK_FEEDBACK),
+             {"sets": self.without(patch.effects.sets, lc.TASK_FEEDBACK)}, lc.TASK_FEEDBACK),
             ("development.agent_running", "record_publish_success",
              {"clears": self.without(published.effects.clears, lc.CARRIED_FEEDBACK)},
              "rows that record a published Result"),
             ("development.agent_running", "request_ci_rerun",
-             {"guard": self.without(rerun.guard, lc.WORK_WITHOUT_FEEDBACK)},
+             {"guard": self.without(rerun.guard, lc.TASK_WITHOUT_FEEDBACK)},
              "a CI rerun without the guard"),
             ("development.waiting_human", "resume_development",
              {"clears": (*resume.effects.clears, "pending_feedback_evidence_ids")},
@@ -243,7 +243,7 @@ class TestLifecycleTable(unittest.TestCase):
             self.assertFalse({"pending_feedback_evidence_ids", lc.CARRIED_FEEDBACK} & set(clears))
         self.assertEqual(lc.FEEDBACK_ANSWERED_BY, ("resume_upstream_review",))
 
-    def test_passing_ci_with_pending_feedback_or_unmet_requirements_makes_work_due(self):
+    def test_passing_ci_with_pending_feedback_or_unmet_requirements_makes_task_due(self):
         # One row returns passing CI to development for pending feedback and
         # for unmet series requirements (`return_for_series_requirements`
         # was merged into it).
@@ -253,7 +253,7 @@ class TestLifecycleTable(unittest.TestCase):
                          ("development.fix_needed", lc.Trigger.OBSERVATION, None, ()))
         self.assertEqual(t.guard, ("every required CI job executed and passed on the exact head",
                                    lc.FEEDBACK_OR_UNMET, "no requested task", "no open operation"))
-        self.assertEqual((t.effects.sets, t.effects.clears, t.effects.revision, t.effects.work),
+        self.assertEqual((t.effects.sets, t.effects.clears, t.effects.revision, t.effects.task),
                          (("last_ci_evidence_id", "pending_feedback_evidence_ids"), (), "bump",
                           "keep"))
         self.assertTrue(lc.must_bump(edge))
@@ -467,7 +467,7 @@ class TestLifecycleTable(unittest.TestCase):
                          "`budget.reruns.interrupted`")
 
     def test_every_work_allocation_charges_work_total(self):
-        allocating = [e for e in lc.table_edges() if e.transition.effects.work in ("allocate", "reallocate")]
+        allocating = [e for e in lc.table_edges() if e.transition.effects.task in ("allocate", "reallocate")]
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
@@ -522,7 +522,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertIn("not yet recorded for this head and CI run",
                       lc.find_edge("upstream_review.waiting_ci", "record_upstream_ci_failure").transition.guard)
 
-    def test_one_state_in_which_development_work_is_due(self):
+    def test_one_state_in_which_development_task_is_due(self):
         self.assertNotIn("development.idle", lc.LIFECYCLE)
         self.assertEqual(lc.find_edge("provisioning.idle", "confirm_provisioning").target,
                          "development.fix_needed")
@@ -544,7 +544,7 @@ class TestLifecycleTable(unittest.TestCase):
     def test_resume_stale_requires_quiescence(self):
         guard = lc.RULES["resume_stale"].transition.guard
         refresh = lc.find_edge("development.fix_needed", "refresh_planning").transition.guard
-        for condition in (lc.QUIESCENT, lc.NO_WORK):
+        for condition in (lc.QUIESCENT, lc.NO_TASK):
             self.assertIn(condition, guard)
             self.assertIn(condition, refresh)
 
@@ -689,7 +689,7 @@ class TestLifecycleTable(unittest.TestCase):
         state = "development.fix_needed"
         edge = lc.find_edge(state, "exhaust_work_total")
         self.assertEqual(edge.target, "development.waiting_human")
-        self.assertEqual(edge.transition.guard, (lc.WORK_TOTAL_EXHAUSTED,))
+        self.assertEqual(edge.transition.guard, (lc.TASK_TOTAL_EXHAUSTED,))
         self.assertEqual(edge.transition.effects.sets,
                          ("pending_human_action=work_budget_exhausted",
                           f"{lc.PENDING_COUNTER}=work_total"))
@@ -713,13 +713,13 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertFalse([e for e in lc.exhaustion_edges("work_total")
                           if lc.LIFECYCLE[e.target].kind != "human_wait"])
 
-    def test_transitions_of_a_state_in_which_work_is_due_are_mutually_exclusive(self):
-        self.assertEqual([e.verb for e in lc.due_work_edges("development.fix_needed")],
+    def test_transitions_of_a_state_in_which_task_is_due_are_mutually_exclusive(self):
+        self.assertEqual([e.verb for e in lc.due_task_edges("development.fix_needed")],
                          ["request_patch", "request_repair", "refresh_on_exhaustion",
                           "exhaust_repair_attempts", "exhaust_work_total",
                           "launch_development_pr", "exhaust_development_pr_launches"])
         for state in ("planning.idle", "development.fix_needed", "upstream_review.fix_needed"):
-            edges = lc.due_work_edges(state)
+            edges = lc.due_task_edges(state)
             self.assertGreater(len(edges), 1, state)
             for a in edges:
                 for b in edges:
@@ -727,7 +727,7 @@ class TestLifecycleTable(unittest.TestCase):
                                      (state, a.verb, b.verb))
         for verb in ("request_patch", "request_repair", "refresh_on_exhaustion",
                      "exhaust_repair_attempts"):
-            self.assertIn(lc.WORK_TOTAL_REMAINS,
+            self.assertIn(lc.TASK_TOTAL_REMAINS,
                           lc.find_edge("development.fix_needed", verb).transition.guard)
 
     def test_first_patch_after_a_rejected_proposal(self):
@@ -848,7 +848,7 @@ class TestLifecycleTable(unittest.TestCase):
             commit = {"paused_at_commit"} if verb == "pause_on_processing_error" else set()
             self.assertEqual(fields, {"paused", "paused_at", "paused_reason", "paused_by"}
                              | commit)
-            self.assertEqual(t.effects.work, "clear")
+            self.assertEqual(t.effects.task, "clear")
         for t in flag.cleared_by.values():
             self.assertEqual(t.trigger, lc.Trigger.COMMAND)
             self.assertEqual(t.effects.revision, "bump")
@@ -951,7 +951,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             "development.fix_needed --request_patch--> development.agent_running: allocates a task "
             "without charging 'work_total'")
 
-    def test_work_allocation_without_the_operation_guard(self):
+    def test_task_allocation_without_the_operation_guard(self):
         guard = tuple(g for g in lc.find_edge("upstream_review.fix_needed",
                                               "request_review_revision").transition.guard
                       if g != "no open operation")
@@ -989,11 +989,11 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             "provisioning.waiting_human: clears pending_human_action in a human wait without "
             "setting it")
 
-    def test_no_head_row_while_work_runs(self):
+    def test_no_head_row_while_task_runs(self):
         # A fork head that moves while a task is requested is recorded from
         # `development.fix_needed` once the stale Result is replanned.
         for key, state in lc.LIFECYCLE.items():
-            if state.kind == "work":
+            if state.kind == "running":
                 with self.subTest(state=key):
                     self.assertNotIn("record_head_change", {v for v, _ in state.transitions})
 
@@ -1026,7 +1026,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
     def test_infrastructure_exhaustion_that_parks(self):
         self.assertReports(
             self.with_row("development.agent_running", "exhaust_recovery", "parked.idle",
-                          effects=lc.Effects(work="clear", sets=("parked_reason", "previous_phase"))),
+                          effects=lc.Effects(task="clear", sets=("parked_reason", "previous_phase"))),
             "exhaustion of infrastructure budget 'dispatch_recovery' must lead to a human wait "
             "of the same phase")
 
@@ -1084,9 +1084,9 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             "upstream_review.waiting_human: not exactly one resume applies when "
             "pending_human_action is answer_reviewer")
 
-    def test_transitions_that_can_apply_together_where_work_is_due(self):
+    def test_transitions_that_can_apply_together_where_task_is_due(self):
         edge = lc.find_edge("development.fix_needed", "exhaust_repair_attempts")
-        guard = tuple(g for g in edge.transition.guard if g != lc.WORK_TOTAL_REMAINS)
+        guard = tuple(g for g in edge.transition.guard if g != lc.TASK_TOTAL_REMAINS)
         self.assertReports(
             self.with_row("development.fix_needed", "exhaust_repair_attempts", guard=guard),
             "development.fix_needed: exhaust_repair_attempts and exhaust_work_total can apply "
@@ -1183,7 +1183,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertEqual((stop.trigger, stop.command), (lc.Trigger.TICK, None))
         self.assertEqual(stop.guard, (lc.NOT_PAUSED, "not terminal", lc.PROCESSING_ERROR))
         self.assertEqual(stop.effects, lc.Effects(
-            work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller",
+            task="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller",
                             "paused_at_commit"),
             clears=(lc.HELD_RESULT,)))
         self.assertEqual(lc.CALLER_REASONS, ("pause_on_processing_error",))

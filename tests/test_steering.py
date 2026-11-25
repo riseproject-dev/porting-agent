@@ -185,9 +185,9 @@ class TestTrustAndReading(unittest.TestCase):
                                     policy=POLICY, now=NOW)
         [stored] = new["data"]["items"]
         self.assertEqual((stored["authority"], stored["edit_unverified"]), (False, True))
-        import work_history
+        import task_history
         evidence = {e["evidence_id"]: e for e in (known_record, new)}
-        doc = work_history.document(rec, {"dedupe_key": "k", "task": "development_repair"},
+        doc = task_history.document(rec, {"dedupe_key": "k", "task": "development_repair"},
                                     evidence)
         self.assertEqual([s["body"] for s in doc["steering"]], ["Keep the QEMU row."])
         [entry] = doc["timeline"]
@@ -367,7 +367,7 @@ class TestTrustAndReading(unittest.TestCase):
                 out["omitted"].get("tracking_issue_comment" + collect.STEERING_CAP_SUFFIX),
                 1 if flagged else None, total)
 
-    def test_a_list_that_keeps_failing_is_read_without_once_the_work_waited(self):
+    def test_a_list_that_keeps_failing_is_read_without_once_the_task_waited(self):
         class Forbidden(Api):
             def paginate(self, path, **kwargs):
                 if "/pulls/5/reviews" in path:

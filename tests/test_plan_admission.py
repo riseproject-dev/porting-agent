@@ -23,7 +23,7 @@ import provisioning
 import reconcile
 import schemas
 import status_ledger
-import work
+import tasks
 from tests.helpers import NOW, SHA_A, SHA_C, apply_command, contribution, plan, policy
 from tests.test_provisioning import Api as ProvisioningApi
 
@@ -366,7 +366,7 @@ class TestPlanDecisionReadings(unittest.TestCase):
                                  "dedupe_key": "repair", "deadline_at": NOW, "generation": 0,
                                  "attempt": 1, "dispatched_run_id": None,
                                  "feedback_evidence_ids": []}
-        node = work.node(work.request_from_active(repair), repair, control_repo_id="7",
+        node = tasks.node(tasks.request_from_active(repair), repair, control_repo_id="7",
                          allowed_paths=new["scope_paths"], context={})
         self.assertTrue(node["payload"]["legacy_scope_extension"])
 

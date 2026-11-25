@@ -16,7 +16,7 @@ import fork_publish
 import lifecycle as lc
 import review_loop
 import submission
-import work
+import tasks
 from tests.helpers import commit_files, git, init_repo
 from tests.test_commit_rules import RULES
 from tests.test_plan_gate import plan
@@ -408,14 +408,14 @@ class TestCheck(unittest.TestCase):
 
 class TestReviewWork(unittest.TestCase):
     def test_the_submission_task_is_uncredentialed_and_writes_nothing(self):
-        task = work.SUBMISSION_REWRITE
-        self.assertNotIn(task, work.WRITE_TASKS)
-        self.assertEqual(work.ALLOWED_OPERATIONS[task], [])
-        self.assertEqual(work.profile_for(task), work.WORKER_PROFILE)
-        contract = work.effect_contract(task)
+        task = tasks.SUBMISSION_REWRITE
+        self.assertNotIn(task, tasks.WRITE_TASKS)
+        self.assertEqual(tasks.ALLOWED_OPERATIONS[task], [])
+        self.assertEqual(tasks.profile_for(task), tasks.WORKER_PROFILE)
+        contract = tasks.effect_contract(task)
         self.assertEqual([o["type"] for o in contract["outputs"] if o.get("min")],
                          ["upload_artifact"])
-        self.assertFalse(hasattr(work, "SUBMISSION_REVIEW"))
+        self.assertFalse(hasattr(tasks, "SUBMISSION_REVIEW"))
 
     def test_the_rewrite_carries_the_rules_and_the_sections(self):
         data = plan()
@@ -455,7 +455,7 @@ class TestReviewWork(unittest.TestCase):
         reject = transitions.pop(("reject_submission_rewrite", "development.fix_needed"))
         transitions[("reject_submission_rewrite", "development.fix_needed")] = lc.Transition(
             reject.trigger, None, reject.guard,
-            lc.Effects(revision="bump", work="clear", clears=reject.effects.clears))
+            lc.Effects(revision="bump", task="clear", clears=reject.effects.clears))
         broken = lc.State(broken.kind, broken.launches, broken.writes, broken.description,
                           transitions)
         with mock.patch.dict(lc.LIFECYCLE, {"handoff.agent_running": broken}):

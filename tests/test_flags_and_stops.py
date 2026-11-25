@@ -125,7 +125,7 @@ class TestCommandsByTheTable(unittest.TestCase):
         self.assertIn("restart_generation", reached)
         self.assertIn("resume_stale", reached)
 
-    def test_pause_from_agent_running_leads_to_the_state_where_work_is_due(self):
+    def test_pause_from_agent_running_leads_to_the_state_where_task_is_due(self):
         for phase, target in (("planning", "planning.idle"),
                               ("development", "development.fix_needed"),
                               ("upstream_review", "upstream_review.fix_needed")):
@@ -270,13 +270,13 @@ class TestBlockIsRetired(unittest.TestCase):
         self.assertFalse(lc.publication_check(
             contribution(paused=True), expected_revision=0, expected_head=SHA_A,
             observed_head=SHA_A, ref="riscv64", repository="riseproject-upstreaming/proj",
-            expected_generation=0, work_key="example--proj/12@g0.r0:x") is None)
+            expected_generation=0, task_key="example--proj/12@g0.r0:x") is None)
 
 
 class TestPauseMask(unittest.TestCase):
     """While paused: no launch, no charge, and a Result is late."""
 
-    def test_paused_record_gets_no_work_no_charge_and_late_results(self):
+    def test_paused_record_gets_no_task_no_charge_and_late_results(self):
         record = running("development")
         paused = apply_command(record, commands.parse("/upstreaming pause")).record
         self.assertEqual(engine.state_key(paused), "development.fix_needed")

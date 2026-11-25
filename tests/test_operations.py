@@ -30,7 +30,7 @@ from tests.helpers import (
     STRANGER,
     apply_command,
     contribution,
-    holding_work,
+    holding_task,
     policy,
     refusal,
 )
@@ -961,7 +961,7 @@ class TestOpenOperationFence(unittest.TestCase):
             self.assertTrue(out.accepted, out.reason)
 
     def test_no_second_writer_while_an_operation_is_open(self):
-        rec, identity = holding_work(contribution(activity="waiting_ci",
+        rec, identity = holding_task(contribution(activity="waiting_ci",
                                                   active_operation_id="op-" + "1" * 24))
         why = lc.publication_check(rec, expected_revision=0, expected_head=SHA_A,
                                    observed_head=SHA_A, ref="riscv64-dev",

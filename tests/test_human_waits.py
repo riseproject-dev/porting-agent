@@ -24,7 +24,7 @@ import observe_ci
 import reconcile
 import schemas
 import state
-import work
+import tasks
 from tests import helpers
 from tests.helpers import NOW, OWNER, SHA_A, ci_record, contribution, policy
 from tests.test_late_results import ci_snapshot
@@ -78,7 +78,7 @@ class World:
             elif kind == "events":
                 events.append(record)
         submitted = [e for e in out.report.get("requested_effects", [])
-                     if e.get("type") == "submit_work"]
+                     if e.get("type") == "submit_task"]
         return events, submitted
 
 
@@ -107,7 +107,7 @@ def wait_from_work_recovery() -> World:
     runs = [{"id": 1, "status": "completed", "created_at": "2026-12-30T00:00:00Z"}]
     for _ in range(lifecycle.budget_limit("work_recovery", P) + 2):
         aw = world.rec.get("active_work")
-        queue = {work.graph_id(aw["dedupe_key"]): "completed"} if aw else {}
+        queue = {tasks.graph_id(aw["dedupe_key"]): "completed"} if aw else {}
         events, _ = world.tick(queue_works=queue, runs=runs)
         if engine.state_key(world.rec) == "development.waiting_human":
             assert "exhaust_recovery" in [e["kind"] for e in events], events
@@ -155,7 +155,7 @@ class TestDevelopmentHumanWaitIsStable(unittest.TestCase):
                     self.assertIn(row, [e["kind"] for e in events])
                     self.assertIn(engine.state_key(world.rec), targets)
 
-    def test_resume_starts_the_counter_and_requests_fresh_work(self):
+    def test_resume_starts_the_counter_and_requests_fresh_task(self):
         world = wait_from_work_total()
         events, submitted = world.tick(
             "failed", comments=[world.command(
@@ -256,7 +256,7 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
     def test_a_result_in_the_wait_is_late(self):
         record = self.record()
         record["active_work"] = {
-            "dedupe_key": work.work_key(record["contribution_id"], 0, record["revision"],
+            "dedupe_key": tasks.task_key(record["contribution_id"], 0, record["revision"],
                                         "development_repair"),
             "task": "development_repair", "generation": 0, "revision": record["revision"],
             "attempt": 1, "requested_at": record["updated_at"],

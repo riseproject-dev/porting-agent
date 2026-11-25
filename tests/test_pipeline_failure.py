@@ -72,7 +72,7 @@ class TestClassify(unittest.TestCase):
                 j["steps"] = []
         self.assertEqual(pipeline_failure.classify(run, jobs)["job"], "activation")
 
-    def test_a_failed_contribution_step_is_the_works(self):
+    def test_a_failed_contribution_step_is_the_tasks(self):
         run, jobs = live()
         # The fork checkout failed, so the gateway was never started.
         failed = copy.deepcopy(jobs)
@@ -84,7 +84,7 @@ class TestClassify(unittest.TestCase):
                 s["conclusion"] = "failure"
         self.assertIsNone(pipeline_failure.classify(run, failed))
 
-    def test_a_failed_agent_step_is_the_works(self):
+    def test_a_failed_agent_step_is_the_tasks(self):
         run, jobs = live()
         failed = copy.deepcopy(jobs)
         agent = next(j for j in failed if j["name"] == "agent")
@@ -234,7 +234,7 @@ class TestWorkflowContract(unittest.TestCase):
 
 
 class TestClaimRuns(unittest.TestCase):
-    def test_the_runs_of_every_claim_of_the_work_newest_first(self):
+    def test_the_runs_of_every_claim_of_the_task_newest_first(self):
         p = {"works": {"w1": {"work_id": "w1", "graph_id": "g1"},
                        "w2": {"work_id": "w2", "graph_id": "g2"}},
              "claims": {"c1": {"work_id": "w1", "dispatch_id": "d1"},
@@ -344,8 +344,8 @@ class TestRunRead(unittest.TestCase):
 
     def test_the_readings_of_a_tick(self):
         record = json.loads((FIXTURE / "contribution.json").read_text())
-        import work
-        graph = work.graph_id(record["active_work"]["dedupe_key"])
+        import tasks
+        graph = tasks.graph_id(record["active_work"]["dedupe_key"])
 
         def failure(run_id):
             return {"pipeline": True, "job": "agent", "step": "Start MCP Gateway",

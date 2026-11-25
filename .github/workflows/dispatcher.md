@@ -88,7 +88,7 @@ steps:
     run: |
       set -euo pipefail
       uv run --locked \
-        python -m work plan --out /tmp/gh-aw/agent/porting-plan.json \
+        python -m tasks plan --out /tmp/gh-aw/agent/porting-plan.json \
           --control-repo-id "$CONTROL_REPO_ID"
   # The step after the agent loads the intent check from this copy: the
   # sandbox mounts the workspace read-write but ${RUNNER_TEMP}/gh-aw

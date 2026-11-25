@@ -64,11 +64,11 @@ def _policy() -> dict:
 
 
 def _waiting_for(state: dict, key: str, ci_evidence: dict | None) -> str:
-    """What a state of kind `work` or `auto_wait` waits for, from the table.
+    """What a state of kind `running` or `auto_wait` waits for, from the table.
     In an `auto_wait` state: the first row the controller takes whose record
     guards hold, with the guards only the controller observes (a worker
     slot, capacity), or else the first guard of such a row that does not
-    hold. Otherwise, and in a `work` state: the triggers of the rows that
+    hold. Otherwise, and in a `running` state: the triggers of the rows that
     leave the state."""
     unmet = None
     if lifecycle.LIFECYCLE[key].kind == "auto_wait":
@@ -457,7 +457,7 @@ TABLE_PAGE = "../state-machine/table/"
 
 # What each state kind means, in words a reader of the badge can use.
 KIND_LABELS = {
-    "work": "work in progress",
+    "running": "task in progress",
     "auto_wait": "waits for an automatic trigger",
     "human_wait": "waits for a human",
     "gate": "waits for a human command",
@@ -468,7 +468,7 @@ KIND_LABELS = {
 # A short word shown in each badge, so kinds that share a grey (`auto_wait`
 # and `terminal`) differ without color.
 KIND_ABBREVIATIONS = {
-    "work": "work",
+    "running": "run",
     "auto_wait": "auto",
     "human_wait": "human",
     "gate": "gate",

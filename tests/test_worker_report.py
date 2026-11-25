@@ -328,7 +328,7 @@ class TestEvidence(unittest.TestCase):
                                    now="2026-11-23T00:00:00+00:00", policy={}, run="77")
 
 
-    def test_the_id_and_the_time_of_the_work_are_recorded_safely(self):
+    def test_the_id_and_the_time_of_the_task_are_recorded_safely(self):
         outcome = {"status": "published", "publication_artifact_id": 9,
                    "task": task(context={"history": {"sha256": HISTORY},
                                          "requested_at": "2026-11-22T08:00:00+00:00"}),

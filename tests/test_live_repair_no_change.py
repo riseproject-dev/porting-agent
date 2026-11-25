@@ -28,7 +28,7 @@ import capacity
 import commands
 import controller
 import reconcile
-import work
+import tasks
 import worker_gate
 import worker_recovery
 from tests import helpers
@@ -181,10 +181,10 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
             deadline_at="2026-11-22T15:55:37.891318+00:00"))
         return record
 
-    def test_claimed_work_with_null_dispatched_run_id_is_not_withdrawn(self):
+    def test_claimed_task_with_null_dispatched_run_id_is_not_withdrawn(self):
         record = self.r5_requested()
         self.assertIsNone(record["active_work"]["dispatched_run_id"])
-        output = tick(record, queue_works={work.graph_id(R5_KEY): "claimed"}, runs=DISPATCHERS,
+        output = tick(record, queue_works={tasks.graph_id(R5_KEY): "claimed"}, runs=DISPATCHERS,
                       now="2026-11-22T10:21:30+00:00")
         result = final(output, record)
         self.assertEqual((result["phase"], result["activity"]), ("development", "agent_running"))
@@ -206,7 +206,7 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
                 self.assertEqual(final(output, record)["active_work"]["dedupe_key"], R5_KEY)
                 self.assertEqual(events(output), [])
 
-    def test_work_absent_from_queue_is_dispatched_again_by_the_table(self):
+    def test_task_absent_from_queue_is_dispatched_again_by_the_table(self):
         """A dispatcher run that ended with the task absent from the queue
         takes `retry_dispatch`: the same task is dispatched again."""
         record = self.r5_requested()
@@ -228,7 +228,7 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
 class TestLateResultOfWithdrawnWork(unittest.TestCase):
     """c338f21 folded the late r5 Result into the withdrawn state (plan 8.6)."""
 
-    def test_late_rejection_answers_no_request_and_pending_feedback_gets_repair_work(self):
+    def test_late_rejection_answers_no_request_and_pending_feedback_gets_repair_task(self):
         record = load("contribution-withdrawn-r5.json")
         self.assertEqual((record["revision"], record["activity"], record["active_work"]),
                          (5, "waiting_ci", None))
@@ -265,7 +265,7 @@ class TestLateResultOfWithdrawnWork(unittest.TestCase):
 class TestLiveR6SelfHeals(unittest.TestCase):
     """From the 9a6c7d6 state: r6 is claimed and running; nothing is rewritten."""
 
-    QUEUE = {work.graph_id(R5_KEY): "completed", work.graph_id(R6_KEY): "claimed"}
+    QUEUE = {tasks.graph_id(R5_KEY): "completed", tasks.graph_id(R6_KEY): "claimed"}
     RUNS = DISPATCHERS
 
     def test_while_r6_runs_nothing_is_observed(self):
@@ -290,7 +290,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         result = final(output, record)
         self.assertEqual((result["revision"], result["active_work"]), (6, record["active_work"]))
 
-    def test_r6_no_change_result_reruns_ci_and_green_ci_nominates_without_new_work(self):
+    def test_r6_no_change_result_reruns_ci_and_green_ci_nominates_without_new_task(self):
         """The repair worker reports a failure not caused by the patch, and
         the r6 a task carries no feedback (`active_work.feedback_evidence_ids`
         is unset; its `reason_ids` are not feedback), so `request_ci_rerun`
@@ -312,7 +312,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
             self.assertEqual(json.loads((directory / "outcome.json").read_text())["status"], "rejected")
             worker_recovery.normalize(directory, R6_RUN)
             publications = collected(temporary, {R6_RUN: 14760000000})
-        queue = dict(self.QUEUE, **{work.graph_id(R6_KEY): "completed"})
+        queue = dict(self.QUEUE, **{tasks.graph_id(R6_KEY): "completed"})
         output = tick(record, publications=publications, queue_works=queue,
                       runs=self.RUNS, now="2026-11-22T11:20:00+00:00")
         self.assertEqual(events(output), ["schedule_publish_retry"])

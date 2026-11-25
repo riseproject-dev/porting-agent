@@ -141,14 +141,14 @@ class TestRecordMigration(unittest.TestCase):
             with self.subTest(shape=name), self.assertRaises(state.StateError):
                 state.migrate_record_fields(variant, now=NOW)
 
-    def test_requested_work_and_a_pending_action_get_their_defaults(self):
+    def test_requested_task_and_a_pending_action_get_their_defaults(self):
         record = copy.deepcopy(live())
         record.update(phase="development", activity="agent_running",
                       handoff_request=None, pending_human_action=None,
                       active_work={"dedupe_key": "k", "task": "development_repair", "revision": 6,
                                    "requested_at": NOW, "deadline_at": NOW})
         after, event = state.migrate_record_fields(record, now=NOW)
-        self.assertEqual(after["active_work"], dict(record["active_work"], **engine.WORK_DEFAULTS))
+        self.assertEqual(after["active_work"], dict(record["active_work"], **engine.TASK_DEFAULTS))
         self.assertIn("active_work.feedback_evidence_ids", event["details"]["added"])
         wait = copy.deepcopy(live())
         wait["pending_human_action"].pop("counter")
@@ -318,7 +318,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
     def events(self, output):
         return [e["kind"] for kind, e in output.staged if kind == "events"]
 
-    def test_repeated_ticks_request_no_work_and_change_nothing(self):
+    def test_repeated_ticks_request_no_task_and_change_nothing(self):
         record = migrated()
         for snapshot in (self.passed(), self.passed(status="in_progress")):
             with self.subTest(status=snapshot.runs[0]["status"]):
@@ -334,7 +334,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                             "publication_retries"):
                     self.assertEqual(output.report[key], [], key)
 
-    def test_no_work_is_ever_selected_for_the_gate(self):
+    def test_no_task_is_ever_selected_for_the_gate(self):
         for record in (migrated(), dict(migrated(), paused=True, paused_at=NOW, paused_by="human")):
             result = controller.tick(
                 contributions={"c": record}, operations={}, consumed={}, projects={},

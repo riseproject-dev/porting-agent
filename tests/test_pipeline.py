@@ -27,7 +27,7 @@ import publisher
 import queue_result
 import reconcile
 import schemas
-import work
+import tasks
 from tests import helpers
 from tests.helpers import (
     NOW,
@@ -115,7 +115,7 @@ class TestPipeline(unittest.TestCase):
         """The worker reviews its patch in its own run and the trusted
         publication job publishes it there."""
         pol = policy(read_only=False)
-        # 1. Controller selects a development patch; work.py builds the task node.
+        # 1. Controller selects a development patch; tasks.py builds the task node.
         res = controller.tick(contributions={"c": self.rec}, operations={}, consumed={}, projects={}, policy=pol,
                               inputs=controller.Inputs(now=self.now, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(len(res.requested_effects), 1)
@@ -125,9 +125,9 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(claimed["active_work"]["dedupe_key"],
                          res.requested_effects[0]["dedupe_key"])
         self.assertEqual(claimed["budget"]["attempts_used"], 1)
-        node = work.node(work.request_from_active(claimed), claimed, control_repo_id="123",
+        node = tasks.node(tasks.request_from_active(claimed), claimed, control_repo_id="123",
                          allowed_paths=[".github/workflows/*"])
-        plan = work.plan([node])
+        plan = tasks.plan([node])
         self.assertEqual(plan["dispatch"], {"pool": "default", "max_claims": 1, "max_dispatches": 1})
         task = node["payload"]
         self.assertNotIn("review", task)
@@ -369,7 +369,7 @@ class TestDispatcherPayloadBudget(unittest.TestCase):
                                                  "assessment": "test details " * 1000}]},
                              "dependency_graph": {"assessment": "dependency " * 3000},
                              "research": {"upstream_issues": {"findings": "x" * 100000}}}}
-        item = work._reason_item(evidence)
+        item = tasks._reason_item(evidence)
         encoded = json.dumps(item, separators=(",", ":"), ensure_ascii=False).encode()
         self.assertLess(len(encoded), 8000)
         self.assertEqual(item["evidence_id"], "plan-c-r10")
@@ -383,7 +383,7 @@ class TestDispatcherPayloadBudget(unittest.TestCase):
         """The task file names the plan by path and SHA-256 of the committed
         file; the commit is the one of the reference to the task file, which
         the resolver adds (with the URL)."""
-        import work_task
+        import task_build
         evidence = {"plan-c-r10": {"evidence_id": "plan-c-r10", "kind": "plan",
                                    "data": {"full": "research"}}}
         with tempfile.TemporaryDirectory() as td:
@@ -391,14 +391,14 @@ class TestDispatcherPayloadBudget(unittest.TestCase):
             path = root / ".state/evidence/plan-c-r10.json"
             path.parent.mkdir(parents=True)
             path.write_text('{"kind":"plan","evidence_id":"plan-c-r10","data":{"full":"research"}}\n')
-            reference = work_task._reference(
-                "plan-c-r10", work_task.file_digest_reader(root, evidence))
+            reference = task_build._reference(
+                "plan-c-r10", task_build.file_digest_reader(root, evidence))
             self.assertEqual(reference["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
         self.assertEqual(reference["path"], ".state/evidence/plan-c-r10.json")
         self.assertEqual(set(reference), {"path", "sha256"})
         # A plan not committed yet is digested as the store writes it.
-        staged = work_task.file_digest_reader(None, evidence)("plan-c-r10")
-        self.assertEqual(staged, hashlib.sha256(work_task.file_bytes(
+        staged = task_build.file_digest_reader(None, evidence)("plan-c-r10")
+        self.assertEqual(staged, hashlib.sha256(task_build.file_bytes(
             evidence["plan-c-r10"])).hexdigest())
 
     def test_feedback_projection_preserves_response_ids_and_exact_paths(self):
@@ -408,7 +408,7 @@ class TestDispatcherPayloadBudget(unittest.TestCase):
                                   "line": 7, "url": "https://example.test/comment"}],
                     "comment_ids": [42], "conversation_comments": [],
                     "conversation_comment_ids": []}}
-        item = work._reason_item(evidence)
+        item = tasks._reason_item(evidence)
         self.assertEqual(item["data"]["comment_ids"], [42])
         self.assertEqual(item["data"]["comments"][0]["path"], "test.yml")
         self.assertEqual(item["data"]["comments"][0]["line"], 7)
@@ -426,7 +426,7 @@ class TestDispatchRecovery(unittest.TestCase):
         self.rec["active_work"] = {"dedupe_key": "example--proj/12@1:planning", "task": "planning",
                                    "revision": 1, "requested_at": "2026-11-18T19:22:14+00:00",
                                    "deadline_at": "2026-11-19T01:22:14+00:00", "dispatched_run_id": None, "generation": 0, "attempt": 1, "reason_ids": [], "feedback_evidence_ids": []}
-        self.gid = work.graph_id(self.rec["active_work"]["dedupe_key"])
+        self.gid = tasks.graph_id(self.rec["active_work"]["dedupe_key"])
 
     def tick(self, runs, queue, rec=None, now=None):
         rec = rec or self.rec
@@ -461,14 +461,14 @@ class TestDispatchRecovery(unittest.TestCase):
         self.assertEqual((rec["activity"], rec["active_work"], rec["pending_human_action"]["kind"]),
                          ("waiting_human", None, "dispatch_failed"))
 
-    def test_running_dispatcher_or_claimed_work_is_left_alone(self):
+    def test_running_dispatcher_or_claimed_task_is_left_alone(self):
         t = self.tick([self.drun(1, None, "in_progress")], {})
         self.assertEqual(t.report["dispatch_relaunch"], [])
         t = self.tick([self.drun(1)], {self.gid: "claimed"})
         self.assertEqual(t.report["dispatch_relaunch"], [])
         self.assertEqual(t.report["dispatch_recovery"], [])
 
-    def test_terminal_work_gets_new_revision_and_graph_instead_of_resubmission(self):
+    def test_terminal_task_gets_new_revision_and_graph_instead_of_resubmission(self):
         for state in ("completed", "cancelled"):
             with self.subTest(state):
                 t = self.tick([self.drun(1)], {self.gid: state})
@@ -476,7 +476,7 @@ class TestDispatchRecovery(unittest.TestCase):
                 rec = self.final(t)
                 self.assertEqual(rec["revision"], 2)
                 self.assertEqual(rec["active_work"]["attempt"], 2)
-                self.assertNotEqual(work.graph_id(rec["active_work"]["dedupe_key"]), self.gid)
+                self.assertNotEqual(tasks.graph_id(rec["active_work"]["dedupe_key"]), self.gid)
                 for kind, staged in t.staged:
                     schemas.validate({"contributions": "contribution", "events": "event"}.get(kind, kind), staged)
 
@@ -486,7 +486,7 @@ class TestDispatchRecovery(unittest.TestCase):
         self.assertEqual(t.report["dispatch_relaunch"], [])
         self.assertIsNone(self.final(t)["active_work"])
 
-    def test_submission_work_is_relaunched_in_an_observing_tick(self):
+    def test_submission_task_is_relaunched_in_an_observing_tick(self):
         # The rewrite task of the handoff phase is relaunched
         # like a development task, also when the tick observes CI, and wait for
         # a human once `dispatch_recovery` is spent.
@@ -527,14 +527,14 @@ class TestDispatchRecovery(unittest.TestCase):
         self.assertEqual(self.tick([self.drun(1)], None).report["dispatch_relaunch"], [])
 
     def test_plan_replays_committed_request_with_profile_per_task(self):
-        req = work.request_from_active(self.rec)
-        n = work.node(req, self.rec, control_repo_id="1", allowed_paths=["x"])
+        req = tasks.request_from_active(self.rec)
+        n = tasks.node(req, self.rec, control_repo_id="1", allowed_paths=["x"])
         self.assertEqual((n["worker_profile"], n["graph_id"]), ("planner", self.gid))
         # Identical across replays (the queue admits an identical node once).
-        self.assertEqual(n, work.node(work.request_from_active(self.rec), self.rec, control_repo_id="1",
+        self.assertEqual(n, tasks.node(tasks.request_from_active(self.rec), self.rec, control_repo_id="1",
                                       allowed_paths=["x"]))
         dev = dict(self.rec, phase="development", active_work=dict(self.rec["active_work"], task="development_patch"))
-        self.assertEqual(work.node(work.request_from_active(dev), dev, control_repo_id="1",
+        self.assertEqual(tasks.node(tasks.request_from_active(dev), dev, control_repo_id="1",
                                    allowed_paths=["x"])["worker_profile"], "worker")
-        self.assertIsNone(work.request_from_active(dict(self.rec, paused=True)))
-        self.assertIsNone(work.request_from_active(dict(self.rec, revision=2)))
+        self.assertIsNone(tasks.request_from_active(dict(self.rec, paused=True)))
+        self.assertIsNone(tasks.request_from_active(dict(self.rec, revision=2)))

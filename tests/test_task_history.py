@@ -16,10 +16,10 @@ from unittest import mock
 import collect
 import isolation
 import state
+import task_build
 import task_file
-import work
-import work_history
-import work_task
+import task_history
+import tasks
 from common import canonical_json
 from tests import test_development_table as dev
 from tests.helpers import NOW, SHA_A, SHA_B, ci_record, command, contribution, policy
@@ -90,9 +90,9 @@ class TestBuild(unittest.TestCase):
         )}
 
     def test_a_chronological_history_with_ci_after_a_successful_worker(self):
-        history = work_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW)
+        history = task_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW)
         data = history["data"]
-        self.assertEqual(history["evidence_id"], work_history.evidence_id(WORK["dedupe_key"]))
+        self.assertEqual(history["evidence_id"], task_history.evidence_id(WORK["dedupe_key"]))
         self.assertEqual(data["work"]["dedupe_key"], WORK["dedupe_key"])
         self.assertEqual([(t["kind"], t["seq"]) for t in data["timeline"]],
                          [("upstream_feedback", 1), ("worker_report", 2), ("ci", 3)])
@@ -110,18 +110,18 @@ class TestBuild(unittest.TestCase):
 
     def test_append_only_across_builds(self):
         evidence = self.evidence()
-        first = work_history.document(record(), WORK, evidence)
+        first = task_history.document(record(), WORK, evidence)
         evidence["report-2"] = report_evidence("report-2", at="2026-11-21T10:00:00+00:00",
                                                head_before=SHA_B, head_after="c" * 40)
-        second = work_history.document(record(), dict(WORK, revision=5), evidence)
+        second = task_history.document(record(), dict(WORK, revision=5), evidence)
         ids = [t.get("evidence_id") for t in second["timeline"]]
         for entry in first["timeline"]:
             self.assertIn(entry.get("evidence_id"), ids)
         self.assertEqual(second["timeline"][-1]["evidence_id"], "report-2")
 
     def test_deterministic(self):
-        one = work_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW)
-        two = work_history.build(record(), WORK, dict(reversed(list(self.evidence().items()))),
+        one = task_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW)
+        two = task_history.build(record(), WORK, dict(reversed(list(self.evidence().items()))),
                                  policy=POLICY, now=NOW)
         self.assertEqual(canonical_json(one), canonical_json(two))
 
@@ -140,9 +140,9 @@ class TestBuild(unittest.TestCase):
         evidence["steering-1"] = steering_evidence("steering-1", [
             steer(i, "s" * 3000, at=f"2026-11-0{1 + i % 9}T00:00:00Z") for i in range(40)],
             at="2026-11-09T00:00:00+00:00")
-        history = work_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
+        history = task_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
         data = history["data"]
-        self.assertLessEqual(len(canonical_json(data).encode()), work_history.HISTORY_MAX_BYTES)
+        self.assertLessEqual(len(canonical_json(data).encode()), task_history.HISTORY_MAX_BYTES)
         newest = max((t for t in data["timeline"] if t["kind"] == "worker_report"),
                      key=lambda t: t["at"])
         self.assertEqual(newest["evidence_id"], "report-198")
@@ -166,7 +166,7 @@ class TestBuild(unittest.TestCase):
         self.assertNotIn("condensed", data["steering"][-1])
         self.assertEqual(len(data["steering"][-1]["body"]), 3000)
         # Determinism of the condensed form.
-        again = work_history.build(record(), WORK, copy.deepcopy(evidence), policy=POLICY,
+        again = task_history.build(record(), WORK, copy.deepcopy(evidence), policy=POLICY,
                                    now=NOW)
         self.assertEqual(canonical_json(again), canonical_json(history))
 
@@ -179,7 +179,7 @@ class TestBuild(unittest.TestCase):
                     "title": f"fix: use foo {i}", "description": "d" * 1900,
                     "outcome": "failed" if i % 2 else "adopted", "evidence": "e" * 1900,
                     "lesson": "l" * 500}])
-        data = work_history.document(record(), WORK, evidence)
+        data = task_history.document(record(), WORK, evidence)
         earlier = data["timeline"][0]
         self.assertEqual(earlier["kind"], "earlier")
         folded = [t for t in range(earlier["entries"]) if t % 2]
@@ -200,13 +200,13 @@ class TestBuild(unittest.TestCase):
         evidence = {"relay-1": relay, "steering-1": steering_evidence(
             "steering-1", [steer(5, "Keep QEMU.", at="2026-11-20T00:00:00Z")],
             at="2026-11-20T00:00:00+00:00")}
-        [entry] = work_history.document(record(), WORK, evidence)["timeline"]
+        [entry] = task_history.document(record(), WORK, evidence)["timeline"]
         self.assertEqual(entry["items"][0]["body"], "Rename the job.")
         evidence["steering-2"] = steering_evidence(
             "steering-2", [steer(5, "Rename the job.", at="2026-11-21T00:00:00Z",
                                  source="development_pr_review_comment")],
             at="2026-11-21T00:00:00+00:00")
-        [entry] = work_history.document(record(), WORK, evidence)["timeline"]
+        [entry] = task_history.document(record(), WORK, evidence)["timeline"]
         self.assertEqual(entry["items"][0]["body"], "(in the steering section)")
 
     def test_heavy_steering_never_takes_the_place_of_the_newest_report(self):
@@ -225,7 +225,7 @@ class TestBuild(unittest.TestCase):
                         i, f"steer {i} " + "s" * 400, at=f"2026-11-19T{i // 60 % 24:02d}:"
                         f"{i % 60:02d}:00Z", source="development_pr_review_comment")],
                         at="2026-11-19T00:00:00+00:00")
-                doc = work_history.document(record(), WORK, evidence)
+                doc = task_history.document(record(), WORK, evidence)
                 kinds = [t["kind"] for t in doc["timeline"]]
                 self.assertEqual(kinds, ["worker_report", "ci"])
                 [full, ci] = doc["timeline"]
@@ -243,12 +243,12 @@ class TestBuild(unittest.TestCase):
                      "reviews": [], "conversation_comments": [],
                      "comments": [{"id": i, "reviewer": "owner", "url": "u",
                                    "body": f"comment {i}"} for i in range(70)]}}
-        [entry] = work_history.document(record(), WORK, {"relay-1": relay})["timeline"]
+        [entry] = task_history.document(record(), WORK, {"relay-1": relay})["timeline"]
         self.assertEqual(len(entry["items"]), 60)
         self.assertEqual(entry["items_not_listed"], 10)
         self.assertEqual(entry["items"][-1]["body"], "comment 69")
         # The short form keeps the 20 newest items, and counts the rest.
-        short = work_history._short(entry)
+        short = task_history._short(entry)
         self.assertEqual((len(short["items"]), short["items_not_listed"]), (20, 50))
         self.assertEqual(short["items"][-1]["body"], "comment 69")
 
@@ -256,25 +256,25 @@ class TestBuild(unittest.TestCase):
         evidence = {"steering-1": steering_evidence("steering-1", [], at="2026-11-20T00:00:00Z"),
                     "steering-2": steering_evidence("steering-2", [], at="2026-11-21T00:00:00Z")}
         evidence["steering-2"]["data"]["omitted"] = {"tracking_issue_comment": 3}
-        data = work_history.document(record(), WORK, evidence)
+        data = task_history.document(record(), WORK, evidence)
         self.assertEqual(data["omitted"], {"tracking_issue_comment": 3})
 
     def test_deferred_and_unreadable_steering_are_stated(self):
-        history = work_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW,
+        history = task_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW,
                                      deferred=4, unreadable=["upstream_pr_review"])
         data = history["data"]
         self.assertEqual(data["omitted"]["steering_deferred"], 4)
         self.assertEqual(data["steering_unreadable"], ["upstream_pr_review"])
         self.assertTrue(any("upstream_pr_review" in v for v in history["limitations"]))
-        plain = work_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW)
+        plain = task_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW)
         self.assertNotIn("steering_unreadable", plain["data"])
-        self.assertEqual(plain["limitations"], [work_history.NOTICE])
+        self.assertEqual(plain["limitations"], [task_history.NOTICE])
 
     def test_sources_left_out_are_counted(self):
         evidence = {f"ci-{i:03d}": ci_evidence(f"ci-{i:03d}", SHA_A, at=f"2026-11-01T00:{i % 60:02d}:00Z")
-                    for i in range(work_history.MAX_SOURCES + 7)}
-        data = work_history.document(record(), WORK, evidence)
-        self.assertEqual(len(data["sources"]), work_history.MAX_SOURCES)
+                    for i in range(task_history.MAX_SOURCES + 7)}
+        data = task_history.document(record(), WORK, evidence)
+        self.assertEqual(len(data["sources"]), task_history.MAX_SOURCES)
         self.assertEqual(data["sources_not_listed"], 7)
 
     def test_condensation_serializes_the_whole_document_rarely(self):
@@ -283,7 +283,7 @@ class TestBuild(unittest.TestCase):
             evidence[f"report-{i}"] = report_evidence(
                 f"report-{i}", at=f"2026-{1 + i // 300:02d}-{1 + (i // 24) % 12:02d}T"
                 f"{i % 24:02d}:00:00+00:00", summary="w" * 900)
-        real = work_history._size
+        real = task_history._size
         whole = []
 
         def counting(value):
@@ -291,17 +291,17 @@ class TestBuild(unittest.TestCase):
                 whole.append(1)
             return real(value)
 
-        with mock.patch("work_history._size", side_effect=counting):
-            data = work_history.document(record(), WORK, evidence)
+        with mock.patch("task_history._size", side_effect=counting):
+            data = task_history.document(record(), WORK, evidence)
         self.assertGreater(data["condensed"]["folded"], 100)
         self.assertLess(len(whole), 20)
-        self.assertLessEqual(len(canonical_json(data).encode()), work_history.HISTORY_MAX_BYTES)
+        self.assertLessEqual(len(canonical_json(data).encode()), task_history.HISTORY_MAX_BYTES)
 
     def test_a_condensation_cut_never_creates_a_credential_match(self):
         # Each body is clean on its own: the AWS key id is followed by more
         # capitals, so it has no word boundary. The condensation cut at
         # SHORT characters falls right after its 16th character.
-        straddling = "x" * (work_history.SHORT - 21) + " AKIA" + "B" * 30 + " " + "y" * 3500
+        straddling = "x" * (task_history.SHORT - 21) + " AKIA" + "B" * 30 + " " + "y" * 3500
         self.assertFalse(state.find_secrets(straddling))
         items = [steer(i, straddling, at=f"2026-11-{1 + i % 9:02d}T00:00:{i:02d}Z",
                        authority=i % 2 == 0,
@@ -315,7 +315,7 @@ class TestBuild(unittest.TestCase):
             evidence[f"report-{i}"] = report_evidence(
                 f"report-{i}", at=f"2026-11-0{1 + i}T05:00:00+00:00",
                 summary=straddling[:1900], approaches=[reason])
-        history = work_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
+        history = task_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
         condensed = history["data"]["condensed"]
         self.assertTrue(condensed["timeline_short"] and condensed["steering_short"])
         path = f".state/evidence/{history['evidence_id']}.json"
@@ -324,11 +324,11 @@ class TestBuild(unittest.TestCase):
     def test_a_record_that_still_matches_after_redaction_raises(self):
         evidence = {"report-1": report_evidence("report-1", at="2026-11-20T10:00:00+00:00")}
         with mock.patch("worker_report.redact_tree", side_effect=lambda value: value), \
-                mock.patch("work_history.document",
-                           return_value=dict(work_history.document(record(), WORK, evidence),
+                mock.patch("task_history.document",
+                           return_value=dict(task_history.document(record(), WORK, evidence),
                                              notice="AKIA" + "B" * 16)):
             with self.assertRaises(ValueError):
-                work_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
+                task_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
 
     def test_ci_observed_in_the_tick_that_folds_the_report_is_linked_to_it(self):
         # The tick folds the publication and observes CI on the new head
@@ -336,7 +336,7 @@ class TestBuild(unittest.TestCase):
         at = "2026-11-20T10:00:00+00:00"
         evidence = {"report-1": report_evidence("report-1", at=at, head_after=SHA_B),
                     "ci-1": ci_evidence("ci-1", SHA_B, at=at)}
-        timeline = work_history.document(record(), WORK, evidence)["timeline"]
+        timeline = task_history.document(record(), WORK, evidence)["timeline"]
         self.assertEqual([(t["kind"], t["seq"]) for t in timeline],
                          [("worker_report", 1), ("ci", 2)])
         self.assertEqual(timeline[1]["after_report"], "report-1")
@@ -346,12 +346,12 @@ class TestBuild(unittest.TestCase):
                                                 head_after=SHA_B),
                     "ci-1": ci_evidence("ci-1", SHA_B, at="2026-11-20T09:00:00+00:00"),
                     "ci-2": ci_evidence("ci-2", SHA_A, at="2026-11-20T11:00:00+00:00")}
-        timeline = work_history.document(record(), WORK, evidence)["timeline"]
+        timeline = task_history.document(record(), WORK, evidence)["timeline"]
         links = {t["evidence_id"]: t.get("after_report") for t in timeline if t["kind"] == "ci"}
         self.assertEqual(links, {"ci-1": "report-1", "ci-2": None})
 
     def test_a_small_history_is_not_condensed(self):
-        data = work_history.build(record(), WORK, self.evidence(), policy=POLICY,
+        data = task_history.build(record(), WORK, self.evidence(), policy=POLICY,
                                   now=NOW)["data"]
         self.assertEqual(data["condensed"], {"timeline_short": 0, "steering_short": 0,
                                              "folded": 0})
@@ -421,10 +421,10 @@ class TestCondensationOrder(unittest.TestCase):
         newest linked CI run) is whole when ``report_whole``, and the newest
         steering item is whole; with ``steering_whole`` every steering item
         is whole and none is folded."""
-        timeline_total = len(work_history._entries(record(), evidence)[1])
-        steering_total = len(work_history._entries(record(), evidence)[0])
-        doc = work_history.document(record(), WORK, evidence)
-        self.assertLessEqual(len(canonical_json(doc).encode()), work_history.HISTORY_MAX_BYTES)
+        timeline_total = len(task_history._entries(record(), evidence)[1])
+        steering_total = len(task_history._entries(record(), evidence)[0])
+        doc = task_history.document(record(), WORK, evidence)
+        self.assertLessEqual(len(canonical_json(doc).encode()), task_history.HISTORY_MAX_BYTES)
         counted = [t for t in doc["timeline"] if t["kind"] in ("earlier", "later")]
         self.assertEqual(len(doc["timeline"]) - len(counted)
                          + sum(t["entries"] for t in counted), timeline_total)
@@ -482,8 +482,8 @@ class TestCondensationOrder(unittest.TestCase):
             at="2026-11-01T00:00:00+00:00")
         rec = record()
         rec["fork"]["head_sha"] = _sha(25)
-        doc = work_history.document(rec, WORK, evidence)
-        self.assertLessEqual(len(canonical_json(doc).encode()), work_history.HISTORY_MAX_BYTES)
+        doc = task_history.document(rec, WORK, evidence)
+        self.assertLessEqual(len(canonical_json(doc).encode()), task_history.HISTORY_MAX_BYTES)
         whole = {t["evidence_id"]: t for t in doc["timeline"]
                  if t["kind"] in ("worker_report", "ci") and not t.get("condensed")}
         self.assertIn("report-024", whole)
@@ -493,8 +493,8 @@ class TestCondensationOrder(unittest.TestCase):
         # Without a report on the recorded head, the newest report that
         # published a head is the one protected.
         rec["fork"]["head_sha"] = _sha(99)
-        latest, head = work_history.protected_reports(
-            rec, work_history._entries(rec, evidence)[1])
+        latest, head = task_history.protected_reports(
+            rec, task_history._entries(rec, evidence)[1])
         self.assertEqual((latest["evidence_id"], head["evidence_id"]),
                          ("report-rerun", "report-024"))
 
@@ -535,21 +535,21 @@ class TestCondensationOrder(unittest.TestCase):
                         at="2026-11-20T00:00:00+00:00"))}
                 rec = record()
                 rec["fork"]["head_sha"] = h2
-                doc = work_history.document(rec, dict(WORK, revision=7), evidence)
+                doc = task_history.document(rec, dict(WORK, revision=7), evidence)
                 self.assertLessEqual(len(canonical_json(doc).encode()),
-                                     work_history.HISTORY_MAX_BYTES)
+                                     task_history.HISTORY_MAX_BYTES)
                 entries = {t.get("evidence_id"): t for t in doc["timeline"]}
                 self.assertFalse(entries["report-u"].get("condensed"))
                 self.assertEqual(entries["report-u"]["head_candidate"], h2)
                 for ci in ("ci-u1", "ci-u2"):
                     if ci in entries:
                         self.assertEqual(entries[ci]["after_report"], "report-u")
-                timeline = work_history._entries(rec, evidence)[1]
-                latest, head = work_history.protected_reports(rec, timeline)
+                timeline = task_history._entries(rec, evidence)[1]
+                latest, head = task_history.protected_reports(rec, timeline)
                 self.assertEqual((latest["evidence_id"], head["evidence_id"]),
                                  ("report-r", "report-u"))
                 rec["fork"]["head_sha"] = _sha(9)
-                self.assertEqual(work_history.protected_reports(rec, timeline)[1]["evidence_id"],
+                self.assertEqual(task_history.protected_reports(rec, timeline)[1]["evidence_id"],
                                  "report-p")
 
     def test_a_report_stored_late_never_passes_for_the_newest(self):
@@ -567,18 +567,18 @@ class TestCondensationOrder(unittest.TestCase):
         evidence = {e["evidence_id"]: e for e in (older, newer)}
         rec = record()
         rec["fork"]["head_sha"] = _sha(3)
-        timeline = work_history._entries(rec, evidence)[1]
+        timeline = task_history._entries(rec, evidence)[1]
         self.assertEqual([(t["evidence_id"], t["at"], t.get("stored_at")) for t in timeline],
                          [("report-old", "2026-11-18T09:00:00+00:00",
                            "2026-11-20T12:00:00+00:00"),
                           ("report-new", "2026-11-19T12:00:00+00:00", None)])
-        latest, head = work_history.protected_reports(rec, timeline)
+        latest, head = task_history.protected_reports(rec, timeline)
         self.assertEqual((latest["evidence_id"], head["evidence_id"]),
                          ("report-new", "report-new"))
         # Even without the time of its task, the revision decides.
         del older["data"]["work"]["requested_at"]
-        latest, _head = work_history.protected_reports(
-            rec, work_history._entries(rec, evidence)[1])
+        latest, _head = task_history.protected_reports(
+            rec, task_history._entries(rec, evidence)[1])
         self.assertEqual(latest["evidence_id"], "report-new")
 
     def test_the_newest_published_fallback_relies_on_monotonic_revisions(self):
@@ -598,9 +598,9 @@ class TestCondensationOrder(unittest.TestCase):
         newest["data"]["work"]["revision"] = 5
         rec = record()
         rec["fork"]["head_sha"] = _sha(9)
-        timeline = work_history._entries(
+        timeline = task_history._entries(
             rec, {e["evidence_id"]: e for e in (late, newest)})[1]
-        latest, head = work_history.protected_reports(rec, timeline)
+        latest, head = task_history.protected_reports(rec, timeline)
         self.assertEqual((latest["evidence_id"], head["evidence_id"]),
                          ("report-newest", "report-newest"))
         # The engine never makes a revision or a generation go back.
@@ -618,8 +618,8 @@ class TestCondensationOrder(unittest.TestCase):
         report takes its reduced form, every section kept, and no steering
         item is folded."""
         evidence = self.reports(1, scale=1.0, steering=30, length=1500)
-        doc = work_history.document(record(), WORK, evidence)
-        self.assertLessEqual(len(canonical_json(doc).encode()), work_history.HISTORY_MAX_BYTES)
+        doc = task_history.document(record(), WORK, evidence)
+        self.assertLessEqual(len(canonical_json(doc).encode()), task_history.HISTORY_MAX_BYTES)
         self.assertNotIn("steering_earlier", doc)
         self.assertEqual(len(doc["steering"]), 30)
         [report] = [t for t in doc["timeline"] if t["kind"] == "worker_report"]
@@ -732,15 +732,15 @@ class TestCondensationOrder(unittest.TestCase):
         self.check({k: v for k, v in cjk.items() if not k.startswith("ci-")})
 
     def test_a_cut_is_bounded_in_bytes(self):
-        text = work_history._text("漢" * 1000, work_history.SHORT)
-        self.assertLessEqual(len(text.split(" [truncated")[0].encode()), work_history.SHORT)
+        text = task_history._text("漢" * 1000, task_history.SHORT)
+        self.assertLessEqual(len(text.split(" [truncated")[0].encode()), task_history.SHORT)
         self.assertTrue(text.endswith("[truncated: 900 more characters]"))
-        self.assertEqual(work_history._text("plain", work_history.SHORT), "plain")
+        self.assertEqual(task_history._text("plain", task_history.SHORT), "plain")
 
     def test_a_fully_folded_history_degrades_instead_of_raising(self):
         evidence = self.reports(3, steering=3, length=100)
-        with mock.patch("work_history.HISTORY_MAX_BYTES", 2500):
-            doc = work_history.document(record(), WORK, evidence)
+        with mock.patch("task_history.HISTORY_MAX_BYTES", 2500):
+            doc = task_history.document(record(), WORK, evidence)
         self.assertLessEqual(len(canonical_json(doc).encode()), 2500)
         self.assertTrue(doc["condensed"]["degraded"])
         self.assertEqual({t["kind"] for t in doc["timeline"]}, {"earlier", "later"})
@@ -771,7 +771,7 @@ class TestTick(unittest.TestCase):
         out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
         self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
         rec = dev.final(out, None)
-        eid = work_history.evidence_id(rec["active_work"]["dedupe_key"])
+        eid = task_history.evidence_id(rec["active_work"]["dedupe_key"])
         [history] = [e for k, e in out.staged if k == "evidence" and e["evidence_id"] == eid]
         kinds = [t["kind"] for t in history["data"]["timeline"]]
         self.assertEqual(kinds, ["worker_report", "ci"])
@@ -799,7 +799,7 @@ class TestTick(unittest.TestCase):
         self.assertIn("a steering list could not be read: HTTP 502", entry["deferred"])
 
     def test_an_unexpected_error_pauses_the_contribution(self):
-        with mock.patch("work_history.build", side_effect=RuntimeError("boom")):
+        with mock.patch("task_history.build", side_effect=RuntimeError("boom")):
             out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
         self.assertEqual(dev.kinds(out), ["pause_on_processing_error"])
         self.assertEqual(out.report["processing_errors"][0]["step"], "work_history")
@@ -879,7 +879,7 @@ class TestTick(unittest.TestCase):
         self.assertTrue([e for k, e in again.staged if k == "evidence"
                          and e["kind"] == "work_history"])
 
-    def test_a_steering_list_that_keeps_failing_stops_holding_the_work(self):
+    def test_a_steering_list_that_keeps_failing_stops_holding_the_task(self):
         """A list that fails from the tick that allocates the task on: the
         allocation is committed at once, so the grace is measured from its
         durable ``requested_at``; the ticks within the grace build no
@@ -908,7 +908,7 @@ class TestTick(unittest.TestCase):
                 evidence.update({e["evidence_id"]: e for k, e in out.staged if k == "evidence"})
                 runs.insert(0, {"id": 100 + minutes, "status": "completed",
                                 "created_at": (now + timedelta(minutes=1)).isoformat()})
-                eid = work_history.evidence_id(rec["active_work"]["dedupe_key"])
+                eid = task_history.evidence_id(rec["active_work"]["dedupe_key"])
                 if minutes == 0:
                     self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
                     requested = rec["active_work"]["requested_at"]
@@ -950,7 +950,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(dev.kinds(later), [])
 
 
-    def test_an_unreadable_steering_list_does_not_hold_the_work(self):
+    def test_an_unreadable_steering_list_does_not_hold_the_task(self):
         collected = {"items": [], "omitted": {}, "unreadable": ["development_pr_review"]}
         with mock.patch("collect.steering", return_value=collected):
             out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
@@ -965,7 +965,7 @@ class TestTick(unittest.TestCase):
         self.assertNotIn("work_history", out.report)
         self.assertFalse([e for k, e in out.staged if k == "evidence"])
 
-    def test_work_in_flight_gets_its_history(self):
+    def test_task_in_flight_gets_its_history(self):
         """A task an earlier tick requested whose history this tick records
         was deferred by the dispatcher: the tick asks for a dispatcher
         launch at once, not through dispatch recovery."""
@@ -990,7 +990,7 @@ class TestPayload(unittest.TestCase):
                 mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
                     [], 0, stdout="c" * 40)), \
                 mock.patch("builtins.print") as printed:
-            work.cmd_plan(args)
+            tasks.cmd_plan(args)
         selection = json.loads(printed.call_args.args[0])
         return selection, (json.loads(out.read_text()) if out.exists() else None)
 
@@ -1008,14 +1008,14 @@ class TestPayload(unittest.TestCase):
         """The history and the task file of the task of ``record`` as the
         tick commits them under ``root``: the evidence by id."""
         key = record["active_work"]["dedupe_key"]
-        history = work_history.evidence_id(key)
+        history = task_history.evidence_id(key)
         evidence = {history: {"evidence_id": history, "kind": "work_history"}}
         directory = Path(root) / ".state" / "evidence"
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{history}.json").write_bytes(work_task.file_bytes(evidence[history]))
-        task = work_task.build(record, evidence, policy=POLICY, now=NOW,
-                               file_digest=work_task.file_digest_reader(Path(root), evidence))
-        (directory / f"{task['evidence_id']}.json").write_bytes(work_task.file_bytes(task))
+        (directory / f"{history}.json").write_bytes(task_build.file_bytes(evidence[history]))
+        task = task_build.build(record, evidence, policy=POLICY, now=NOW,
+                               file_digest=task_build.file_digest_reader(Path(root), evidence))
+        (directory / f"{task['evidence_id']}.json").write_bytes(task_build.file_bytes(task))
         evidence[task["evidence_id"]] = task
         return evidence
 
@@ -1026,7 +1026,7 @@ class TestPayload(unittest.TestCase):
             selection, plan = self.plan(evidence, record, root)
             self.assertEqual(selection["selected"][0]["task"], "development_repair")
             payload = plan["nodes"][0]["payload"]
-            tid = work_task.evidence_id(WORK["dedupe_key"])
+            tid = task_build.evidence_id(WORK["dedupe_key"])
             reference = payload["task_file"]
             self.assertEqual(reference["path"], f".state/evidence/{tid}.json")
             self.assertEqual((reference["evidence_id"], reference["ref"],
@@ -1037,14 +1037,14 @@ class TestPayload(unittest.TestCase):
                 (Path(root) / reference["path"]).read_bytes()).hexdigest())
             # A reference of a fixed size, however long the description is.
             self.assertLess(len(json.dumps(payload, separators=(",", ":")).encode()),
-                            work.MAX_QUEUE_PAYLOAD_BYTES)
+                            tasks.MAX_QUEUE_PAYLOAD_BYTES)
             self.assertNotIn("context", payload)
             # The resolved task names the history, and steering never widens
             # the task.
             task = task_file.resolve(
                 payload, lambda repository, ref, path: (Path(root) / path).read_bytes())
             self.assertEqual(task["context"]["history"]["evidence_id"],
-                             work_history.evidence_id(WORK["dedupe_key"]))
+                             task_history.evidence_id(WORK["dedupe_key"]))
             self.assertEqual(task["context"]["tracking_issue"]["description"], "x" * 4000)
             self.assertFalse(task["review_scope_extension"])
             self.assertEqual(task["allowed_operations"], ["append", "rewrite"])
@@ -1054,7 +1054,7 @@ class TestPayload(unittest.TestCase):
             record = self.record()
             evidence = self.commit(root, record)
             self.plan(evidence, record, root)
-            tid = work_task.evidence_id(WORK["dedupe_key"])
+            tid = task_build.evidence_id(WORK["dedupe_key"])
             document = json.loads((Path(root) / f".state/evidence/{tid}.json").read_text())
         self.assertEqual(set(document["data"]["context"]["history"]),
                          {"path", "sha256", "evidence_id"})
@@ -1078,9 +1078,9 @@ class TestPayload(unittest.TestCase):
                     mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
                         [], 0, stdout="c" * 40)), \
                     mock.patch("builtins.print") as printed, \
-                    mock.patch("work.load_policy", return_value=dict(
+                    mock.patch("tasks.load_policy", return_value=dict(
                         POLICY, concurrency=dict(POLICY["concurrency"], coding_workers=2))):
-                self.assertEqual(work.cmd_plan(args), 0)
+                self.assertEqual(tasks.cmd_plan(args), 0)
             selection = json.loads(printed.call_args.args[0])
             plan = json.loads(out.read_text())
         self.assertEqual(sorted(s["contribution"] for s in selection["selected"]),
@@ -1088,10 +1088,10 @@ class TestPayload(unittest.TestCase):
         self.assertNotIn("skipped", selection)
         sizes = [len(json.dumps(n["payload"], separators=(",", ":"), ensure_ascii=False).encode())
                  for n in plan["nodes"]]
-        self.assertLessEqual(max(sizes), work.MAX_QUEUE_PAYLOAD_BYTES)
+        self.assertLessEqual(max(sizes), tasks.MAX_QUEUE_PAYLOAD_BYTES)
         self.assertLess(max(sizes) - min(sizes), 40)
 
-    def test_work_without_a_recorded_history_or_task_file_is_deferred(self):
+    def test_task_without_a_recorded_history_or_task_file_is_deferred(self):
         with tempfile.TemporaryDirectory() as root:
             selection, plan = self.plan({}, self.record(), root)
             self.assertEqual(selection["selected"], [])
@@ -1099,7 +1099,7 @@ class TestPayload(unittest.TestCase):
                              "history and task file not recorded yet")
             record = self.record()
             evidence = self.commit(root, record)
-            tid = work_task.evidence_id(WORK["dedupe_key"])
+            tid = task_build.evidence_id(WORK["dedupe_key"])
             evidence.pop(tid)
             selection, plan = self.plan(evidence, record, root)
             self.assertEqual(selection["deferred"][0]["reason"], "task file not recorded yet")

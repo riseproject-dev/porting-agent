@@ -150,7 +150,7 @@ class TestProvisioning(unittest.TestCase):
         provisioning.initialize(api, plan)
         self.assertFalse(any(p.endswith("/forks") or p.endswith("/git/refs") for _, p, _ in api.writes))
 
-    def test_collision_and_unexpected_work_rejected_before_write(self):
+    def test_collision_and_unexpected_task_rejected_before_write(self):
         rec, op = request()
         api = Api(head=SHA_B)
         plan = provisioning.preflight(api, rec, op, policy(read_only=False))

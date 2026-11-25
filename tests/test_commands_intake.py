@@ -74,7 +74,7 @@ class TestShortCommands(unittest.TestCase):
                 self.assertIsNone(c.contribution)
                 self.assertIsNone(c.revision)
 
-    def test_work_changing_commands_still_need_revision(self):
+    def test_task_changing_commands_still_need_revision(self):
         self.assertEqual(commands.parse("/upstreaming resume revision=3 reason=r").revision, 3)
         self.assertEqual(commands.parse("/upstreaming refresh revision=7 reason=r").revision, 7)
         with self.assertRaises(commands.CommandError):

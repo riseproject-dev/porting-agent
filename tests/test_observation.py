@@ -267,7 +267,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         }
         return rec
 
-    def test_requested_work_is_not_observed_or_withdrawn(self):
+    def test_requested_task_is_not_observed_or_withdrawn(self):
         """`development.agent_running` has no observation row: green CI on
         the published head neither withdraws the requested task nor
         nominates; the task's Result is folded by the table's rows."""
@@ -281,7 +281,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                                  "development.agent_running has no observation row")
                 self.assertNotIn("obsolete_repair_withdrawn", observation.report[0])
 
-    def test_a_moved_head_is_not_recorded_while_work_is_requested(self):
+    def test_a_moved_head_is_not_recorded_while_task_is_requested(self):
         """No state that requests a task or holds a Result for publication has
         a head row: a moved fork head is recorded from
         `development.fix_needed` once the stale Result is replanned."""
@@ -311,7 +311,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                 self.assertEqual(self.final(observation, rec)["fork"]["head_sha"],
                                  rec["fork"]["head_sha"])
 
-    def test_pending_feedback_with_green_ci_returns_to_due_work(self):
+    def test_pending_feedback_with_green_ci_returns_to_due_task(self):
         """Nomination requires that no actionable feedback is pending; with
         feedback pending, `return_for_feedback` makes a task due again."""
         rec = dict(self.record(), pending_feedback_evidence_ids=["review-1"])
@@ -648,7 +648,7 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
         self.assertEqual(evidence["kind"], "human_inquiry")
         self.assertNotIn("review_feedback", observed.report[0])
 
-    def test_only_review_feedback_is_read_while_development_work_is_due(self):
+    def test_only_review_feedback_is_read_while_development_task_is_due(self):
         """`development.fix_needed` has two observation rows: on the recorded
         head an actionable review takes `record_actionable_review` and keeps
         the state; a moved head takes `record_head_change` to
@@ -678,7 +678,7 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
         self.assertEqual((final["activity"], final["revision"], final["fork"]["head_sha"]),
                          ("waiting_ci", 9, moved))
 
-    def test_a_review_while_development_work_is_due_is_recorded_once(self):
+    def test_a_review_while_development_task_is_due_is_recorded_once(self):
         import observe_ci
         rec = contribution(phase="development", activity="fix_needed", revision=8,
                            last_ci_evidence_id="ci-2-777-1")
@@ -709,7 +709,7 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
                                        contracts={}, policy=policy(), now=NOW)
         self.assertEqual(again.staged, [])
 
-    def test_an_inquiry_while_development_work_is_due_is_not_recorded(self):
+    def test_an_inquiry_while_development_task_is_due_is_not_recorded(self):
         import observe_ci
         rec = contribution(phase="development", activity="fix_needed", revision=8)
         inquiry = {"reviews": [], "comments": [], "conversation_comments": [],
@@ -725,7 +725,7 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
         self.assertEqual(observed.staged, [])
         snapshot.assert_not_called()
 
-    def test_no_feedback_is_read_while_work_is_due_without_a_development_pr(self):
+    def test_no_feedback_is_read_while_task_is_due_without_a_development_pr(self):
         import observe_ci
         rec = contribution(phase="development", activity="fix_needed", revision=8)
         rec["fork"] = dict(rec["fork"], pr_number=None)
@@ -800,7 +800,7 @@ class TestTriggers(unittest.TestCase):
 
 
 class TestTick(unittest.TestCase):
-    def test_removed_intake_label_cancels_only_pre_work_request(self):
+    def test_removed_intake_label_cancels_only_pre_task_request(self):
         rec = contribution(phase="queued", activity="idle", fork=None, plan_evidence_id=None,
                            admission_class=None)
         raw = {"id": rec["tracking_issue"]["id"], "number": rec["tracking_issue"]["number"],
@@ -875,7 +875,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(res.requested_effects, [])
         self.assertEqual(res.staged, [])
 
-    def test_pause_processed_before_work_and_unauthorized_ignored(self):
+    def test_pause_processed_before_task_and_unauthorized_ignored(self):
         rec = contribution(activity="fix_needed")
         cid = rec["contribution_id"]
         pressure = capacity.Pressure(ok=True)
@@ -914,7 +914,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(res.requested_effects[0]["feedback_evidence_ids"],
                          ["review-1", "review-2"])
 
-    def test_uncertain_operation_holds_work(self):
+    def test_uncertain_operation_holds_task(self):
         rec = contribution(activity="fix_needed")
         op = recovery.plan(contribution_id=rec["contribution_id"], revision=0, kind="branch_update",
                            policy_version="p", reason_ids=[], target={"repository": "r"}, now=NOW)
@@ -949,7 +949,7 @@ class TestTick(unittest.TestCase):
         out = reconcile.tick(None, snap, policy=policy(read_only=False), now=T + timedelta(hours=7),
                              publications=[], pressure=capacity.Pressure(ok=True), observe=False)
         self.assertEqual(out.report["requested_effects"], [])
-        self.assertNotIn("timed_out_work", out.report)
+        self.assertNotIn("timed_out_task", out.report)
         self.assertEqual([r for k, r in out.staged if k == "contributions"], [])
 
     def test_planning_outcome_auto_admits_development(self):
@@ -1099,7 +1099,7 @@ class TestTick(unittest.TestCase):
                                                      "base_sha": "a" * 40}}))
         self.assertEqual(later.requested_effects[0]["effect_contract"], {"kind": "none"})
 
-    def test_work_waits_for_a_bound_upstream_identity(self):
+    def test_task_waits_for_a_bound_upstream_identity(self):
         # Every row that allocates a task is guarded by the bound upstream
         # identity and base: planning begins in the tick that accepts the
         # request, whatever the upstream; without a snapshot no task is
@@ -1839,7 +1839,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         return [{"issue_number": 12, "comment": comment(
             f"/upstreaming resume revision={rec['revision']} reason=restored", cid=cid)}]
 
-    def test_a_resume_once_the_branch_exists_allocates_the_work(self):
+    def test_a_resume_once_the_branch_exists_allocates_the_task(self):
         rec = self.final(self.tick(self.queued(), dict(self.MISSING)), self.queued())
         res = self.tick(rec, dict(self.SNAPSHOT), self.resume(rec))
         self.assertEqual(res.report["commands"][0]["result"], "accepted")

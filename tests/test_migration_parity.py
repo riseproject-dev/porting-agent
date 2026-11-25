@@ -119,7 +119,7 @@ class TestCliContracts(unittest.TestCase):
             ("commands", "parse", "--help"),
             ("capacity", "observe", "--help"),
             ("controller", "observe", "--help"),
-            ("work", "plan", "--help"),
+            ("tasks", "plan", "--help"),
             ("reconcile", "--help"),
         )
         for command in commands:
@@ -182,7 +182,7 @@ class TestCliContracts(unittest.TestCase):
             )
             plan_file = fixture / "plan.json"
             result = run_module(
-                "work", "plan", "--root", str(fixture), "--out", str(plan_file),
+                "tasks", "plan", "--root", str(fixture), "--out", str(plan_file),
                 "--control-repo-id", "1",
             )
             expected = captures["work.plan"]

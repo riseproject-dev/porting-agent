@@ -1286,7 +1286,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Evidence is never removed from the store. A record in a state where a task is "
         "allocated or its exhaustion decided, whose `last_ci_evidence_id` names missing "
         "evidence, is never deferred silently and never read as \"no failing job\": "
-        "`controller.MissingEvidence` in step `work_selection` takes "
+        "`controller.MissingEvidence` in step `task_selection` takes "
         "`pause_on_processing_error`, with the missing id in `paused_reason`. States that "
         "allocate no task (gates and waits, such as `handoff.awaiting_submission`) do not read "
         "it.",
@@ -1374,7 +1374,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "A Result of a task of another phase",
         "Which Results are late although the record holds a task, and which phase folds the "
         "Result of a held publication?",
-        "Each phase requests its own task only (`reconcile.WORK_PHASE`): a planning task in "
+        "Each phase requests its own task only (`reconcile.TASK_PHASE`): a planning task in "
         "`planning`, a patch task in `development`, a revision task in "
         "`upstream_review`, and the submission rewrite and review in `handoff`. A Result of a task "
         "the record holds whose task belongs to another phase takes `record_late_effect`, and so "

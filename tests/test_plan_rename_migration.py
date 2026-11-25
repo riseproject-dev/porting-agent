@@ -186,7 +186,7 @@ class TestNameMigration(StateCopy):
             self.assertTrue(any("awaits the record migration" in p for p in problems), problems)
             git(self.repo, "reset", "-q", "--hard", candidate)
 
-    def test_requested_planning_work_under_the_historic_task_fails_closed(self):
+    def test_requested_planning_task_under_the_historic_task_fails_closed(self):
         record = fixture(PARKED)
         record.update(phase="investigation", activity="agent_running", previous_phase=None,
                       parked_reason=None, active_work={

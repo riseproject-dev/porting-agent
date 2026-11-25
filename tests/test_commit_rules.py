@@ -236,15 +236,15 @@ class TestWorkerGate(unittest.TestCase):
     def test_without_rules_nothing_is_checked(self):
         self.assertEqual(self.gate(series("anything goes"), None)["status"], "accepted")
 
-    def test_invalid_rules_in_the_work_are_refused(self):
+    def test_invalid_rules_in_the_task_are_refused(self):
         with self.assertRaisesRegex(worker_gate.WorkerGateError, "invalid commit rules"):
             self.gate(series(GOOD), dict(RULES, title_max_length=1))
 
 
 class TestPayload(unittest.TestCase):
     def work(self, **evidence):
-        import work
-        import work_history
+        import task_history
+        import tasks
         from tests.helpers import contribution
         record = contribution(phase="development", activity="agent_running", revision=3)
         record.update(plan_evidence_id="plan-x", upstream=dict(
@@ -255,15 +255,15 @@ class TestPayload(unittest.TestCase):
                                  "reason_ids": [], "tracking_issue": {"url": "https://x"},
                                  "feedback_evidence_ids": []}
         record["active_work"]["reason_ids"] = ["plan-x"]
-        return record, dict(evidence, **{work_history.evidence_id("k"): {}}), work
+        return record, dict(evidence, **{task_history.evidence_id("k"): {}}), tasks
 
     def test_the_task_carries_the_rules_of_a_version_2_plan_only(self):
-        import work_task
+        import task_build
         for data, expected in ((plan(), commit_rules.from_plan(plan())),
                                (dict(plan(), schema_version=1), None)):
             plan_evidence = {"evidence_id": "plan-x", "kind": "plan", "data": copy.deepcopy(data)}
             record, evidence, _work = self.work(**{"plan-x": plan_evidence})
-            task = work_task.build_data(record, evidence, file_digest=lambda eid: "0" * 64)
+            task = task_build.build_data(record, evidence, file_digest=lambda eid: "0" * 64)
             self.assertEqual(task["context"].get("commit_rules"), expected)
             self.assertEqual("commit_rules" in task["context"], expected is not None)
 
@@ -272,7 +272,7 @@ class TestPayload(unittest.TestCase):
         committed evidence: the allowed paths of the target contract, the
         reason evidence (the plan with its reference) and the commit rules
         of the plan."""
-        import work_task
+        import task_build
         record, evidence, _work = self.work(**{
             "plan-x": {"evidence_id": "plan-x", "kind": "plan", "summary": "s" * 1500,
                        "limitations": ["l" * 400] * 4, "data": plan()},
@@ -280,7 +280,7 @@ class TestPayload(unittest.TestCase):
                            "data": {"allowed_paths": [f".github/workflows/w{i}.yml"
                                                       for i in range(40)]}}})
         record.update(target_contract_id="contract-x", scope_paths=None)
-        task = work_task.build_data(record, evidence, file_digest=lambda eid: "0" * 64)
+        task = task_build.build_data(record, evidence, file_digest=lambda eid: "0" * 64)
         self.assertEqual(len(task["allowed_paths"]), 40)
         self.assertIn("commit_rules", task["context"])
         [plan_item] = task["context"]["reason_evidence"]
@@ -289,7 +289,7 @@ class TestPayload(unittest.TestCase):
                          {"path": ".state/evidence/plan-x.json", "sha256": "0" * 64})
         # Without the evidence of the plan, the task has none of those parts.
         bare, evidence, _work = self.work()
-        task = work_task.build_data(bare, evidence, file_digest=lambda eid: "0" * 64)
+        task = task_build.build_data(bare, evidence, file_digest=lambda eid: "0" * 64)
         self.assertEqual(task["context"]["reason_evidence"], [])
         self.assertNotIn("commit_rules", task["context"])
 

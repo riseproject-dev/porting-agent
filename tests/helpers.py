@@ -50,9 +50,9 @@ def committed_history(record: dict, policy_: dict | None = None) -> dict[str, di
     requested task, by evidence id, recorded when the task was requested:
     what the tick that allocated it committed with it."""
     import task_file
-    import work_history
+    import task_history
     aw = record["active_work"]
-    history = work_history.build(record, aw, {}, policy=policy_ or policy(),
+    history = task_history.build(record, aw, {}, policy=policy_ or policy(),
                                  now=aw["requested_at"])
     # The task file the same tick committed: the dispatch recovery needs its
     # id and the time it was recorded only.
@@ -72,20 +72,20 @@ SHA_B = "b" * 40
 SHA_C = "c" * 40
 
 
-def holding_work(record: dict, task: str = "development_repair") -> tuple[dict, dict]:
+def holding_task(record: dict, task: str = "development_repair") -> tuple[dict, dict]:
     """``record`` holding a requested task of ``task`` at its generation and
     revision, and the task identity a publication of that task names
     (``lifecycle.publication_check``'s ``expected_generation`` and
-    ``work_key``)."""
-    import work
+    ``task_key``)."""
+    import tasks
     generation = int(record.get("generation", 0))
-    key = work.work_key(record["contribution_id"], generation, record["revision"], task)
+    key = tasks.task_key(record["contribution_id"], generation, record["revision"], task)
     held = dict(record, active_work={
         "dedupe_key": key, "task": task, "revision": record["revision"],
         "generation": generation, "attempt": 1, "requested_at": NOW,
         "deadline_at": "2026-11-19T12:00:00+00:00", "dispatched_run_id": None,
         "reason_ids": [], "feedback_evidence_ids": []})
-    return held, {"expected_generation": generation, "work_key": key}
+    return held, {"expected_generation": generation, "task_key": key}
 
 
 def result_missing(*graphs: str) -> dict[str, dict]:

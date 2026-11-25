@@ -20,7 +20,7 @@ from pathlib import Path
 import engine
 import reconcile
 import state
-import work_history
+import task_history
 import worker_report
 from common import canonical_json
 from tests import test_development_table as dev
@@ -94,7 +94,7 @@ def events(staged):
 
 
 class TestDevelopment(unittest.TestCase):
-    def test_the_success_rows_store_the_report_of_the_work(self):
+    def test_the_success_rows_store_the_report_of_the_task(self):
         for name, verb in (("published", "record_publish_success"),
                            ("no_change", "request_ci_rerun")):
             with self.subTest(result=name):
@@ -179,10 +179,10 @@ class TestDevelopment(unittest.TestCase):
         event = events(out.staged)[0]
         self.assertEqual(event["details"]["report_evidence_id"], evidence["evidence_id"])
         # The repair after failing CI on that head reads the report.
-        from tests.test_work_history import ci_evidence
+        from tests.test_task_history import ci_evidence
         ci = dict(ci_evidence("ci-9", SHA_B, at="2026-11-23T10:00:00+00:00"),
                   contribution_id=rec["contribution_id"])
-        doc = work_history.document(rec, {"dedupe_key": "k", "task": "development_repair"},
+        doc = task_history.document(rec, {"dedupe_key": "k", "task": "development_repair"},
                                     {evidence["evidence_id"]: evidence, "ci-9": ci})
         [report_entry, ci_entry] = doc["timeline"]
         self.assertEqual(report_entry["report"]["summary"], "Pinned the QEMU row.")
@@ -206,7 +206,7 @@ class TestDevelopment(unittest.TestCase):
         head only when the recorded head, or the head a CI run ran on, is
         that very commit; otherwise the report that published the head
         stays the report of the head."""
-        from tests.test_work_history import ci_evidence, report_evidence
+        from tests.test_task_history import ci_evidence, report_evidence
         rec = dev.running()
         late = with_report(rec, publication(rec, "uncertain"), summary="Pinned the QEMU row.")
         late["candidate"] = SHA_B
@@ -223,16 +223,16 @@ class TestDevelopment(unittest.TestCase):
         known = {evidence["evidence_id"]: evidence, "report-older": older, "ci-9": ci}
         work_ = {"dedupe_key": "k", "task": "development_repair"}
         landed = dict(rec, fork=dict(rec["fork"], head_sha=SHA_B))
-        doc = work_history.document(landed, work_, known)
+        doc = task_history.document(landed, work_, known)
         ci_entry = next(t for t in doc["timeline"] if t["kind"] == "ci")
         self.assertEqual(ci_entry["after_report"], evidence["evidence_id"])
-        timeline = work_history._entries(landed, known)[1]
-        self.assertEqual(work_history.protected_reports(landed, timeline)[1]["evidence_id"],
+        timeline = task_history._entries(landed, known)[1]
+        self.assertEqual(task_history.protected_reports(landed, timeline)[1]["evidence_id"],
                          evidence["evidence_id"])
         # The push did not land: the recorded head is the older one.
         lost = dict(rec, fork=dict(rec["fork"], head_sha=SHA_A))
-        timeline = work_history._entries(lost, {k: v for k, v in known.items() if k != "ci-9"})[1]
-        self.assertEqual(work_history.protected_reports(lost, timeline)[1]["evidence_id"],
+        timeline = task_history._entries(lost, {k: v for k, v in known.items() if k != "ci-9"})[1]
+        self.assertEqual(task_history.protected_reports(lost, timeline)[1]["evidence_id"],
                          "report-older")
 
     def test_a_late_result_whose_report_cannot_be_stored_is_recorded_as_such(self):
@@ -312,7 +312,7 @@ class TestDevelopment(unittest.TestCase):
 
 class TestUpstreamReview(unittest.TestCase):
     def running(self):
-        return up.record("agent_running", active_work=dict(up.REVISION_WORK))
+        return up.record("agent_running", active_work=dict(up.REVISION_TASK))
 
     def test_a_published_revision_and_a_no_change_answer_store_the_report(self):
         for name, verb in (("published", "record_revision_publish_success"),
@@ -384,7 +384,7 @@ class TestLargeReport(unittest.TestCase):
                  for name, verb in (("published", "record_publish_success"),
                                     ("no_change", "request_ci_rerun"))]
         def revision():
-            return up.record("agent_running", active_work=dict(up.REVISION_WORK))
+            return up.record("agent_running", active_work=dict(up.REVISION_TASK))
         cases += [(revision, lambda rec, name: (up.published(rec, SHA_B) if name == "published"
                                                 else publication(rec, name)), name, verb)
                   for name, verb in (("published", "record_revision_publish_success"),
@@ -505,7 +505,7 @@ class TestUncertainPublicationHistory(unittest.TestCase):
         from datetime import timedelta
 
         from tests.test_late_results import ci_snapshot
-        from tests.test_work_history import _big_report, report_evidence, steer, steering_evidence
+        from tests.test_task_history import _big_report, report_evidence, steer, steering_evidence
         cid = dev.running()["contribution_id"]
         older = report_evidence("report-p", at="2026-11-01T00:00:00+00:00",
                                 head_before="c" * 40, head_after=SHA_A,
@@ -570,7 +570,7 @@ class TestUncertainPublicationHistory(unittest.TestCase):
         rec, verbs = step(rec, minutes=50, head=SHA_B, ci=attempt("failed"))
         self.assertEqual(verbs, ["record_ci_failure", "request_repair"])
         key = rec["active_work"]["dedupe_key"]
-        history = evidence[work_history.evidence_id(key)]["data"]
+        history = evidence[task_history.evidence_id(key)]["data"]
         return own, history
 
     def test_the_report_of_the_confirmed_head_is_protected(self):
@@ -696,7 +696,7 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
                     "pause_on_identity_change"):
             with self.subTest(end=end):
                 rec, evidence, held = self.chain(end)
-                history = evidence[work_history.evidence_id(
+                history = evidence[task_history.evidence_id(
                     rec["active_work"]["dedupe_key"])]["data"]
                 entries = {t.get("evidence_id"): t for t in history["timeline"]}
                 report_entry = entries[held["evidence_id"]]
@@ -705,7 +705,7 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
                 self.assertEqual((ci["head"], ci.get("after_report")),
                                  (SHA_B, held["evidence_id"]))
                 self.assertEqual([r and r["evidence_id"] for r in
-                                  work_history.protected_reports(rec, history["timeline"])],
+                                  task_history.protected_reports(rec, history["timeline"])],
                                  [held["evidence_id"], held["evidence_id"]])
 
     def test_a_park_keeps_the_held_report_for_the_next_generation(self):
@@ -718,7 +718,7 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
             now="2026-11-23T10:00:00+00:00")
         self.assertEqual(restarted.verb, "restart_generation")
         nxt = restarted.record
-        doc = work_history.document(nxt, {
+        doc = task_history.document(nxt, {
             "dedupe_key": f"{nxt['contribution_id']}@g{nxt['generation']}.r{nxt['revision']}"
                           ":planning", "task": "planning", "generation": nxt["generation"],
             "revision": nxt["revision"]}, evidence)
@@ -826,7 +826,7 @@ class TestHeldRevisionReport(unittest.TestCase):
                 if kind == "operations":
                     ops[item["operation_id"]] = item
             return up.final(out, rec), up.kinds(out)
-        rec = up.record("agent_running", active_work=dict(up.REVISION_WORK))
+        rec = up.record("agent_running", active_work=dict(up.REVISION_TASK))
         lost = up.branch_operation(rec, SHA_B, confirmed=False)
         rec, verbs = step(rec, [with_report(rec, dict(
             publication(rec, "uncertain"), candidate=SHA_B, operation=lost))])
@@ -856,7 +856,7 @@ class TestHeldRevisionReport(unittest.TestCase):
         rec, verbs = step(resumed.record, now=now + timedelta(minutes=30),
                           pr=up.pull(head=SHA_B), branch=SHA_B, capacity_ok=True)
         self.assertEqual(verbs, ["request_review_revision"])
-        history = evidence[work_history.evidence_id(rec["active_work"]["dedupe_key"])]["data"]
+        history = evidence[task_history.evidence_id(rec["active_work"]["dedupe_key"])]["data"]
         return history, held
 
     def test_the_next_revision_reads_the_held_report(self):
@@ -871,7 +871,7 @@ class TestHeldRevisionReport(unittest.TestCase):
         """A revision retry rejected as stale behind the confirmed operation
         of an earlier attempt takes `reject_patch_proposal`; that push
         landed, so the report is stored with its commit."""
-        rec = up.record("agent_running", active_work=dict(up.REVISION_WORK),
+        rec = up.record("agent_running", active_work=dict(up.REVISION_TASK),
                         pending_publication=dict(PENDING))
         landed = up.branch_operation(rec, SHA_B, confirmed=True)
         retry = dict(publication(rec, "rejected_stale"), attempt=2)

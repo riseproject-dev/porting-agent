@@ -21,8 +21,8 @@ from pathlib import Path
 import engine
 import queue_policy
 import reconcile
-import work
-import work_history
+import task_history
+import tasks
 from tests.helpers import NOW, contribution, policy
 
 ROOT = Path(__file__).parents[1]
@@ -126,7 +126,7 @@ class TestStatus(unittest.TestCase):
         self.assertEqual((status["preserved"], status["dropped"]), (False, ["default/reviewer"]))
         self.assertTrue(queue_policy.quiescent(p))
 
-    def test_a_queue_with_live_work_or_a_held_dispatch_is_not_quiescent(self):
+    def test_a_queue_with_live_task_or_a_held_dispatch_is_not_quiescent(self):
         p = projection()
         next(iter(p["works"].values()))["state"] = "available"
         self.assertFalse(queue_policy.quiescent(p))
@@ -167,7 +167,7 @@ class TestPolicyRecovery(unittest.TestCase):
         self.assertEqual(event[0]["details"]["restarted"]["counter"], "dispatch_recovery")
         self.assertIn("re-armed", report[0]["decision"])
 
-    def test_the_re_armed_work_gets_a_new_history_with_the_steering_of_the_wait(self):
+    def test_the_re_armed_task_gets_a_new_history_with_the_steering_of_the_wait(self):
         """The re-arm bumps the revision, so the task allocated after it has
         a new task id and its own history, built with the steering written
         while the dispatch waited; the history of the task that failed is
@@ -175,8 +175,8 @@ class TestPolicyRecovery(unittest.TestCase):
         record, _launch, _staged, _report = self.recover(
             reinstalled(self.failed + timedelta(hours=1)))
         cid, generation = record["contribution_id"], int(record.get("generation", 0))
-        failed_key = work.work_key(cid, generation, self.record["revision"], "planning")
-        key = work.work_key(cid, generation, record["revision"], "planning")
+        failed_key = tasks.task_key(cid, generation, self.record["revision"], "planning")
+        key = tasks.task_key(cid, generation, record["revision"], "planning")
         self.assertNotEqual(key, failed_key)
         allocated = copy.deepcopy(record)
         allocated["activity"] = "agent_running"
@@ -185,7 +185,7 @@ class TestPolicyRecovery(unittest.TestCase):
             "revision": record["revision"], "attempt": 1, "requested_at": NOW,
             "deadline_at": NOW, "dispatched_run_id": None, "reason_ids": [],
             "feedback_evidence_ids": []}
-        old = work_history.evidence_id(failed_key)
+        old = task_history.evidence_id(failed_key)
         snap = reconcile.Snapshot({"c": allocated}, {}, {}, {}, {old: {"kind": "work_history"}})
         out = reconcile.TickOutput(report={"controller": {"alerts": []}})
         written = {"source": "tracking_issue_comment", "id": 77, "author": "owner",
@@ -193,10 +193,10 @@ class TestPolicyRecovery(unittest.TestCase):
                    "updated_at": NOW, "url": "u", "body": "Target the 2.x branch."}
         with unittest.mock.patch("collect.steering",
                                  return_value={"items": [written], "omitted": {}}):
-            report = reconcile.work_histories(None, snap.contributions, out, snap,
+            report = reconcile.task_histories(None, snap.contributions, out, snap,
                                               policy=self.policy, now=NOW,
                                               tracking_issues={}, skip=frozenset())
-        self.assertEqual(report[0]["evidence_id"], work_history.evidence_id(key))
+        self.assertEqual(report[0]["evidence_id"], task_history.evidence_id(key))
         [history] = [r for kind, r in out.staged if r.get("kind") == "work_history"]
         self.assertEqual([i["body"] for i in history["data"]["steering"]],
                          ["Target the 2.x branch."])
@@ -344,7 +344,7 @@ class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
         recorded = {}
         for cid in ids:
             key = f"{cid}@1:planning"
-            for eid in (work_history.evidence_id(key), task_file.evidence_id(key)):
+            for eid in (task_history.evidence_id(key), task_file.evidence_id(key)):
                 recorded[eid] = {}
         snapshot = type("S", (), {"contributions": records, "evidence": recorded})
         with tempfile.TemporaryDirectory() as directory, \
@@ -357,7 +357,7 @@ class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
             evidence.mkdir(parents=True)
             for cid in ids:
                 key = f"{cid}@1:planning"
-                (evidence / f"{work_history.evidence_id(key)}.json").write_text("{}")
+                (evidence / f"{task_history.evidence_id(key)}.json").write_text("{}")
                 # The file of the first task is another task's task file.
                 owner = ids[1] if cid == ids[0] else cid
                 (evidence / f"{task_file.evidence_id(key)}.json").write_text(json.dumps({
@@ -366,7 +366,7 @@ class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
                              "revision": 1, "task": "planning",
                              "contribution_id": owner}}))
             args = type("A", (), {"root": directory, "out": str(out), "control_repo_id": "1"})
-            self.assertEqual(work.cmd_plan(args), 0)
+            self.assertEqual(tasks.cmd_plan(args), 0)
             nodes = json.loads(out.read_text())["nodes"]
         self.assertEqual([n["payload"]["contribution_id"] for n in nodes], ["example--b/2"])
         self.assertEqual(nodes[0]["payload"]["task_file"]["ref"], "c" * 40)

@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Native work-queue plans for upstreaming tasks (plan sections 5.1, 15.1).
 
-``controller.tick`` produces ``submit_work`` requests and the task of each
-task, which it commits as a task file (``work_task``). This module turns the
+``controller.tick`` produces ``submit_task`` requests and the task of each
+task, which it commits as a task file (``task_build``). This module turns the
 requests into the immutable gh-aw Work payload, which names that task file
 by reference, and a staged plan for the dispatcher (``{"version": 1,
 "nodes": [...], "dispatch": {...}}``, the format accepted by gh-aw's
@@ -32,7 +32,7 @@ from typing import Callable
 import commit_rules
 import lifecycle
 import task_file
-import work_history
+import task_history
 from common import (
     CONTROL_REPO,
     canonical_json,
@@ -86,7 +86,7 @@ def task_data(request: dict, record: dict, *, allowed_paths: list[str],
               context: dict | None = None) -> dict:
     """Everything the agent and the trusted jobs need to know about one
     controller request: the content of the task file the controller commits
-    (``work_task``). Nothing is looked up from mutable state at execution
+    (``task_build``). Nothing is looked up from mutable state at execution
     time except re-checks."""
     task = request["task"]
     context = dict(context or {})
@@ -163,7 +163,7 @@ def graph_id(dedupe_key: str) -> str:
     return "porting:" + hashlib.sha256(dedupe_key.encode()).hexdigest()[:32]
 
 
-def work_key(contribution_id: str, generation: int, revision: int, task: str,
+def task_key(contribution_id: str, generation: int, revision: int, task: str,
              reruns: int = 0) -> str:
     """The task id of one allocation: the contribution, the generation, the
     revision, the flaky CI reruns requested for the head so far
@@ -199,7 +199,7 @@ def request_from_active(rec: dict) -> dict | None:
     if not aw or rec.get("paused") or aw.get("revision") != rec["revision"] \
             or aw.get("generation") != int(rec.get("generation", 0)):
         return None
-    request = {"type": "submit_work", "dedupe_key": aw["dedupe_key"],
+    request = {"type": "submit_task", "dedupe_key": aw["dedupe_key"],
                "contribution_id": rec["contribution_id"], "revision": rec["revision"],
                "expected_head": lifecycle.recorded_head(rec), "task": aw["task"],
                "reason_ids": aw.get("reason_ids") or [],
@@ -397,7 +397,7 @@ MAX_QUEUE_PAYLOAD_BYTES = 2048
 def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
                    plan_reference: Callable[[str], dict]) -> tuple[list[str], dict]:
     """The allowed paths and the context of the task of ``request``, as
-    the controller builds them (``work_task``) from the committed ``evidence``: the scope
+    the controller builds them (``task_build``) from the committed ``evidence``: the scope
     of the record (else the paths of its target contract), the reason
     evidence of the request (a plan named by ``plan_reference``, a callable
     of its evidence id), the commit rules and template sections of the
@@ -538,7 +538,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         # controller tick records in the commit that allocates the task. A task
         # whose history or task file is not committed yet is not dispatched in
         # this run; the next tick records it.
-        recorded = [(work_history.evidence_id(request["dedupe_key"]), "history"),
+        recorded = [(task_history.evidence_id(request["dedupe_key"]), "history"),
                     (task_file.evidence_id(request["dedupe_key"]), "task file")]
         missing = [name for eid, name in recorded if eid not in snapshot.evidence]
         if missing:
@@ -581,7 +581,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m work")
+    parser = argparse.ArgumentParser(prog="python -m tasks")
     subcommands = parser.add_subparsers(dest="command", required=True)
     plan_parser = subcommands.add_parser("plan")
     plan_parser.add_argument("--root")

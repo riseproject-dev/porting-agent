@@ -227,8 +227,8 @@ PREDICATE_REFUSALS: dict[str, Refusal] = {
     "pause_allowed": Refusal.PAUSED,
     "no_open_operation": Refusal.FENCED,
     "quiescent": Refusal.FENCED,
-    "no_requested_work": Refusal.FENCED,
-    "no_work_requested": Refusal.FENCED,
+    "no_requested_task": Refusal.FENCED,
+    "no_task_requested": Refusal.FENCED,
     "repair_budgets_remain": Refusal.BUDGET_EXHAUSTED,
     "revision_budgets_remain": Refusal.BUDGET_EXHAUSTED,
     "review_revision_budgets_remain": Refusal.BUDGET_EXHAUSTED,
@@ -400,12 +400,12 @@ def _quiescent(ctx: Context) -> str | None:
         "a publication is pending" if publication_pending(ctx.record) else None)
 
 
-def _no_work(ctx: Context) -> str | None:
+def _no_task(ctx: Context) -> str | None:
     return "A task is requested" if ctx.record.get("active_work") else None
 
 
-_record(lc.NO_WORK, "no_requested_work")(_no_work)
-_record("no task requested", "no_work_requested")(_no_work)
+_record(lc.NO_TASK, "no_requested_task")(_no_task)
+_record("no task requested", "no_task_requested")(_no_task)
 
 
 @_record("development PR and head recorded", "development_pr_recorded")
@@ -541,8 +541,8 @@ def _feedback_or_unmet(ctx: Context) -> str | None:
     return "no actionable feedback is pending and every series requirement is met"
 
 
-@_record(lc.WORK_WITHOUT_FEEDBACK, "work_without_feedback")
-def _work_without_feedback(ctx: Context) -> str | None:
+@_record(lc.TASK_WITHOUT_FEEDBACK, "task_without_feedback")
+def _task_without_feedback(ctx: Context) -> str | None:
     return "the task carries feedback" if carried_feedback(ctx.record) else None
 
 
@@ -967,7 +967,7 @@ for _guard, _name in (
     ("the prerequisite is corrected", "prerequisite_corrected"),
     ("a dispatcher run ended with the requested task absent or unclaimed", "dispatch_lost"),
     (lc.DISPATCH_CAUSE_CHANGED, "dispatch_cause_changed"),
-    ("the task graph is terminal without a usable Result", "work_terminal_without_result"),
+    ("the task graph is terminal without a usable Result", "task_terminal_without_result"),
     (lc.PIPELINE_FAILURE, "pipeline_failure"),
     (lc.PIPELINE_FAILURE_CLEARED, "pipeline_failure_cleared"),
     (lc.PLAN_REJECTED, "plan_rejected"),
@@ -1122,7 +1122,7 @@ PIPELINE_VERBS: dict[str, str] = {
     # unclaimed, within `dispatch_recovery`.
     "retry_dispatch": "reconcile",
     # The exhaustion of the recovery of a lost dispatch, of a terminal task
-    # graph (also taken by `controller.terminal_work`), or of a failed
+    # graph (also taken by `controller.terminal_task`), or of a failed
     # publication: the wait for a human.
     "exhaust_recovery": "reconcile",
     # A dispatch failed while the installed work-queue Policy refused every
@@ -1142,7 +1142,7 @@ PIPELINE_VERBS: dict[str, str] = {
     "refresh_on_exhaustion": "controller",
     "exhaust_repair_attempts": "controller",
     # A terminal task graph without a usable Result (taken by
-    # `controller.terminal_work` for the reconciler and for an allocation
+    # `controller.terminal_task` for the reconciler and for an allocation
     # that names a spent graph), and a planning run Result without a
     # usable plan.
     "allocate_work_retry": "controller",
@@ -1520,7 +1520,7 @@ def _derived(name: str, ctx: Context) -> tuple[bool, Any]:
 
 
 # ``sets`` entries the engine always derives; the caller gives no value.
-ENGINE_VALUES = (lc.WORK_FEEDBACK, lc.RERUNS, lc.PENDING_CREDIT)
+ENGINE_VALUES = (lc.TASK_FEEDBACK, lc.RERUNS, lc.PENDING_CREDIT)
 # ``sets`` entries whose value the caller may omit.
 OPTIONAL_VALUES = frozenset({"admission_override", "paused_reason", "paused_at_commit",
                              lc.PENDING_COUNTER})
@@ -1709,7 +1709,7 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
     e = t.effects
     before = ctx.record
     declared = {lc._field_name(s) for s in e.sets} - set(ENGINE_VALUES)
-    if e.work in ("allocate", "reallocate"):
+    if e.task in ("allocate", "reallocate"):
         declared.add("active_work")
     extra = set(values) - declared
     if extra:
@@ -1732,16 +1732,16 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
     carried = carried_feedback(before)
     for name in e.clears:
         _clear(rec, before, name)
-    if e.work == "clear":
+    if e.task == "clear":
         rec["active_work"] = None
-    elif e.work in ("allocate", "reallocate"):
+    elif e.task in ("allocate", "reallocate"):
         if not isinstance(values.get("active_work"), dict):
             raise TransitionError(f"{verb} allocates a task; active_work is required")
         rec["active_work"] = copy.deepcopy(values["active_work"])
-        # A task carries the feedback the row records for it (``WORK_FEEDBACK``)
+        # A task carries the feedback the row records for it (``TASK_FEEDBACK``)
         # and none otherwise; a fresh graph for the same task carries the
         # same feedback.
-        rec["active_work"]["feedback_evidence_ids"] = carried if e.work == "reallocate" else []
+        rec["active_work"]["feedback_evidence_ids"] = carried if e.task == "reallocate" else []
 
     pending_kind = None
     pipeline_version = None
@@ -1781,7 +1781,7 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         if literal:
             _put(rec, name, value)
             continue
-        if name == lc.WORK_FEEDBACK:
+        if name == lc.TASK_FEEDBACK:
             _put(rec, name, list(before.get("pending_feedback_evidence_ids") or []))
             continue
         if name == lc.RERUNS:
@@ -1828,7 +1828,7 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
                                           feedback_evidence_ids=carried)
 
     charged_elsewhere = tuple(name for name in t.charges if not _charge(rec, name, ctx))
-    if e.work in ("allocate", "reallocate") and rec.get("active_work"):
+    if e.task in ("allocate", "reallocate") and rec.get("active_work"):
         # What this allocation charged, which a lost dispatch gives back.
         # A graph that replaces one that failed for the pipeline charges
         # nothing, so the allocation of the first graph is what it stands for;
@@ -2078,7 +2078,7 @@ BUDGET_DEFAULTS: dict[str, Any] = {
 # The fields of a requested task a record may lack: a task recorded without a
 # generation is carried as generation 0 by the field migration, as its first
 # attempt, undispatched, and with no reason or feedback.
-WORK_DEFAULTS: dict[str, Any] = {
+TASK_DEFAULTS: dict[str, Any] = {
     "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [],
     "feedback_evidence_ids": [],
 }
@@ -2183,7 +2183,7 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     work = new.get("active_work")
     if isinstance(work, dict):
         work = new["active_work"] = dict(work)
-        for name, value in WORK_DEFAULTS.items():
+        for name, value in TASK_DEFAULTS.items():
             if name not in work:
                 work[name] = copy.deepcopy(value)
                 added.append(f"active_work.{name}")
@@ -2390,7 +2390,7 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     "upstream_read": ("budget.source_unavailable", "budget.source_unavailable_since",
                       "budget.source_unavailable_at", "budget.source_unavailable_repository"),
     # A task held in a handoff state that requests none is dropped.
-    "handoff_work_dropped": ("active_work",),
+    "handoff_task_dropped": ("active_work",),
     # A published patch: its files join the admitted scope.
     "patch_published": ("scope_paths",),
     # A verified receipt of a `ci_rerun` operation the collector planned
@@ -2681,11 +2681,11 @@ handles("controller", "tick",
          "request_upstream_revision", "request_review_revision"), _ALL_BUG)
 # A record that breaks its state is left to the heal of its tick (nothing is
 # decided for its task).
-handles("controller", "terminal_work", "allocate_work_retry", D_TICK,
+handles("controller", "terminal_task", "allocate_work_retry", D_TICK,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"), SOURCE_INVALID=SKIP)
-handles("controller", "terminal_work", "reallocate_after_pipeline_failure", D_TICK,
+handles("controller", "terminal_task", "reallocate_after_pipeline_failure", D_TICK,
         SOURCE_INVALID=SKIP)
-handles("controller", "terminal_work", "exhaust_recovery", _ALL_BUG)
+handles("controller", "terminal_task", "exhaust_recovery", _ALL_BUG)
 handles("controller", "_launch_handoff", "expire_submission_rewrite", _ALL_BUG,
         PAUSED=SKIP, FENCED=SKIP)
 handles("controller", "_launch_development_pr", "launch_development_pr", D_TICK,

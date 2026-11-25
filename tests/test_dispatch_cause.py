@@ -48,8 +48,8 @@ class TestWhatAnAllocationCharged(unittest.TestCase):
     def test_a_fresh_graph_after_a_terminal_one_charged_its_own_allocation_only(self):
         rec = dev.running(active_work=dict(dev.WORK, charged=["work_total"],
                                            dedupe_key="example--proj/12@g0.r0:development_repair"))
-        import work
-        out = dev.tick(rec, observe=False, queue={work.graph_id(
+        import tasks
+        out = dev.tick(rec, observe=False, queue={tasks.graph_id(
             rec["active_work"]["dedupe_key"]): "cancelled"},
             now=dev.T)
         self.assertEqual(dev.kinds(out), ["allocate_work_retry"])
@@ -61,11 +61,11 @@ class TestWhatAnAllocationCharged(unittest.TestCase):
         import controller
         rec = dev.running(active_work=dict(dev.WORK, charged=["work_total"],
                                            dedupe_key="example--proj/12@g0.r0:development_repair"))
-        fresh = controller._fresh_work(rec, rec["active_work"], __import__("datetime").datetime
+        fresh = controller._fresh_task(rec, rec["active_work"], __import__("datetime").datetime
                                        .fromisoformat(NOW))
         out = engine.try_apply_transition(
             rec, "reallocate_after_pipeline_failure", policy=POLICY, now=NOW,
-            facts={"work_terminal_without_result", "pipeline_failure",
+            facts={"task_terminal_without_result", "pipeline_failure",
                    "pipeline_failure_cleared"}, values={"active_work": fresh})
         self.assertEqual(out.record["active_work"]["charged"], ["work_total"])
         self.assertEqual(out.record["budget"]["attempts_used"], rec["budget"]["attempts_used"])
@@ -87,7 +87,7 @@ class TestTheWaitRecordsWhatTheReArmNeeds(unittest.TestCase):
                          ["repair_attempts_cluster:build", "work_total"])
         self.assertEqual(event["details"]["pipeline_version"], "v" * 64)
 
-    def test_work_allocated_before_the_credit_was_recorded_records_none(self):
+    def test_task_allocated_before_the_credit_was_recorded_records_none(self):
         new, _event, _decision = self.lost({})
         self.assertNotIn("credit", new["pending_human_action"])
         self.assertNotIn("pipeline_version", new["pending_human_action"])

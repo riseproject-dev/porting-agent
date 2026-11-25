@@ -142,7 +142,7 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
     that a bound on what one tick records leaves out the oldest), and the
     number of the rest is recorded as ``deferred``: the caller passes the
     record back in ``known`` and calls again to record them
-    (``reconcile.work_histories``).
+    (``reconcile.task_histories``).
     On the upstream PR (``collect.edits_unverified``), a new version of a
     review of the command authority is recorded with ``authority`` false and
     ``edit_unverified`` true: GitHub does not say who edited it, and the

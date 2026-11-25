@@ -21,12 +21,12 @@ import lifecycle
 import pipeline_failure
 import queue_result
 import reconcile
-import work
+import tasks
 from tests.helpers import policy, take
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "live-d2vm-gateway"
 RECORD = json.loads((FIXTURE / "contribution.json").read_text())
-GRAPH = work.graph_id(RECORD["active_work"]["dedupe_key"])
+GRAPH = tasks.graph_id(RECORD["active_work"]["dedupe_key"])
 RETRY_AT = datetime(2026, 11, 24, 12, 54, 34, tzinfo=timezone.utc)
 # The code at the failed run, and the code after a push.
 V1, V2, V3 = "1" * 64, "2" * 64, "3" * 64
@@ -63,7 +63,7 @@ RUNS = [dispatcher(45396818686, "2026-11-24T12:46:30Z")]
 
 def recover(now, *, state="available", failures=None, pipeline=V1, manual=False, runs=None,
             record=None):
-    graph = work.graph_id((record or RECORD)["active_work"]["dedupe_key"])
+    graph = tasks.graph_id((record or RECORD)["active_work"]["dedupe_key"])
     return reconcile.dispatch_recovery(
         {"c": copy.deepcopy(record or RECORD)}, runs=RUNS if runs is None else runs,
         queue_works={graph: state}, now=at(now), policy=policy(),
@@ -92,7 +92,7 @@ class TestTheStall(unittest.TestCase):
         # The alert names when its first free relaunch is due.
         self.assertIn(FIRST.isoformat(), entry["alert"])
 
-    def test_another_contributions_dispatcher_run_does_not_charge_the_held_work(self):
+    def test_another_contributions_dispatcher_run_does_not_charge_the_held_task(self):
         # A dispatcher run for other tasks, created after the retry time and
         # ended: it neither relaunches this task nor is a lost dispatch of it.
         other = dispatcher(45398000000, "2026-11-24T12:56:00Z")
@@ -275,7 +275,7 @@ class TestTheStall(unittest.TestCase):
         # The fresh graph fails the same way: the count of the task carries
         # over, so the next backoff is the second (2 hours).
         again = dict(RECORD, **{k: new[k] for k in ("revision", "active_work", "budget")})
-        graph = work.graph_id(new["active_work"]["dedupe_key"])
+        graph = tasks.graph_id(new["active_work"]["dedupe_key"])
         later = {graph: dict(FAILED, ended_at="2026-11-24T15:00:00Z")}
         _r, staged, report = recover("2026-11-24T16:59:00+00:00", state="cancelled",
                                      failures=later, record=again)
@@ -380,7 +380,7 @@ class TestTheTick(unittest.TestCase):
 
 
 class TestTheRow(unittest.TestCase):
-    FACTS = {"work_terminal_without_result", "pipeline_failure", "pipeline_failure_cleared"}
+    FACTS = {"task_terminal_without_result", "pipeline_failure", "pipeline_failure_cleared"}
 
     def fresh(self):
         aw = dict(RECORD["active_work"], dedupe_key="luhenry--d2vm/3@g1.r7:development_repair",
@@ -402,7 +402,7 @@ class TestTheRow(unittest.TestCase):
 
     def test_it_needs_the_failure_and_that_it_was_cleared(self):
         for missing in ("pipeline_failure", "pipeline_failure_cleared",
-                        "work_terminal_without_result"):
+                        "task_terminal_without_result"):
             out = take(copy.deepcopy(RECORD), "reallocate_after_pipeline_failure",
                        policy=policy(), now=datetime(2026, 11, 24, 15, 0,
                                                      tzinfo=timezone.utc).isoformat(),
@@ -414,7 +414,7 @@ class TestTheRow(unittest.TestCase):
         spent = copy.deepcopy(RECORD)
         spent["active_work"]["attempt"] = lifecycle.budget_limit("work_recovery", policy())
         for verb, record in (("allocate_work_retry", RECORD), ("exhaust_recovery", spent)):
-            facts = {"work_terminal_without_result"}
+            facts = {"task_terminal_without_result"}
             values = self.fresh() if verb == "allocate_work_retry" else {}
             out = take(copy.deepcopy(record), verb, policy=policy(), now=now, cause_id="x",
                        facts=facts | {"pipeline_failure"}, values=values)
@@ -426,7 +426,7 @@ class TestTheRow(unittest.TestCase):
                        facts=facts, values=values)
             self.assertTrue(out.accepted, (verb, out.reason))
         charged = take(copy.deepcopy(RECORD), "allocate_work_retry", policy=policy(), now=now,
-                       cause_id="x", facts={"work_terminal_without_result"}, values=self.fresh())
+                       cause_id="x", facts={"task_terminal_without_result"}, values=self.fresh())
         self.assertEqual(charged.event["details"]["charged"], ["work_recovery", "work_total"])
 
     def test_the_pair_is_exclusive_in_the_table(self):

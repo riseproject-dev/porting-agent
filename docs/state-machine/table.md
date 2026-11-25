@@ -36,7 +36,7 @@ A requested task is identified by its generation, revision, and task id. A Resul
 | Kind | Meaning |
 |:-----|:--------|
 | `auto_wait` | Waits for an automatic trigger; the controller acts without a human. A guard that does not hold yet (a worker slot, capacity) keeps the contribution here; there is no separate capacity wait. |
-| `work` | A requested task or a trusted operation is in progress. |
+| `running` | A requested task or a trusted operation is in progress. |
 | `human_wait` | A recorded `pending_human_action` names what a human must do; `/upstreaming resume` continues. |
 | `gate` | Waits for a human command that starts the next step. |
 | `locked` | Write-fenced wait: only the listed exits leave it, and no task, patch, or branch write happens while here. |
@@ -51,25 +51,25 @@ A requested task is identified by its generation, revision, and task id. A Resul
 |:------|:-----|:---------|:------------|:------|:------------|
 | `queued.idle` | `auto_wait` | yes | no | 6 + 3 | An accepted request is recorded; planning has not started. |
 | `planning.idle` | `auto_wait` | yes | no | 7 + 3 | Planning is due; the controller allocates a planning task when a worker slot is free. |
-| `planning.agent_running` | `work` | no | no | 10 + 2 | A planning task is requested or running and will return a plan. |
+| `planning.agent_running` | `running` | no | no | 10 + 2 | A planning task is requested or running and will return a plan. |
 | `planning.waiting_human` | `human_wait` | no | no | 4 + 3 | Planning recovery or a budget is exhausted; a human corrects the cause and resumes. |
-| `provisioning.idle` | `work` | yes | yes | 7 + 4 | The fork provisioning operation is planned or running through the trusted workflow. |
+| `provisioning.idle` | `running` | yes | yes | 7 + 4 | The fork provisioning operation is planned or running through the trusted workflow. |
 | `provisioning.waiting_human` | `human_wait` | no | no | 3 + 4 | Provisioning cannot continue safely; a human corrects the prerequisite and resumes, or parks. While the planned operation of exhausted launches is open, `park` and a resume after `refresh.stale_after_days` days first need it closed with `/upstreaming resolve-operation`. |
-| `development.agent_running` | `work` | no | yes | 12 + 3 | A patch task is requested or running, or its Result is being verified. The worker implements the patch, reviews it in its own run with a review loop on the `subagent` tool of `pi-subagents` (at most 3 rounds of fresh reviewers), and publishes it there; a Result whose loop ended with a P0 finding open is rejected and publishes nothing. |
+| `development.agent_running` | `running` | no | yes | 12 + 3 | A patch task is requested or running, or its Result is being verified. The worker implements the patch, reviews it in its own run with a review loop on the `subagent` tool of `pi-subagents` (at most 3 rounds of fresh reviewers), and publishes it there; a Result whose loop ended with a P0 finding open is rejected and publishes nothing. |
 | `development.waiting_ci` | `auto_wait` | no | yes | 13 + 3 | A patch is published to the development PR; CI and review evaluate the exact head. Passing CI nominates the head, or returns to `development.fix_needed` while actionable feedback is pending or a series requirement of the plan is unmet; passing CI behind an open operation keeps the contribution here. The controller opens the development PR of the published head through a trusted operation. |
 | `development.fix_needed` | `auto_wait` | yes | yes | 15 + 4 | A development task is due: the fork is ready for a first patch, or a CI failure, actionable review, passing CI with feedback still pending, rejected proposal, refreshed plan, or a resume needs a bounded repair. It is the only state in which a patch task is requested, so none is requested before `confirm_provisioning`. |
 | `development.waiting_human` | `human_wait` | no | no | 6 + 4 | Development recovery, or the recovery of a publication, or `work_total` is exhausted, the development PR does not match, CI on the head was interrupted repeatedly, or the development PR operation could not be completed; a human corrects the cause and resumes. |
 | `handoff.awaiting_submission` | `gate` | no | no | 6 + 3 | Required CI passed on the exact head; a human may request upstream submission. |
 | `handoff.review_due` | `auto_wait` | yes | no | 6 + 3 | The submission rewrite is due; the controller allocates a rewrite task when a worker slot is free. |
-| `handoff.agent_running` | `work` | no | no | 6 + 2 | A submission rewrite task is requested or running; its Result is the rewritten series, title, and description, or the reasons the series cannot be shaped without a code change. |
-| `handoff.building_upstream_branch` | `work` | no | yes | 6 + 2 | The upstream branch `riscv64` is created, or replaced under an exact-head lease, from the reviewed series, and read back. It is never written while an upstream PR is open from it, and `riscv64-dev` is not changed. |
+| `handoff.agent_running` | `running` | no | no | 6 + 2 | A submission rewrite task is requested or running; its Result is the rewritten series, title, and description, or the reasons the series cannot be shaped without a code change. |
+| `handoff.building_upstream_branch` | `running` | no | yes | 6 + 2 | The upstream branch `riscv64` is created, or replaced under an exact-head lease, from the reviewed series, and read back. It is never written while an upstream PR is open from it, and `riscv64-dev` is not changed. |
 | `handoff.waiting_ci` | `auto_wait` | no | no | 5 + 2 | Required CI runs on the clean head of `riscv64`. |
-| `handoff.preparing_submission` | `work` | no | no | 4 + 2 | The submission package (title, body, prefilled compare link) is posted to the tracking issue. It is posted only while `riscv64` still resolves to the clean head. |
+| `handoff.preparing_submission` | `running` | no | no | 4 + 2 | The submission package (title, body, prefilled compare link) is posted to the tracking issue. It is posted only while `riscv64` still resolves to the clean head. |
 | `handoff.waiting_human` | `human_wait` | no | no | 7 + 3 | A handoff step failed repeatedly or needs a human: the submission rewrite task, writing `riscv64` (also while an upstream PR is open from it), CI on the clean head, or posting the submission package. A human corrects it and resumes; the resume returns to the step named by `pending_human_action` and starts again the counter named in `pending_human_action.counter`. |
 | `handoff.waiting_upstream_pr` | `locked` | no | no | 4 + 2 | Waiting for a human to open the upstream PR from the package. Exactly three exits leave it: `verify_upstream_pr`, `retract_submission`, and `refresh_planning`. |
 | `upstream_review.waiting_ci` | `auto_wait` | no | no | 7 + 1 | The upstream PR is open; upstream CI, review, and merge are observed. Upstream CI is never rerun by the pipeline. |
 | `upstream_review.fix_needed` | `auto_wait` | yes | yes | 8 + 2 | Upstream CI or actionable review needs a revision of the upstream PR head. |
-| `upstream_review.agent_running` | `work` | no | yes | 8 + 1 | A revision task for the upstream PR head is requested or running, or its verified Result is being published. |
+| `upstream_review.agent_running` | `running` | no | yes | 8 + 1 | A revision task for the upstream PR head is requested or running, or its verified Result is being published. |
 | `upstream_review.waiting_human` | `human_wait` | no | no | 6 + 3 | The upstream PR was closed unmerged, its head changed, a reviewer needs an answer, or recovery or a budget is exhausted; a human triages. |
 | `release_wait.idle` | `auto_wait` | no | no | 3 + 1 | The upstream PR is merged; official release coverage is observed. |
 | `release_wait.waiting_human` | `human_wait` | no | no | 1 + 2 | Release evidence needs operator action. |
@@ -87,8 +87,8 @@ Every record in a state satisfies the invariants the state requires. `lifecycle 
 | `plan` | a verified plan and its admitted scope are recorded | - | the stop after a processing error |
 | `fork` | the fork is recorded | refresh recorded | the stop after a processing error |
 | `dev_pr` | a development PR and its head are recorded | development PR and head recorded | `launch_development_pr`, `confirm_development_pr`, `record_pr_mismatch` |
-| `work` | A task is requested | - | the stop after a processing error |
-| `work_or_publication` | A task is requested, or the publication of its Result is held | - | the stop after a processing error |
+| `task` | A task is requested | - | the stop after a processing error |
+| `task_or_publication` | A task is requested, or the publication of its Result is held | - | the stop after a processing error |
 | `pending` | a pending human action is recorded | - | the stop after a processing error |
 | `no_pending` | no pending human action is recorded | - | the stop after a processing error |
 | `candidate` | the candidate head of the submission is the recorded fork head | - | the stop after a processing error |
@@ -101,17 +101,17 @@ Every record in a state satisfies the invariants the state requires. `lifecycle 
 |:------|:---------|
 | `queued.idle` | `no_pending` |
 | `planning.idle` | `no_pending` |
-| `planning.agent_running` | `bound`, `work`, `no_pending`, `not_paused` |
+| `planning.agent_running` | `bound`, `task`, `no_pending`, `not_paused` |
 | `planning.waiting_human` | `pending` |
 | `provisioning.idle` | `plan`, `no_pending` |
 | `provisioning.waiting_human` | `plan`, `pending` |
-| `development.agent_running` | `bound`, `plan`, `fork`, `work_or_publication`, `no_pending`, `not_paused` |
+| `development.agent_running` | `bound`, `plan`, `fork`, `task_or_publication`, `no_pending`, `not_paused` |
 | `development.waiting_ci` | `bound`, `plan`, `fork`, `dev_pr`, `no_pending` |
 | `development.fix_needed` | `bound`, `plan`, `fork`, `no_pending` |
 | `development.waiting_human` | `bound`, `plan`, `fork`, `pending` |
 | `handoff.awaiting_submission` | `bound`, `plan`, `fork`, `dev_pr`, `candidate`, `pending` |
 | `handoff.review_due` | `bound`, `plan`, `fork`, `dev_pr`, `no_pending` |
-| `handoff.agent_running` | `bound`, `plan`, `fork`, `dev_pr`, `work`, `no_pending`, `not_paused` |
+| `handoff.agent_running` | `bound`, `plan`, `fork`, `dev_pr`, `task`, `no_pending`, `not_paused` |
 | `handoff.building_upstream_branch` | `bound`, `plan`, `fork`, `dev_pr`, `no_pending` |
 | `handoff.waiting_ci` | `bound`, `plan`, `fork`, `dev_pr`, `no_pending` |
 | `handoff.preparing_submission` | `bound`, `plan`, `fork`, `dev_pr`, `no_pending` |
@@ -119,7 +119,7 @@ Every record in a state satisfies the invariants the state requires. `lifecycle 
 | `handoff.waiting_upstream_pr` | `bound`, `plan`, `fork`, `dev_pr`, `pending` |
 | `upstream_review.waiting_ci` | `bound`, `plan`, `fork`, `upstream_pr`, `no_pending` |
 | `upstream_review.fix_needed` | `bound`, `plan`, `fork`, `upstream_pr`, `no_pending` |
-| `upstream_review.agent_running` | `bound`, `plan`, `fork`, `upstream_pr`, `work_or_publication`, `no_pending`, `not_paused` |
+| `upstream_review.agent_running` | `bound`, `plan`, `fork`, `upstream_pr`, `task_or_publication`, `no_pending`, `not_paused` |
 | `upstream_review.waiting_human` | `bound`, `plan`, `fork`, `upstream_pr`, `pending` |
 | `release_wait.idle` | `merge`, `no_pending` |
 | `release_wait.waiting_human` | `merge`, `pending` |

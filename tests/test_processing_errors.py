@@ -252,15 +252,15 @@ class TestOneContributionErrors(unittest.TestCase):
     def test_dispatch_recovery(self):
         a = contribution(activity="agent_running", active_work=dict(WORK))
         b = other_waiting()
-        import work
-        real = work.graph_id
+        import tasks
+        real = tasks.graph_id
 
         def graph_id(key):
             if key == WORK["dedupe_key"]:
                 raise Boom("injected failure")
             return real(key)
         baseline = tick([a, b])
-        output = tick([a, b], patches=[("work.graph_id", graph_id)])
+        output = tick([a, b], patches=[("tasks.graph_id", graph_id)])
         self.assert_isolated(output, a, baseline, "dispatch_recovery")
         self.assertEqual(output.report["dispatch_relaunch"], [])
         # The pause from `development.agent_running` leads to the state in
@@ -287,7 +287,7 @@ class TestOneContributionErrors(unittest.TestCase):
             ("observe_ci._stage", lambda obs, out: real_stage(out.record, obs, out))])
         self.assert_isolated(output, a, baseline, "observation")
 
-    def test_work_selection(self):
+    def test_task_selection(self):
         a = contribution(activity="fix_needed", plan_evidence_id="plan-1",
                          scope_paths=["a"], scope_coverage_complete=True)
         b = other_waiting()
@@ -295,7 +295,7 @@ class TestOneContributionErrors(unittest.TestCase):
         self.assertEqual([e["contribution_id"] for e in baseline.report["requested_effects"]], [A])
         output = tick([a, b], patches=[
             ("controller._actionable", only_for(A, REAL["_actionable"]))])
-        self.assert_isolated(output, a, baseline, "work_selection")
+        self.assert_isolated(output, a, baseline, "task_selection")
         self.assertEqual(output.report["requested_effects"], [])
 
     def test_ci_evidence_missing_from_the_store(self):
@@ -315,7 +315,7 @@ class TestOneContributionErrors(unittest.TestCase):
         self.assertEqual(kinds(output, A), [VERB])
         self.assertEqual([(e["contribution"], e["step"], e["error_class"])
                           for e in output.report["processing_errors"]],
-                         [(A, "work_selection", "MissingEvidence")])
+                         [(A, "task_selection", "MissingEvidence")])
         self.assertEqual(output.report["requested_effects"], [])
 
     def test_a_gate_does_not_read_its_ci_evidence(self):
@@ -1014,7 +1014,7 @@ class TestReconcileCommand(unittest.TestCase):
         # The run succeeds, and the error is on the workflow run as an
         # annotation.
         self.assertEqual(self.stdout.getvalue().splitlines(), [
-            "::error::processing error for example--proj/12 in work_selection: Boom: "
+            "::error::processing error for example--proj/12 in task_selection: Boom: "
             "injected failure; paused by the controller"])
         # The next tick, with the error still there, writes nothing for it.
         result, report, _stderr = self.run_reconcile([

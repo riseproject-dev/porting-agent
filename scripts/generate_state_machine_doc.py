@@ -160,8 +160,8 @@ def effects_text(e: lc.Effects) -> str:
         parts.append("revision +1")
     if e.generation == "bump":
         parts.append("generation +1")
-    if e.work != "keep":
-        parts.append(f"Task: {e.work}")
+    if e.task != "keep":
+        parts.append(f"Task: {e.task}")
     if e.sets:
         parts.append(f"sets {code(e.sets)}")
     if e.clears:
@@ -320,8 +320,8 @@ def render_table(policy: dict) -> str:
         f"and {len(lc.BUDGETS)} retry budgets, plus the operation table with "
         f"{len(lc.OPERATIONS)} states and {operation_rows} transitions. A contribution starts in "
         f"`{lc.INITIAL_STATE}` (`{lc.INITIAL_VERB}`).", "",
-        "A requested task is identified by its " + ", ".join(lc.WORK_IDENTITY[:-1])
-        + f", and {lc.WORK_IDENTITY[-1]}. A Result that differs in any of them is never folded "
+        "A requested task is identified by its " + ", ".join(lc.TASK_IDENTITY[:-1])
+        + f", and {lc.TASK_IDENTITY[-1]}. A Result that differs in any of them is never folded "
         "and never published.", "",
     ]
     lines += toc()

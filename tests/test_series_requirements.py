@@ -20,7 +20,7 @@ import engine
 import lifecycle
 import schemas
 import status_ledger
-import work
+import tasks
 import worker_gate
 from tests import helpers, test_plan_gate
 from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, policy, take
@@ -82,7 +82,7 @@ def observed(rec, gh, plan, **kw):
 
 
 class TestObservation(unittest.TestCase):
-    def test_an_unmet_requirement_returns_the_series_as_development_work(self):
+    def test_an_unmet_requirement_returns_the_series_as_development_task(self):
         gh = FakeGitHub([commit(SHA_B, "Build riscv64 wheels")], ["setup.py"])
         rec = record()
         out = observed(rec, gh, plan_evidence(CHANGELOG, NEWS))
@@ -254,12 +254,12 @@ class TestWorkPayload(unittest.TestCase):
         rec = record(pending_feedback_evidence_ids=["series-requirements-2-x"])
         rec["active_work"] = {"feedback_evidence_ids": ["series-requirements-2-x"]}
         store = {"series-requirements-2-x": self.evidence()}
-        self.assertEqual(work.series_requirements_context(rec, store),
+        self.assertEqual(tasks.series_requirements_context(rec, store),
                          [{"id": "changelog", "paths": ["CHANGELOG.md"]}])
-        self.assertIsNone(work.series_requirements_context(
+        self.assertIsNone(tasks.series_requirements_context(
             rec, {"series-requirements-2-x": self.evidence(head=SHA_B)}))
-        self.assertIsNone(work.series_requirements_context(dict(rec, active_work={}), store))
-        item = work._reason_item(self.evidence())
+        self.assertIsNone(tasks.series_requirements_context(dict(rec, active_work={}), store))
+        item = tasks._reason_item(self.evidence())
         self.assertEqual(item["data"], {"head": SHA_A,
                                         "unmet": [{"id": "changelog", "paths": ["CHANGELOG.md"]}]})
 

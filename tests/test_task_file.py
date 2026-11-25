@@ -15,10 +15,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import task_build
 import task_file
-import work
-import work_history
-import work_task
+import task_history
+import tasks
 from tests import live_d2vm as live
 from tests.helpers import policy
 
@@ -32,15 +32,15 @@ class Fixture:
 
     def __init__(self, control_repo_id="1234567890"):
         self.record, self.evidence = live.fresh()
-        self.request = work.request_from_active(self.record)
-        digest = work_task.file_digest_reader(None, self.evidence)
-        self.task = work_task.build(self.record, self.evidence, policy=POLICY,
+        self.request = tasks.request_from_active(self.record)
+        digest = task_build.file_digest_reader(None, self.evidence)
+        self.task = task_build.build(self.record, self.evidence, policy=POLICY,
                                     now="2026-11-24T17:00:00+00:00", file_digest=digest)
-        self.raw = work_task.file_bytes(self.task)
-        self.path = work_task.path(self.task["evidence_id"])
+        self.raw = task_build.file_bytes(self.task)
+        self.path = task_build.path(self.task["evidence_id"])
         self.files = {(task_file.CONTROL_REPO, COMMIT, self.path): self.raw}
         reference = task_file.reference(live.WORK, COMMIT, hashlib.sha256(self.raw).hexdigest())
-        self.claim = work.queue_payload(self.request, control_repo_id=control_repo_id,
+        self.claim = tasks.queue_payload(self.request, control_repo_id=control_repo_id,
                                         reference=reference)
 
     def fetch(self, repository, ref, path):
@@ -57,9 +57,9 @@ class TestResolve(unittest.TestCase):
     def setUp(self):
         self.f = Fixture()
 
-    def test_the_resolved_work_is_the_payload_of_old(self):
+    def test_the_resolved_task_is_the_payload_of_old(self):
         resolved = self.f.resolve()
-        inline = work.payload(self.f.request, self.f.record, control_repo_id="1234567890",
+        inline = tasks.payload(self.f.request, self.f.record, control_repo_id="1234567890",
                               allowed_paths=resolved["allowed_paths"],
                               context=self._context(resolved))
         resolved.pop("task_file")
@@ -86,13 +86,13 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(resolved["resource_scope"], self.f.claim["resource_scope"])
         self.assertEqual(resolved["effect_contract"], self.f.claim["effect_contract"])
 
-    def test_the_resolved_work_names_its_identity_as_the_claim_does(self):
+    def test_the_resolved_task_names_its_identity_as_the_claim_does(self):
         resolved = self.f.resolve()
-        self.assertEqual(work.task_identity(resolved), (1, live.WORK))
-        self.assertEqual(work.task_identity(self.f.claim), (1, live.WORK))
+        self.assertEqual(tasks.task_identity(resolved), (1, live.WORK))
+        self.assertEqual(tasks.task_identity(self.f.claim), (1, live.WORK))
 
     def test_a_task_carried_inline_is_accepted_unchanged(self):
-        inline = work.payload(self.f.request, self.f.record, control_repo_id="7",
+        inline = tasks.payload(self.f.request, self.f.record, control_repo_id="7",
                               allowed_paths=["a"], context={})
         self.assertIs(task_file.resolve(inline, self.refuse), inline)
 
@@ -132,7 +132,7 @@ class TestResolve(unittest.TestCase):
         claim["task_file"] = "x"
         self.refused(claim, "malformed")
 
-    def test_an_id_not_derived_from_the_work_id_is_refused(self):
+    def test_an_id_not_derived_from_the_task_id_is_refused(self):
         other = "task-" + "0" * 32
         claim = self.mutate(evidence_id=other, path=f".state/evidence/{other}.json")
         self.refused(claim, "not derived from the task id")
@@ -252,7 +252,7 @@ class TestBounds(unittest.TestCase):
         fixture = Fixture()
         size = len(json.dumps(fixture.claim, separators=(",", ":"), ensure_ascii=False).encode())
         self.assertLess(size, 1024)
-        self.assertLessEqual(size, work.MAX_QUEUE_PAYLOAD_BYTES)
+        self.assertLessEqual(size, tasks.MAX_QUEUE_PAYLOAD_BYTES)
 
     def test_the_largest_queue_payload_fits_the_bound(self):
         """Every field of the payload at the longest the schemas admit: the
@@ -263,21 +263,21 @@ class TestBounds(unittest.TestCase):
                    "revision": 10**9, "dedupe_key": "x" * 300}
         reference = task_file.reference(request["dedupe_key"], COMMIT, "f" * 64)
         sizes = []
-        for task in ("planning", *sorted(work.WRITE_TASKS), *work.SUBMISSION_TASKS):
-            payload = work.queue_payload(dict(request, task=task),
-                                         control_repo_id="9" * work.CONTROL_REPO_ID_MAX_DIGITS,
+        for task in ("planning", *sorted(tasks.WRITE_TASKS), *tasks.SUBMISSION_TASKS):
+            payload = tasks.queue_payload(dict(request, task=task),
+                                         control_repo_id="9" * tasks.CONTROL_REPO_ID_MAX_DIGITS,
                                          reference=reference)
             sizes.append(len(json.dumps(payload, separators=(",", ":"),
                                         ensure_ascii=False).encode()))
-        self.assertLessEqual(max(sizes), work.MAX_QUEUE_PAYLOAD_BYTES)
+        self.assertLessEqual(max(sizes), tasks.MAX_QUEUE_PAYLOAD_BYTES)
         # The bound has a margin below the queue's own limit (16384).
-        self.assertLess(work.MAX_QUEUE_PAYLOAD_BYTES, 16384 // 4)
+        self.assertLess(tasks.MAX_QUEUE_PAYLOAD_BYTES, 16384 // 4)
 
-    def test_the_history_of_the_work_is_named_by_the_task_not_the_payload(self):
+    def test_the_history_of_the_task_is_named_by_the_task_not_the_payload(self):
         fixture = Fixture()
         self.assertNotIn("history", json.dumps(fixture.claim))
         self.assertEqual(fixture.resolve()["context"]["history"]["evidence_id"],
-                         work_history.evidence_id(live.WORK))
+                         task_history.evidence_id(live.WORK))
 
 
 class TestQueueResult(unittest.TestCase):

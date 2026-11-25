@@ -2442,7 +2442,7 @@ flowchart TB
 
 What a record whose `last_ci_evidence_id` names evidence missing from the store does.
 
-**Change.** Evidence is never removed from the store. A record in a state where a task is allocated or its exhaustion decided, whose `last_ci_evidence_id` names missing evidence, is never deferred silently and never read as "no failing job": `controller.MissingEvidence` in step `work_selection` takes `pause_on_processing_error`, with the missing id in `paused_reason`. States that allocate no task (gates and waits, such as `handoff.awaiting_submission`) do not read it.
+**Change.** Evidence is never removed from the store. A record in a state where a task is allocated or its exhaustion decided, whose `last_ci_evidence_id` names missing evidence, is never deferred silently and never read as "no failing job": `controller.MissingEvidence` in step `task_selection` takes `pause_on_processing_error`, with the missing id in `paused_reason`. States that allocate no task (gates and waits, such as `handoff.awaiting_submission`) do not read it.
 
 ```mermaid
 flowchart TB
@@ -2547,7 +2547,7 @@ flowchart TB
 
 Which Results are late although the record holds a task, and which phase folds the Result of a held publication?
 
-**Change.** Each phase requests its own task only (`reconcile.WORK_PHASE`): a planning task in `planning`, a patch task in `development`, a revision task in `upstream_review`, and the submission rewrite and review in `handoff`. A Result of a task the record holds whose task belongs to another phase takes `record_late_effect`, and so do a plan outside `planning`, any other Result in `planning`, a submission Result outside `handoff`, a review of a held patch outside `development.reviewing`, and the Result of a held publication outside `development` and `upstream_review`. The event names why (`late Result: <task> a task is not requested in the <phase> phase`, and so on). This completes decision 2.
+**Change.** Each phase requests its own task only (`reconcile.TASK_PHASE`): a planning task in `planning`, a patch task in `development`, a revision task in `upstream_review`, and the submission rewrite and review in `handoff`. A Result of a task the record holds whose task belongs to another phase takes `record_late_effect`, and so do a plan outside `planning`, any other Result in `planning`, a submission Result outside `handoff`, a review of a held patch outside `development.reviewing`, and the Result of a held publication outside `development` and `upstream_review`. The event names why (`late Result: <task> a task is not requested in the <phase> phase`, and so on). This completes decision 2.
 
 ```mermaid
 flowchart TB

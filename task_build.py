@@ -10,9 +10,9 @@ only a fixed-size reference to it (``task_file``: the control repository,
 the pinned commit, the path, the SHA-256 and the evidence id), so the size of
 a task never meets a limit of the queue. Every reader resolves the reference
 with ``task_file`` (standard library only) and gets the payload shape that
-``work.payload`` builds.
+``tasks.payload`` builds.
 
-The file holds ``work.task_data`` of the request. The plan, the report and
+The file holds ``tasks.task_data`` of the request. The plan, the report and
 the history it names are references (path, SHA-256, evidence id) without the
 commit, which a file cannot name: the reader takes it from the reference
 that names the task file, and evidence is never removed, so that commit
@@ -30,8 +30,8 @@ from typing import Callable
 
 import schemas
 import task_file
-import work
-import work_history
+import task_history
+import tasks
 import worker_report
 from common import STATE_ROOT, canonical_json, safe_id
 
@@ -93,7 +93,7 @@ def _reference(eid: str, digest: Callable[[str], str]) -> dict:
 
 def _condense(item: dict) -> dict:
     reduced = {"evidence_id": item.get("evidence_id"), "kind": item.get("kind"),
-               "summary": work._short(item.get("summary") or "", CONDENSED_SUMMARY),
+               "summary": tasks._short(item.get("summary") or "", CONDENSED_SUMMARY),
                "evidence_path": path(str(item.get("evidence_id"))), "condensed": True}
     if item.get("reference") is not None:
         # The plan is committed evidence the pre-agent step fetches by this
@@ -108,10 +108,10 @@ def _shrink_relay(item: dict) -> dict:
     item = dict(item)
     data = dict(item.get("data") or {})
     for key in ("reviews", "comments", "conversation_comments"):
-        data[key] = [dict(i, body=work._short(i.get("body") or "", 200))
+        data[key] = [dict(i, body=tasks._short(i.get("body") or "", 200))
                      for i in data.get(key) or []]
     item["data"] = data
-    item["summary"] = work._short(item.get("summary") or "", CONDENSED_SUMMARY)
+    item["summary"] = tasks._short(item.get("summary") or "", CONDENSED_SUMMARY)
     return item
 
 
@@ -158,25 +158,25 @@ def condensed(data: dict, limit: int = TASK_FILE_MAX_BYTES) -> dict:
 
 def build_data(record: dict, evidence: dict[str, dict], *,
                file_digest: Callable[[str], str]) -> dict:
-    """The task of the task the record requests (``active_work``), from the
+    """The content of the task the record requests (``active_work``), from the
     committed ``evidence`` and the record: the content of its task file.
     Raises ``TaskFileError`` when it cannot be built."""
-    request = work.request_from_active(record)
+    request = tasks.request_from_active(record)
     if request is None:
         raise TaskFileError("the record requests no task to dispatch")
     if not record["upstream"].get("repository_id") or not record["upstream"].get("base_sha"):
         raise TaskFileError("the upstream identity or base is not bound")
     if not (record["active_work"].get("tracking_issue") or {}).get("url"):
         raise TaskFileError("the task carries no frozen tracking-issue description")
-    history_id = work_history.evidence_id(request["dedupe_key"])
+    history_id = task_history.evidence_id(request["dedupe_key"])
     if history_id not in evidence:
         raise TaskFileError("the history of the task is not recorded")
     try:
-        allowed_paths, context = work.payload_inputs(
+        allowed_paths, context = tasks.payload_inputs(
             request, record, evidence,
             plan_reference=lambda eid: _reference(eid, file_digest))
         context["history"] = dict(_reference(history_id, file_digest), evidence_id=history_id)
-        data = work.task_data(request, record, allowed_paths=allowed_paths, context=context)
+        data = tasks.task_data(request, record, allowed_paths=allowed_paths, context=context)
     except (KeyError, TypeError, ValueError) as error:
         raise TaskFileError(str(error)[:300]) from error
     data = condensed(data)
@@ -210,17 +210,17 @@ def build(record: dict, evidence: dict[str, dict], *, policy: dict, now: str,
 
 
 def dry_run(record: dict, evidence: dict[str, dict]) -> str | None:
-    """Why the task of the task ``record`` requests cannot be built or queued,
+    """Why the content of the task ``record`` requests cannot be built or queued,
     or ``None`` when it can: the controller asks before it allocates the task,
     with the history it would record in the same commit (the history is
     bounded, so it stands in for itself), and the dispatch recovery asks for
     a task that was allocated without. The digests are those of a task built
     later, and have the same size, and the queue payload is measured with the
     longest control repository id."""
-    request = work.request_from_active(record)
+    request = tasks.request_from_active(record)
     if request is None:
         return None
-    history_id = work_history.evidence_id(request["dedupe_key"])
+    history_id = task_history.evidence_id(request["dedupe_key"])
     if history_id not in evidence:
         evidence = dict(evidence, **{history_id: {"evidence_id": history_id}})
     try:
@@ -231,12 +231,12 @@ def dry_run(record: dict, evidence: dict[str, dict]) -> str | None:
                  "summary": "x", "data": data, "digests": {"task_id": "0" * 64}}
         if len(canonical_json(probe).encode()) > TASK_FILE_MAX_BYTES + 4096:
             return "the task file is over its size bound"
-        queued = work.queue_payload(
-            request, control_repo_id="9" * work.CONTROL_REPO_ID_MAX_DIGITS,
+        queued = tasks.queue_payload(
+            request, control_repo_id="9" * tasks.CONTROL_REPO_ID_MAX_DIGITS,
             reference=task_file.reference(request["dedupe_key"], "0" * 40, "0" * 64))
         size = len(json.dumps(queued, separators=(",", ":"), ensure_ascii=False).encode())
-        if size > work.MAX_QUEUE_PAYLOAD_BYTES:
-            return f"the queue payload takes {size} bytes, over {work.MAX_QUEUE_PAYLOAD_BYTES}"
+        if size > tasks.MAX_QUEUE_PAYLOAD_BYTES:
+            return f"the queue payload takes {size} bytes, over {tasks.MAX_QUEUE_PAYLOAD_BYTES}"
     except TaskFileError as error:
         return str(error)
     return None

@@ -213,12 +213,12 @@ class TestWorkflowContracts(unittest.TestCase):
         for word in ("Go:", "Rust:", "C and C++:", "Java:", "JavaScript:"):
             self.assertIn(word, planner)
 
-    def test_work_instructions_name_no_wheel(self):
-        import work
+    def test_task_instructions_name_no_wheel(self):
+        import tasks
         for task in ("planning", "development_patch"):
             with self.subTest(task=task):
-                self.assertNotIn("wheel", work._INSTRUCTIONS[task])
-                self.assertIn("release", work._INSTRUCTIONS[task])
+                self.assertNotIn("wheel", tasks._INSTRUCTIONS[task])
+                self.assertIn("release", tasks._INSTRUCTIONS[task])
 
     def test_worker_forbids_unrelated_fork_ci_debug_changes(self):
         worker = source("worker")
@@ -1386,13 +1386,13 @@ class TestWorkerRunBound(unittest.TestCase):
                 ]
                 self.assertEqual(errors, [])
 
-    def test_the_work_deadline_covers_every_queue_attempt(self):
+    def test_the_task_deadline_covers_every_queue_attempt(self):
         import controller
         import queue_policy
 
         job = int(workflow("worker.lock.yml")["jobs"]["agent"]["timeout-minutes"])
         attempts = queue_policy.load_compiled()["pools"]["default"]["retry"]["max_attempts"]
-        self.assertGreaterEqual(controller.WORK_DEADLINE_HOURS * 60, attempts * job)
+        self.assertGreaterEqual(controller.TASK_DEADLINE_HOURS * 60, attempts * job)
 
 
 def _longest_chain(jobs: dict) -> int:

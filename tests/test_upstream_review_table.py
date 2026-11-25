@@ -51,7 +51,7 @@ INQUIRY = dict(REVIEW, review_ids=[], reviews=[], inquiry_comment_ids=[88],
                                   "url": "https://github.com/example/proj/pull/9#c88"}])
 MERGE = {"merge_sha": "e" * 40, "merged_at": "2026-11-20T09:00:00+00:00", "target_ref": "main",
          "evidence_id": "merge-1"}
-REVISION_WORK = dict(WORK, task="upstream_revision", dedupe_key="example--proj/12@0:upstream_revision")
+REVISION_TASK = dict(WORK, task="upstream_revision", dedupe_key="example--proj/12@0:upstream_revision")
 
 
 def record(activity="waiting_ci", **fields):
@@ -349,7 +349,7 @@ class TestObservation(unittest.TestCase):
     def test_states_without_an_observation_row_are_not_read(self):
         pending = {"kind": "answer_reviewer", "requested_at": NOW, "reminded_at": None,
                    "escalated_at": None, "counter": None}
-        for rec in (record("fix_needed"), record("agent_running", active_work=dict(REVISION_WORK)),
+        for rec in (record("fix_needed"), record("agent_running", active_work=dict(REVISION_TASK)),
                     record("waiting_human", pending_human_action=pending)):
             with self.subTest(state=engine.state_key(rec)):
                 out = tick(rec, pr=pull(merged=True, state="closed"), verdict="failed",
@@ -429,7 +429,7 @@ class TestRevisionResults(unittest.TestCase):
     """Every Result of a revision task takes a row of `upstream_review.agent_running`."""
 
     def running(self, **fields):
-        fields.setdefault("active_work", dict(REVISION_WORK,
+        fields.setdefault("active_work", dict(REVISION_TASK,
                                               feedback_evidence_ids=["review-old"]))
         return record("agent_running", pending_feedback_evidence_ids=["review-old", "review-new"],
                       **fields)
@@ -470,7 +470,7 @@ class TestRevisionResults(unittest.TestCase):
     def test_no_change_of_a_ci_revision_asks_a_human(self):
         rec = record("agent_running", last_ci_evidence_id="ci-2-777-1",
                      pending_feedback_evidence_ids=[],
-                     active_work=dict(REVISION_WORK, feedback_evidence_ids=[]))
+                     active_work=dict(REVISION_TASK, feedback_evidence_ids=[]))
         out = tick(rec, [publication(rec, "no_change")])
         self.assertEqual(kinds(out)[0], "require_reviewer_answer")
         waiting = final(out, rec)
@@ -511,7 +511,7 @@ class TestRevisionResults(unittest.TestCase):
         self.assertEqual(kinds(out), ["record_head_change"])
         self.assertEqual(engine.state_key(final(out, after)), "upstream_review.waiting_human")
 
-    def test_the_next_revision_work_has_a_fresh_id(self):
+    def test_the_next_revision_task_has_a_fresh_id(self):
         rec = self.running()
         after = final(tick(rec, [published(rec, SHA_B)], pr=pull(head=SHA_B), branch=SHA_B), rec)
         failed = tick(after, pr=pull(head=SHA_B), branch=SHA_B, verdict="failed")
@@ -613,7 +613,7 @@ class TestRevisionResults(unittest.TestCase):
         self.assertEqual([r["contribution_id"] for r in out.report["publication_retries"]],
                          [rec["contribution_id"]])
 
-    def test_the_answer_to_the_reviewer_is_resumed_without_work(self):
+    def test_the_answer_to_the_reviewer_is_resumed_without_task(self):
         rec = final(tick(self.running(), [publication(self.running(), "no_change")]),
                     self.running())
         out = apply_command(rec, commands.parse(
@@ -653,7 +653,7 @@ class TestRevisionResults(unittest.TestCase):
         self.assertEqual(kinds(again), [])
         self.assertEqual(engine.state_key(final(again, after)), "upstream_review.waiting_ci")
 
-    def test_a_resume_that_requests_work_again_keeps_the_feedback(self):
+    def test_a_resume_that_requests_task_again_keeps_the_feedback(self):
         rec = self.waiting("work_failed")
         out = self.resumed(rec)
         self.assertEqual(kinds(out), ["resume_upstream_revision"])
@@ -774,7 +774,7 @@ class TestRevisionWork(unittest.TestCase):
         self.assertTrue(apply_command(waiting, park).accepted)
         # Ticks over every observation and Result never park.
         for rec in (record(), record("fix_needed"), record("agent_running",
-                                                           active_work=dict(REVISION_WORK))):
+                                                           active_work=dict(REVISION_TASK))):
             for kwargs in (dict(verdict="failed"), dict(pr=pull(state="closed")),
                            dict(feedback=REVIEW), dict(pr=pull(head=SHA_B), branch=SHA_B)):
                 pubs = [publication(rec, "rejected_validation")] if rec["active_work"] else []
