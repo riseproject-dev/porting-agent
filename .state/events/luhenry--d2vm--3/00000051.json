@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-25T09:23:52.345295+00:00",
+  "cause": {
+    "id": "task-rename",
+    "type": "migration"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "evidence": [],
+    "from_state": "development.agent_running",
+    "projects": [],
+    "renamed": [
+      "active_work",
+      "active_work.charged=work_total"
+    ],
+    "to_state": "development.agent_running"
+  },
+  "from": {},
+  "kind": "record_names_migrated",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45584861402
+  },
+  "schema_version": 1,
+  "sequence": 51,
+  "to": {}
+}
