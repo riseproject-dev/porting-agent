@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-25T09:45:40.006993+00:00",
+  "cause": {
+    "id": "45577808226",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "development.agent_running",
+    "report_evidence_id": "report-luhenry--d2vm--3-r13-45577808226",
+    "result_status": "published",
+    "to_state": "development.waiting_ci",
+    "verb": "record_publish_success"
+  },
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "record_publish_success",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45588311087
+  },
+  "schema_version": 1,
+  "sequence": 52,
+  "to": {
+    "activity": "waiting_ci"
+  }
+}

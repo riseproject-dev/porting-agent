@@ -1,33 +1,7 @@
 {
   "active_operation_id": null,
-  "active_task": {
-    "attempt": 1,
-    "charged": [
-      "task_total"
-    ],
-    "deadline_at": "2026-11-26T02:12:05.151480+00:00",
-    "dedupe_key": "luhenry--d2vm/3@g1.r13:development_repair",
-    "dispatched_run_id": null,
-    "feedback_evidence_ids": [
-      "review-1469259163-1-4680121101"
-    ],
-    "generation": 1,
-    "reason_ids": [
-      "review-1469259163-1-4680121101",
-      "plan-luhenry--d2vm--3-r9"
-    ],
-    "requested_at": "2026-11-25T08:12:05.151480+00:00",
-    "revision": 13,
-    "task": "development_repair",
-    "tracking_issue": {
-      "description": "### Upstream repository\n\nhttps://github.com/luhenry/d2vm\n\n### Packages\n\n_No response_\n\n### Upstream target branch\n\n_No response_\n\n### Additional notes\n\nYou MUST NOT look at riscv64-draft at ALL. You ARE NOT ALLOWED to look at it. ",
-      "description_digest": "1dc460f7d5fa47d53093644c327e86fca29c4ce79174c6a61e554ad751c1629b",
-      "id": 6563486409,
-      "number": 3,
-      "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
-    }
-  },
-  "activity": "agent_running",
+  "active_task": null,
+  "activity": "waiting_ci",
   "admission_class": "architecture_correctness",
   "admission_override": null,
   "automatic_refresh_used": false,
@@ -39,7 +13,7 @@
     "policy_id": "2026-11-18.1-proposed",
     "reruns": {
       "flaky": 0,
-      "head_sha": "6578833f81dda98923270270c97321516d1b2243",
+      "head_sha": "b393cc111205dd693b669458942646c53ed7311a",
       "interrupted": 0
     },
     "spent_estimate_usd_cents": 0
@@ -53,7 +27,7 @@
   "follows": null,
   "fork": {
     "head_ref": "riscv64-dev",
-    "head_sha": "6578833f81dda98923270270c97321516d1b2243",
+    "head_sha": "b393cc111205dd693b669458942646c53ed7311a",
     "name": "riseproject-upstreaming/d2vm",
     "pr_number": 1,
     "repository_id": 1469259163
@@ -75,9 +49,7 @@
   "paused_at_commit": null,
   "paused_by": null,
   "paused_reason": null,
-  "pending_feedback_evidence_ids": [
-    "review-1469259163-1-4680121101"
-  ],
+  "pending_feedback_evidence_ids": [],
   "pending_human_action": null,
   "pending_publication": null,
   "phase": "development",
@@ -93,7 +65,8 @@
     14940999709,
     14945433097,
     14963387195,
-    14968023347
+    14968023347,
+    15010175791
   ],
   "processed_review_comment_ids": [
     4680087010,
@@ -102,15 +75,24 @@
   ],
   "processed_review_ids": [],
   "project_id": "luhenry--d2vm",
-  "proposal_artifact": null,
-  "publication_operation_id": null,
+  "proposal_artifact": {
+    "artifact_id": 15009277912,
+    "claim_id": "c_7e31a2b90dcfdae508f391076fa97d8982051f93cae9a366d43a5e3ab8d82adc_1",
+    "digest": "sha256:3b39067489e1c5fa396e0361a6d63aa7f6e18d0aecdda479dedf318301cddc2b",
+    "name": "claim-8172724952674bb1fc4d464db6fcdf38b6881b45a378b3a62cbd5b60d5a9c3fd-porting-out",
+    "outcome": "published",
+    "result_commit": "q_5c97f9350db533960906c18d9045d094440e79e452546639bc1c51b8a8ca70f0",
+    "run_id": "45577808226",
+    "work_id": "ac6af780393bde68b7e73a33a249b45fc8c41cf5dfaf82444f14a9ba3a6960ec"
+  },
+  "publication_operation_id": "op-dfcb792cea12024ef800b17d",
   "queue_claim_handle": null,
   "queue_result_id": null,
   "queue_work_id": null,
   "refresh": null,
   "release_acceptance": null,
   "retirement": null,
-  "revision": 13,
+  "revision": 14,
   "schema_version": 1,
   "scope_coverage_complete": true,
   "scope_paths": [
@@ -142,7 +124,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-25T08:12:05.151480+00:00",
+  "updated_at": "2026-11-25T09:45:40.006993+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
