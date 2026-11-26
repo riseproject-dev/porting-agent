@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -109,13 +110,17 @@ def review_threads(api: Api, owner: str, name: str, number: int) -> list[dict]:
     return data["repository"]["pullRequest"]["reviewThreads"]["nodes"]
 
 
-def apply(api: Api, *, record: dict, task: dict, proposal: dict, outcome: dict) -> list[dict]:
+def apply(api: Api, *, record: dict, task: dict, proposal: dict, outcome: dict,
+          actions: list[dict] | None = None) -> list[dict]:
+    """Answer and resolve; returns the actions taken. A caller that passes
+    ``actions`` keeps those taken before an error."""
+    actions = [] if actions is None else actions
     if outcome.get("status") != "published" or not outcome.get("candidate"):
-        return []
+        return actions
     if record.get("upstream_pr") is not None or record.get("phase") == "upstream_review":
         # In upstream review a human answers the reviewer: nothing is posted
         # on the upstream PR, and the development PR is closed.
-        return []
+        return actions
     fork = record.get("fork") or {}
     repository = fork.get("name")
     number = fork.get("pr_number")
@@ -132,16 +137,15 @@ def apply(api: Api, *, record: dict, task: dict, proposal: dict, outcome: dict) 
     conversation = api.call("GET", f"/repos/{repository}/issues/{number}/comments?per_page=100")
     existing_bodies = [item.get("body") or "" for item in inline_comments + conversation]
     threads = review_threads(api, owner, name, int(number)) if any(x.kind == "inline" for x in feedback.values()) else []
-    actions: list[dict] = []
     for comment_id in sorted(feedback):
         item = feedback[comment_id]
         tag = marker(comment_id, head)
         body = response_body(item, responses[comment_id], head)
         if not any(tag in existing for existing in existing_bodies):
             if item.kind == "inline":
-                api.call("POST", f"/repos/{repository}/pulls/{number}/comments/{comment_id}/replies", {"body": body})
+                api.call("POST", f"/repos/{repository}/pulls/{number}/comments/{comment_id}/replies", {"body": body}, attempts=1)
             else:
-                api.call("POST", f"/repos/{repository}/issues/{number}/comments", {"body": body})
+                api.call("POST", f"/repos/{repository}/issues/{number}/comments", {"body": body}, attempts=1)
             existing_bodies.append(body)
             actions.append({"comment_id": comment_id, "action": "replied"})
         if item.kind == "inline":
@@ -157,19 +161,28 @@ def apply(api: Api, *, record: dict, task: dict, proposal: dict, outcome: dict) 
 
 
 def main(argv=None) -> int:
+    """Best effort: an error is written to ``--out`` with the actions taken
+    before it, reported on stderr, and returned as 1; it never raises."""
     parser = argparse.ArgumentParser()
     for name in ("record", "task", "proposal", "outcome"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
-    values = {name: json.loads(getattr(args, name).read_text()) for name in ("record", "task", "proposal", "outcome")}
-    token = os.environ.get("UPSTREAMING_FORK_TOKEN")
-    if not token:
-        raise ResponseError("UPSTREAMING_FORK_TOKEN is missing")
-    actions = apply(Api(token), **values)
+    actions: list[dict] = []
+    error = None
+    try:
+        values = {name: json.loads(getattr(args, name).read_text())
+                  for name in ("record", "task", "proposal", "outcome")}
+        token = os.environ.pop("UPSTREAMING_FORK_TOKEN", None)
+        if not token:
+            raise ResponseError("UPSTREAMING_FORK_TOKEN is missing")
+        apply(Api(token), actions=actions, **values)
+    except Exception as exc:  # noqa: BLE001 - never fails the publication
+        error = " ".join(str(exc).split())[:500]
+        print(f"feedback was not fully answered: {error}", file=sys.stderr)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps({"actions": actions}, indent=2) + "\n")
-    return 0
+    args.out.write_text(json.dumps({"actions": actions, **({"error": error} if error else {})}, indent=2) + "\n")
+    return 1 if error else 0
 
 
 if __name__ == "__main__":

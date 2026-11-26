@@ -1307,6 +1307,58 @@ class TestHistoryAndReports(unittest.TestCase):
         self.assertIn('worker_report.read(path.parent / "report.json")',
                       (ROOT / "reconcile.py").read_text())
 
+    def test_the_publish_jobs_answer_addressed_feedback_with_a_pull_request_token(self):
+        for name in ("worker.lock.yml", "publish-retry.yml"):
+            with self.subTest(workflow=name):
+                steps = workflow(name)["jobs"]["publish"]["steps"]
+                ids = [s.get("id") for s in steps]
+                push = next(s for s in steps if s.get("id") == "push")
+                # The gate is a confirmed `published` outcome of a task that
+                # carried review feedback, read after the push and nowhere else.
+                self.assertIn('= published', push["run"])
+                self.assertIn('select(.kind == "human_relay")', push["run"])
+                self.assertIn('respond=true', push["run"])
+                gate = "steps.push.outputs.respond == 'true'"
+                token = next(s for s in steps if s.get("id") == "response-token")
+                self.assertTrue(token["uses"].startswith("actions/create-github-app-token@"))
+                self.assertEqual(token["if"], gate)
+                self.assertIs(token["continue-on-error"], True)
+                permissions = {k: v for k, v in token["with"].items() if k.startswith("permission-")}
+                self.assertEqual(permissions, {"permission-pull-requests": "write"})
+                self.assertEqual(token["with"]["owner"], "riseproject-upstreaming")
+                self.assertEqual(token["with"]["repositories"], "${{ steps.result.outputs.fork_name }}")
+                respond = next(s for s in steps if "python -m review_response" in s.get("run", ""))
+                self.assertIn(gate, respond["if"])
+                self.assertIn("steps.response-token.outcome == 'success'", respond["if"])
+                self.assertIs(respond["continue-on-error"], True)
+                self.assertEqual(respond["env"], {
+                    "UPSTREAMING_FORK_TOKEN": "${{ steps.response-token.outputs.token }}"})
+                for flag in ("--record ../in/record.json", "--task ../in/task.json",
+                             "--proposal ../in/proposal.json", "--outcome ../in/outcome.json",
+                             "--out ../in/feedback-responses.json"):
+                    self.assertIn(flag, respond["run"])
+                # An error is a warning and a summary line; the step succeeds.
+                self.assertIn("|| rc=$?", respond["run"])
+                self.assertIn("::warning::", respond["run"])
+                self.assertIn("GITHUB_STEP_SUMMARY", respond["run"])
+                self.assertTrue(respond["run"].rstrip().endswith("exit 0"))
+                self.assertLess(ids.index("push"), ids.index("response-token"))
+                self.assertLess(ids.index("response-token"), steps.index(respond))
+                upload = next(s for s in steps if s.get("with", {}).get("name") == "porting-publication")
+                self.assertIn("in/feedback-responses.json", upload["with"]["path"].split())
+                # No other step sees the token.
+                for step in steps:
+                    if step is not respond:
+                        self.assertNotIn("steps.response-token", json.dumps(
+                            {k: v for k, v in step.items() if k != "if"}))
+
+    def test_the_response_token_never_reaches_the_agent_job(self):
+        lock = workflow("worker.lock.yml")
+        self.assertNotIn("response-token", json.dumps(lock["jobs"]["agent"]))
+        self.assertNotIn("steps.fork-token", json.dumps(lock["jobs"]["agent"]))
+        # The agent's credential scrubbing still lists the token by name.
+        self.assertIn("UPSTREAMING_FORK_TOKEN", (WORKFLOWS / "worker.md").read_text().split("---", 2)[1])
+
     def test_the_locks_carry_the_history_step(self):
         for name in ("worker", "planner"):
             lock = (WORKFLOWS / f"{name}.lock.yml").read_text()

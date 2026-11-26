@@ -148,6 +148,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Rebuild, validate and push to riscv64 (exact-head lease)
+        id: push
         if: steps.result.outputs.publish == 'true'
         working-directory: control
         env:
@@ -162,6 +163,13 @@ jobs:
               --proposal ../in/proposal.json --mbox ../in/patches.mbox --result ../in/result.json \
               ${prev:+--previous-candidate "$prev"} --out ../in/outcome.json || rc=$?
           jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
+          # Answering the feedback follows a confirmed push of a task that
+          # carried review feedback, and nothing else.
+          if [ "$(jq -r .status ../in/outcome.json)" = published ] \
+            && jq -e '[.context.reason_evidence[]? | select(.kind == "human_relay")] | length > 0' \
+              ../in/task.json > /dev/null; then
+            echo "respond=true" >> "$GITHUB_OUTPUT"
+          fi
           exit $(( rc == 1 || rc == 3 ? 0 : rc ))
 
       - name: Post the review loop summary on the pushed commit
@@ -177,6 +185,41 @@ jobs:
               python -m review_loop comment --task ../in/task.json --report ../in/report.json \
                 --fork "$(jq -r .fork ../in/task.json)" --head "$(jq -r .candidate ../in/outcome.json)"
           fi
+
+      - name: Mint a feedback response token for exactly this fork
+        id: response-token
+        if: steps.push.outputs.respond == 'true'
+        # Best effort: a token that cannot be minted never fails a publication.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ steps.result.outputs.fork_name }}
+          permission-pull-requests: write
+      - name: Answer the addressed feedback and resolve its inline threads
+        if: steps.push.outputs.respond == 'true' && steps.response-token.outcome == 'success'
+        continue-on-error: true
+        working-directory: control
+        env:
+          UPSTREAMING_FORK_TOKEN: ${{ steps.response-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          # Best effort and idempotent (each reply carries a marker of the
+          # feedback item and the head): an error is a warning, never a
+          # failed publication, and the actions taken are kept in the
+          # publication artifact.
+          rc=0
+          uv run --locked python -m review_response --record ../in/record.json \
+            --task ../in/task.json --proposal ../in/proposal.json \
+            --outcome ../in/outcome.json --out ../in/feedback-responses.json || rc=$?
+          if [ "$rc" != 0 ]; then
+            echo "::warning::the feedback was not fully answered or resolved (exit ${rc}); the publication stands"
+            echo "The feedback was not fully answered or resolved (exit ${rc}): see feedback-responses.json in the publication artifact." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          [ -f ../in/feedback-responses.json ] && jq . ../in/feedback-responses.json >> "$GITHUB_STEP_SUMMARY" || true
+          exit 0
 
       - name: Mint a CI rerun token for exactly this fork
         id: rerun-token
@@ -224,6 +267,7 @@ jobs:
             in/result.json
             in/preflight.json
             in/rerun.json
+            in/feedback-responses.json
             in/outcome.json
             in/proposal.json
             in/patches.mbox

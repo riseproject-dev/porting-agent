@@ -44,8 +44,9 @@ Every App token is minted for one purpose, with the narrowest permissions and re
 | Development PR | Destination | The one fork | `contents: read`; `pull-requests`, `actions`, `administration`: write | To create or discover the development PR. |
 | Development PR, CI rerun | Destination | The one fork | `actions: write` | To rerun the interrupted jobs the collector recorded. |
 | Worker, publish job | Destination | The one fork | `contents`, `workflows`, `pull-requests`: write | To push a verified proposal, and to post the summary of its review loop on the pushed commit. |
+| Worker, publish job, feedback response | Destination | The one fork | `pull-requests: write` | After a confirmed push of a task that carried review feedback, to reply to each feedback item and resolve the inline review threads (GraphQL `resolveReviewThread`). It is handed to that one step only, never to the agent, and a failure to mint or use it never fails the publication. |
 | Worker, publish job, rerun | Destination | The one fork | `actions: write` | To rerun the failed jobs for a failure not caused by the patch. |
-| Publish Retry, `publish` | Destination | The one fork | As the worker's publish job and rerun | When the job's preflight says to publish. A separate token is minted for a rerun. |
+| Publish Retry, `publish` | Destination | The one fork | As the worker's publish job, feedback response and rerun | When the job's preflight says to publish. A separate token is minted for a rerun. |
 | Publish Retry, `notify` | Control | This repository | `contents: read`, `issues: write` | To post, or find again, the plan comment of a retried verified plan. |
 | Planner, `notify` | Control | This repository | `contents: read`, `issues: write` | To post the plan comment. |
 | Handoff, `upstream-branch` | Destination | The one fork | `contents`, `workflows`: write | To build `riscv64`. |
