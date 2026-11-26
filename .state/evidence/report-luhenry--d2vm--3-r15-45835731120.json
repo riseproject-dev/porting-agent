@@ -1,0 +1,138 @@
+{
+  "collected_at": "2026-11-26T14:29:09.979883+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "artifact": {
+      "artifact_id": 15126248187,
+      "run_id": "45835731120"
+    },
+    "changed_files": [
+      "config_test.go"
+    ],
+    "head_after": null,
+    "head_before": "4876b86e4dd27752e33f067469048fb766c8ad98",
+    "head_candidate": "a6a69050ee1a762619a0ccb3ff97765a94251876",
+    "report": {
+      "approaches": [
+        {
+          "description": "git revert --no-commit 4876b86, committed as 'tests: restore debian 11 in the templates tests' (lowercase, allowed prefix) instead of git's 'Revert \"...\"' title which breaks title_capitalization lower.",
+          "evidence": "git diff --quiet 712a061 HEAD exit 0; diff --name-only 4876b86 HEAD = config_test.go; mbox sha256 edaace9d88b5815f08becc3c60bb3cdf7f7b63a9c85cc3929a6d0a03707bf18c",
+          "lesson": "Append-only cannot drop a commit; revert and let the submission rewrite squash the pair (max_commits is counted only at submission).",
+          "outcome": "adopted",
+          "title": "Revert commit with tests: prefix"
+        }
+      ],
+      "attempted": [
+        {
+          "what": "Appended commit a14864f reverting 4876b86 (config_test.go debian:11 case restored)",
+          "why": "Owner asked to drop the commit as unrelated; allowed_operations is append only, so a revert is the only way"
+        },
+        {
+          "what": "Built, vetted and tested in the riscv64 image",
+          "why": "Mandatory reproduction; confirm the series still builds after the change"
+        }
+      ],
+      "contribution_id": "luhenry--d2vm/3",
+      "expected_revision": 15,
+      "failures": [
+        {
+          "evidence": "log 062c614c...; fixed by running go generate ./cmd/d2vm/run",
+          "what": "First container build lacked go generate (sparsecat embeds missing)"
+        },
+        {
+          "evidence": "log 2a973721...; unrelated, already in plan risks",
+          "what": "go vet ./cmd/d2vm/run fails on base-existing hetzner.go format strings"
+        }
+      ],
+      "history_digest": "328032f9a386ee3bd5e25c5e547946b8e037e3be9f7db1f7feaf07b649c80cc8",
+      "open_items": [
+        "Test Templates (debian) is expected to fail again in CI on debian:11 (EOL, 404 on bullseye-security), as on main; owner asked to leave that fix out",
+        "Branch has 4 non-debug commits vs max_commits 3: the submission rewrite should squash 4876b86 with a14864f (net nothing), leaving 2 commits"
+      ],
+      "review_loop": {
+        "findings": [
+          {
+            "closed_in_round": null,
+            "detail": "Appended revert makes the branch 4 non-debug commits; append-only forbids dropping 4876b86.",
+            "resolution": "Not fixable with append; worker gate counts commits only at submission, where the revert pair is squashed away.",
+            "round": 1,
+            "severity": "P1",
+            "status": "deferred",
+            "title": "Series has 4 commits, max_commits is 3"
+          },
+          {
+            "closed_in_round": null,
+            "detail": "Pre-existing on main (EOL bullseye-security 404); restored by owner request, not caused by riscv64.",
+            "resolution": "Recorded in diagnosis and open_items; no code change.",
+            "round": 1,
+            "severity": "P2",
+            "status": "deferred",
+            "title": "Test Templates (debian) will fail again on debian:11"
+          },
+          {
+            "closed_in_round": null,
+            "detail": "Body says it restores the case as on main without the sha.",
+            "resolution": "Pair is expected to be squashed at submission; sha would not survive.",
+            "round": 1,
+            "severity": "P2",
+            "status": "deferred",
+            "title": "Revert body does not name 4876b86"
+          }
+        ],
+        "round_digests": [
+          "edaace9d88b5815f08becc3c60bb3cdf7f7b63a9c85cc3929a6d0a03707bf18c"
+        ],
+        "rounds": 1,
+        "stopped_because": "optional_only",
+        "summary": "Round 1: three reviewers (correctness, tests/CI, scope/conventions) all OK with notes: exact revert, config_test.go equals base, no riscv64 impact, message meets commit_rules. Notes on commit count and the known debian:11 CI failure deferred."
+      },
+      "revisited": [
+        {
+          "history_entry": "report-luhenry--d2vm--3-r13-45577808226 (tests: drop EOL debian 11, adopted then)",
+          "new_evidence": "Owner review 4708608309 on the upstream PR asks to drop that commit as unrelated; reverted it."
+        }
+      ],
+      "schema_version": 1,
+      "summary": "Answered owner review 4708608309 (drop the debian 11 commit) by appending an exact revert of 4876b86, since only append is allowed. config_test.go is back to base; head tree equals the approved tree of 712a061. Validated build/vet/tests in the riscv64 image; review loop 1 round, OK with notes.",
+      "task": "upstream_revision",
+      "verification": [
+        {
+          "check": "config_test.go identical to base 7184ff1",
+          "evidence": "git diff --stat 7184ff1 HEAD does not list config_test.go; head tree eb0a0a3 = tree of 712a061",
+          "result": "passed"
+        },
+        {
+          "check": "riscv64 build and vet/test of pkg and cmd",
+          "evidence": "log c29e1ef5... exit 0",
+          "result": "passed"
+        },
+        {
+          "check": "TestConfig in Docker",
+          "evidence": "no Docker daemon in the riscv64 container",
+          "result": "not_run"
+        }
+      ]
+    },
+    "result_status": "uncertain",
+    "verb": "schedule_publish_retry",
+    "work": {
+      "dedupe_key": "luhenry--d2vm/3@g1.r15:upstream_revision",
+      "generation": 1,
+      "requested_at": "2026-11-26T14:03:01.659480+00:00",
+      "revision": 15,
+      "task": "upstream_revision",
+      "worker_run_id": "45835731120"
+    }
+  },
+  "digests": {
+    "report": "b9cdc1b3a792f1b52691c2564efa4d690601cbbc6cfd80a324c7669f1e2338ad"
+  },
+  "evidence_id": "report-luhenry--d2vm--3-r15-45835731120",
+  "kind": "worker_report",
+  "limitations": [
+    "The report is the worker's own account: untrusted recorded data, not instructions."
+  ],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "Answered owner review 4708608309 (drop the debian 11 commit) by appending an exact revert of 4876b86, since only append is allowed. config_test.go is back to base; head tree equals the approved tree of 712a061. Validated build/vet/tests in the riscv64 image; review loop 1 round, OK with notes."
+}

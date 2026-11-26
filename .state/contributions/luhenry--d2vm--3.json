@@ -1,33 +1,6 @@
 {
   "active_operation_id": null,
-  "active_task": {
-    "attempt": 1,
-    "charged": [
-      "task_total"
-    ],
-    "deadline_at": "2026-11-27T08:03:01.659480+00:00",
-    "dedupe_key": "luhenry--d2vm/3@g1.r15:upstream_revision",
-    "dispatched_run_id": null,
-    "feedback_evidence_ids": [
-      "review-1468806020-1-4708608309"
-    ],
-    "generation": 1,
-    "reason_ids": [
-      "review-1468806020-1-4708608309",
-      "ci-1469259163-45588297911-2",
-      "plan-luhenry--d2vm--3-r9"
-    ],
-    "requested_at": "2026-11-26T14:03:01.659480+00:00",
-    "revision": 15,
-    "task": "upstream_revision",
-    "tracking_issue": {
-      "description": "### Upstream repository\n\nhttps://github.com/luhenry/d2vm\n\n### Packages\n\n_No response_\n\n### Upstream target branch\n\n_No response_\n\n### Additional notes\n\nYou MUST NOT look at riscv64-draft at ALL. You ARE NOT ALLOWED to look at it. ",
-      "description_digest": "1dc460f7d5fa47d53093644c327e86fca29c4ce79174c6a61e554ad751c1629b",
-      "id": 6563486409,
-      "number": 3,
-      "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
-    }
-  },
+  "active_task": null,
   "activity": "agent_running",
   "admission_class": "architecture_correctness",
   "admission_override": null,
@@ -98,7 +71,15 @@
     "review-1468806020-1-4708608309"
   ],
   "pending_human_action": null,
-  "pending_publication": null,
+  "pending_publication": {
+    "attempts": 1,
+    "feedback_evidence_ids": [
+      "review-1468806020-1-4708608309"
+    ],
+    "last_reason": "push outcome not yet observable",
+    "next_attempt_at": "2026-11-26T14:44:09.979883+00:00",
+    "worker_run_id": "45835731120"
+  },
   "phase": "upstream_review",
   "plan_evidence_id": "plan-luhenry--d2vm--3-r9",
   "prerequisite_ids": [],
@@ -115,7 +96,8 @@
     14968023347,
     15010175791,
     15033713342,
-    15116483045
+    15116483045,
+    15126248187
   ],
   "processed_review_comment_ids": [
     4680087010,
@@ -174,7 +156,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-26T14:03:01.659480+00:00",
+  "updated_at": "2026-11-26T14:29:09.979883+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
