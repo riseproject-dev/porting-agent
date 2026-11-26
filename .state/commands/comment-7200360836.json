@@ -1,0 +1,22 @@
+{
+  "actor": {
+    "id": 660779,
+    "login": "luhenry"
+  },
+  "args": {
+    "reason": "The Test Templates (debian) failure is the end of life of debian 11, pre-existing and unrelated to riscv64",
+    "revision": "16"
+  },
+  "command_id": "comment-7200360836",
+  "command_version": 1,
+  "comment_id": 7200360836,
+  "content_digest": "8cf9d603115d8a07c421d308c3120034488ee6323364c8777c213e1e4d7fcabe",
+  "contribution_id": "luhenry--d2vm/3",
+  "issue_number": 3,
+  "reason": null,
+  "received_at": "2026-11-26T18:22:15.526662+00:00",
+  "result": "accepted",
+  "revision": 16,
+  "schema_version": 1,
+  "verb": "resume"
+}

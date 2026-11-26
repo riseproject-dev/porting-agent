@@ -1,0 +1,33 @@
+{
+  "at": "2026-11-26T18:22:15.526662+00:00",
+  "cause": {
+    "id": "comment-7200360836",
+    "type": "command"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "actor": {
+      "id": 660779,
+      "login": "luhenry"
+    },
+    "from_state": "upstream_review.waiting_human",
+    "to_state": "upstream_review.waiting_ci",
+    "verb": "resume_upstream_review"
+  },
+  "from": {
+    "activity": "waiting_human",
+    "revision": 16
+  },
+  "kind": "resume_upstream_review",
+  "revision_bumped": true,
+  "run": {
+    "attempt": 1,
+    "id": 45875242167
+  },
+  "schema_version": 1,
+  "sequence": 72,
+  "to": {
+    "activity": "waiting_ci",
+    "revision": 17
+  }
+}
