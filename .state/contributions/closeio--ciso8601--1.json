@@ -61,7 +61,7 @@
     "counter": null,
     "escalated_at": null,
     "kind": "submit_upstream",
-    "reminded_at": null,
+    "reminded_at": "2026-11-26T04:26:42.914952+00:00",
     "requested_at": "2026-11-22T22:54:12.110885+00:00"
   },
   "pending_publication": null,
@@ -121,7 +121,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-24T23:54:05.500486+00:00",
+  "updated_at": "2026-11-26T04:26:42.914952+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",

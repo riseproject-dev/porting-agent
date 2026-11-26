@@ -1,0 +1,30 @@
+{
+  "at": "2026-11-26T04:26:42.914952+00:00",
+  "cause": {
+    "id": "reminder-6",
+    "type": "tick"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "bound_to": {
+      "head": "b29a8f49374004d650cf312e9c31848953e5ae60",
+      "revision": 6
+    },
+    "from_state": "handoff.awaiting_submission",
+    "pending_human_action": "submit_upstream",
+    "previous_reminder_at": null,
+    "requested_at": "2026-11-22T22:54:12.110885+00:00",
+    "to_state": "handoff.awaiting_submission",
+    "verb": "record_reminder"
+  },
+  "from": {},
+  "kind": "record_reminder",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45755156373
+  },
+  "schema_version": 1,
+  "sequence": 33,
+  "to": {}
+}
