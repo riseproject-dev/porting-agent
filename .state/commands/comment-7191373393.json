@@ -1,0 +1,22 @@
+{
+  "actor": {
+    "id": 660779,
+    "login": "luhenry"
+  },
+  "args": {
+    "head": "b393cc111205dd693b669458942646c53ed7311a",
+    "revision": "14"
+  },
+  "command_id": "comment-7191373393",
+  "command_version": 1,
+  "comment_id": 7191373393,
+  "content_digest": "95204bb07877d508ec40fabaac76533ab1b67ae100e345ea1912b510b3977c66",
+  "contribution_id": "luhenry--d2vm/3",
+  "issue_number": 3,
+  "reason": null,
+  "received_at": "2026-11-26T11:57:59.405557+00:00",
+  "result": "accepted",
+  "revision": 14,
+  "schema_version": 1,
+  "verb": "submit-upstream"
+}

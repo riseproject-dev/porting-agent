@@ -1,0 +1,31 @@
+{
+  "at": "2026-11-26T11:57:59.405557+00:00",
+  "cause": {
+    "id": "comment-7191373393",
+    "type": "command"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "actor": {
+      "id": 660779,
+      "login": "luhenry"
+    },
+    "from_state": "handoff.awaiting_submission",
+    "to_state": "handoff.review_due",
+    "verb": "submit_upstream"
+  },
+  "from": {
+    "activity": "awaiting_submission"
+  },
+  "kind": "submit_upstream",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45815144326
+  },
+  "schema_version": 1,
+  "sequence": 58,
+  "to": {
+    "activity": "review_due"
+  }
+}
