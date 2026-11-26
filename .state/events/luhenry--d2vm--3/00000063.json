@@ -1,0 +1,31 @@
+{
+  "at": "2026-11-26T12:21:38.552909+00:00",
+  "cause": {
+    "id": "op-9c5bde93f6293bf7e4c4ede0",
+    "type": "operation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "attempt": 1,
+    "from_state": "handoff.preparing_submission",
+    "head": "4876b86e4dd27752e33f067469048fb766c8ad98",
+    "operation": "op-9c5bde93f6293bf7e4c4ede0",
+    "package_url": "https://github.com/riseproject-dev/porting-agent/issues/3#issuecomment-7191889392",
+    "to_state": "handoff.waiting_upstream_pr",
+    "verb": "confirm_submission_package"
+  },
+  "from": {
+    "activity": "preparing_submission"
+  },
+  "kind": "confirm_submission_package",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45818682637
+  },
+  "schema_version": 1,
+  "sequence": 63,
+  "to": {
+    "activity": "waiting_upstream_pr"
+  }
+}

@@ -2,8 +2,17 @@
   "capacity_reservation": null,
   "contribution_id": "luhenry--d2vm/3",
   "created_at": "2026-11-26T12:20:12.644999+00:00",
-  "discovery": [],
+  "discovery": [
+    {
+      "at": "2026-11-26T12:21:38.552909+00:00",
+      "detail": "submission package comment 7191889392",
+      "result": "confirmed"
+    }
+  ],
   "external_ids": {
+    "comment_id": 7191889392,
+    "comment_url": "https://github.com/riseproject-dev/porting-agent/issues/3#issuecomment-7191889392",
+    "handoff_run_id": "45818770502",
     "launch_attempts": 1
   },
   "kind": "submission_comment",
@@ -20,7 +29,7 @@
   "resolution": null,
   "revision": 14,
   "schema_version": 1,
-  "status": "planned",
+  "status": "confirmed",
   "target": {
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
     "expected_head": "4876b86e4dd27752e33f067469048fb766c8ad98",
@@ -28,5 +37,5 @@
     "repository": "riseproject-dev/porting-agent",
     "repository_id": null
   },
-  "updated_at": "2026-11-26T12:20:12.644999+00:00"
+  "updated_at": "2026-11-26T12:21:38.552909+00:00"
 }
