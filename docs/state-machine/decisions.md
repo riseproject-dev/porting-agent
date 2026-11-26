@@ -3232,3 +3232,24 @@ flowchart TB
     handoff_agent_running ==>|accept_submission_rewrite| handoff_building_upstream_branch
     handoff_agent_running -->|reject_submission_rewrite| development_fix_needed
 ```
+
+### CI with no recorded job pattern, and CI that cannot be established
+
+Which jobs does CI on the exact head require when no contract names one, and what happens when complete CI still establishes no verdict?
+
+**Change.** A required job pattern applies only when a recorded target contract names one. With no contract, or a contract with no pattern, CI on the exact head passes when every job of the latest attempt of every workflow run on the head executed and passed, and at least one job executed (`ci_evidence.evaluate`); the default pattern `riscv64` is gone, since it stranded a project whose jobs carry no such name (`luhenry--d2vm/3` waited forever with passing CI). A skipped, neutral or stale job is ignored, as a job no pattern names always was; a cancelled job, or one that lost its runner, did not execute and is interrupted (`not_executed`), so a part-cancelled run never passes; a publishing job never counts. The rule holds wherever CI on a head is read: development, the gate, the clean head of `riscv64`, and the upstream PR. CI that is complete (every run on the head and every job of it) and still `missing` (a job the recorded contract requires is absent, or no job executed) took no row and waited silently: `require_head_ci` now leads from `development.waiting_ci` to `development.waiting_human` with the pending action `head_ci_missing`, and the event records the problems. No existing row fits: `exhaust_interrupted_reruns` names a spent budget and `ci_interrupted`, `require_clean_head_ci` is a row of the handoff, and `record_pr_mismatch` is about the development PR. `resume_ci` returns to `development.waiting_ci` and observes CI again; it restarts no counter, and the row is taken again while CI still establishes no verdict. In `handoff.waiting_ci` the bounded wait of `require_clean_head_ci` already asks a human, and the gate and the upstream PR wait for a human or the merge anyway.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+    end
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+    end
+
+    development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
+    development_waiting_ci ==>|require_head_ci| development_waiting_human
+    development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
+```

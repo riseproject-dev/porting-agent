@@ -413,6 +413,7 @@ flowchart TB
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
     development_waiting_ci -->|rerun_interrupted_ci| development_waiting_ci
     development_waiting_ci -->|exhaust_interrupted_reruns| development_waiting_human
+    development_waiting_ci -->|require_head_ci| development_waiting_human
     development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
     development_waiting_ci -->|record_head_change| development_waiting_ci
     development_fix_needed -->|record_head_change| development_waiting_ci

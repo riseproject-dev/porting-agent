@@ -874,6 +874,12 @@ CANDIDATE_NOT_FAILED = "no executed blocking failure on the candidate head"
 # task carries the failing job and the review.
 HEAD_FAILED = "an executed blocking failure on the exact head"
 HEAD_NOT_FAILED = "no executed blocking failure on the exact head"
+# Every workflow run on the exact head is complete and CI still establishes
+# no verdict: a job a recorded contract requires is absent, or no job
+# executed. No later observation changes that, so a human is asked.
+HEAD_CI_MISSING = ("every workflow run on the exact head is complete, and CI establishes no "
+                   "verdict: a job the recorded contract requires is absent, or no job executed")
+HEAD_CI_MISSING_ACTION = "head_ci_missing"
 # The outcomes of the submission rewrite task: the trusted deterministic
 # check of the rewrite, and the review loop the worker ran on it.
 REWRITE_PASSED = ("the rewritten series has the tree of the approved series without its debug "
@@ -1068,7 +1074,9 @@ _RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh task is 
                    "interrupted jobs on the exact head through `rerun_interrupted_ci`, charging "
                    "the restarted counter. After `development_pr_launch_exhausted` it starts "
                    "`operation_launch` again, and the next tick plans a new development PR "
-                   "operation for the head. " + _RESTART_NOTE)
+                   "operation for the head. After `head_ci_missing` nothing starts again: CI on the "
+                   "head is observed again, and takes `require_head_ci` again while it still "
+                   "establishes no verdict. " + _RESTART_NOTE)
 
 
 def _guarded(t: Transition, *guards: str) -> Transition:
@@ -1343,6 +1351,17 @@ LIFECYCLE: dict[str, State] = {
                 _E(sets=("last_ci_evidence_id",))),
             ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
             ("exhaust_interrupted_reruns", "development.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
+            ("require_head_ci", "development.waiting_human"): Transition(
+                _O, None,
+                (HEAD_CI_MISSING,),
+                _E(sets=(f"pending_human_action={HEAD_CI_MISSING_ACTION}",)),
+                description="CI on the exact head is complete and cannot establish a verdict, "
+                            "so waiting longer changes nothing: the pending action names the "
+                            "problems (a job the recorded contract requires is absent, or no "
+                            "job executed), and a human fixes the cause (the contract, the "
+                            "workflow, or the CI run) and resumes, which observes CI on the "
+                            "head again. Runs still in progress, and a head with no run yet, "
+                            "keep the wait."),
             ("launch_development_pr", SELF): _LAUNCH_DEVELOPMENT_PR,
             ("confirm_development_pr", SELF): _CONFIRM_DEVELOPMENT_PR,
             ("exhaust_development_pr_launches", "development.waiting_human"): Transition(
@@ -1485,13 +1504,15 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("resume_ci", "development.waiting_ci"): Transition(
                 _C, RESUME,
-                (EXACT_REVISION, pending_is("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
+                (EXACT_REVISION, pending_is("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED,
+                                            HEAD_CI_MISSING_ACTION),
                  QUIESCENT, NOT_STALE, DEVELOPMENT_PR_RECORDED),
                 _RESUME_CI, description=_RESUME_CI_NOTE),
             ("rearm_dispatch", "development.fix_needed"): _REARM_DISPATCH,
             ("resume_development", "development.fix_needed"): Transition(
                 _C, RESUME,
-                (EXACT_REVISION, pending_is_not("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
+                (EXACT_REVISION, pending_is_not("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED,
+                                                HEAD_CI_MISSING_ACTION),
                  QUIESCENT, NOT_STALE),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("dispatch_recovery", "task_recovery", "task_total", "publish_recovery",
@@ -3160,6 +3181,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_ci", "nominate_for_handoff"),
                  ("development.waiting_ci", "rerun_interrupted_ci"),
                  ("development.waiting_ci", "exhaust_interrupted_reruns"),
+                 ("development.waiting_ci", "require_head_ci"),
                  ("development.waiting_human", "resume_ci"),
                  ("development.waiting_ci", "record_head_change"),
                  ("development.fix_needed", "record_head_change"),

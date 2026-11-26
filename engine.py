@@ -987,6 +987,7 @@ for _guard, _name in (
     (lc.HEAD_FAILED, "ci_failed_on_head"),
     (lc.HEAD_NOT_FAILED, "head_not_failed"),
     (lc._INTERRUPTED, "ci_interrupted_on_head"),
+    (lc.HEAD_CI_MISSING, "head_ci_missing"),
     ("authorized actionable review feedback", "actionable_review"),
     ("authorized explanation-only inquiry", "explanation_inquiry"),
     ("the observed fork head differs from the recorded head", "fork_head_changed"),
@@ -1107,6 +1108,8 @@ PIPELINE_VERBS: dict[str, str] = {
     # operation within `interrupted_reruns`, and the wait once it is spent.
     "rerun_interrupted_ci": "observe_ci",
     "exhaust_interrupted_reruns": "observe_ci",
+    # CI on the exact head that is complete and establishes no verdict.
+    "require_head_ci": "observe_ci",
     # The Result of a patch task: published, rejected, no longer applicable to
     # the fork head, or held for a publish-only retry within
     # `publish_recovery`, and the wait once that budget is exhausted.
@@ -2640,8 +2643,8 @@ handles("observe_ci", "_record_review", "record_actionable_review", D_OBS, FACT_
 handles("observe_ci", "_observe_development", "record_head_change", D_OBS)
 handles("observe_ci", "_observe_development", ("record_pr_mismatch", "record_ci_failure"),
         _OBS_STRICT)
-handles("observe_ci", "_observe_development", ("return_for_feedback", "nominate_for_handoff"),
-        D_OBS)
+handles("observe_ci", "_observe_development",
+        ("return_for_feedback", "nominate_for_handoff", "require_head_ci"), D_OBS)
 handles("observe_ci", "_rerun_interrupted", "rerun_interrupted_ci", D_OBS,
         BUDGET_EXHAUSTED=TAKE("exhaust_interrupted_reruns"))
 handles("observe_ci", "_rerun_interrupted", "exhaust_interrupted_reruns", _ALL_BUG)

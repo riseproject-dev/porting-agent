@@ -123,9 +123,9 @@ The [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 ## CI never starts on an existing development PR
 
 - **Where:** `development.waiting_ci`; `controller.tick` (the CI bootstrap).
-- **Today:** a development PR is recorded, its CI bootstrap was confirmed (or the PR was not created at the recorded head, so none is planned), and no CI run ever appears on the head. Nothing in `development.waiting_ci` notices: the wait has no deadline and no reminder, since CI itself ends it. A human sees it on the status page and uses `/upstreaming refresh` or `/upstreaming park`.
-- **Table:** no row of `development.waiting_ci` reads the absence of CI.
-- **Required:** a deadline for CI to start on the exact head, and a row to a human wait (the handoff's `require_clean_head_ci` made phase-neutral, through `lifecycle.HISTORIC_NAMES`, would add no verb).
+- **Today:** a development PR is recorded, its CI bootstrap was confirmed (or the PR was not created at the recorded head, so none is planned), and no CI run ever appears on the head. Nothing in `development.waiting_ci` notices: the wait has no deadline and no reminder, since CI itself ends it. A human sees it on the status page and uses `/upstreaming refresh` or `/upstreaming park`. This concerns a head with no run, or runs that never complete: CI that is complete on the head and establishes no verdict (a job of the recorded contract is absent, or no job executed) takes `require_head_ci`.
+- **Table:** no row of `development.waiting_ci` reads the absence of CI, or CI that never completes.
+- **Required:** a deadline for CI to start or complete on the exact head, and a row to a human wait (`require_head_ci` with a deadline as its cause, or the handoff's `require_clean_head_ci` made phase-neutral through `lifecycle.HISTORIC_NAMES`).
 
 ## The HTTP cache is restored from a cache every job on main can write
 

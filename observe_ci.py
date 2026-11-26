@@ -111,14 +111,17 @@ def contract_for(record: dict, contracts: dict[str, dict]) -> dict:
     (the field keeps its name; it is empty unless a contract names Python
     wheels).
 
-    Plan 9.2 accepts exact-head CI when every required build/test job
-    executed and passed, whatever the project's language. Uploaded workflow
-    artifacts are not a development CI requirement: many projects build and
-    test in PR CI but upload release artifacts only from release workflows.
+    A required job pattern applies only when a recorded contract names one.
+    With no contract, or one without a pattern, exact-head CI passes when
+    every job of every workflow run on the head executed and passed
+    (``ci_evidence.evaluate``), whatever the project's language or the names
+    of its jobs. Uploaded workflow artifacts are not a development CI
+    requirement: many projects build and test in PR CI but upload release
+    artifacts only from release workflows.
     """
     c = contracts.get(record.get("target_contract_id") or "") or {}
     data = c.get("data") or {}
-    return {"required_job_patterns": data.get("required_job_patterns") or ["riscv64"],
+    return {"required_job_patterns": list(data.get("required_job_patterns") or []),
             "expected_wheels": data.get("expected_wheels") or [],
             "required_runner_label": data.get("required_runner_label")}
 
@@ -820,8 +823,36 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                     _deferred(entry, refused, "handoff_deferred")
                 case engine.Bug(refused):
                     raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
+    if verdict.state == "missing" and ev is not None and _ci_complete(snap, head):
+        # Every run on the head is complete and CI still establishes no
+        # verdict (a job of the recorded contract is absent, or no job
+        # executed): waiting changes nothing, so a human is asked.
+        match engine.dispatch(engine.try_apply_transition(
+                cur, "require_head_ci", policy=policy, now=now, cause_id=ev["evidence_id"],
+                facts={"head_ci_missing"},
+                details={"evidence_id": ev["evidence_id"], "head": head,
+                         "problems": [p[:300] for p in verdict.problems[:10]]}),
+                ("observe_ci", "_observe_development")):
+            case engine.Applied() as out:
+                _stage(obs, out)
+                entry["waiting_for_human"] = lifecycle.HEAD_CI_MISSING_ACTION
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
+        return
     if verdict.state == "access_wait":
         entry["note"] = "a CI run waits for approval; CI is read again"
+
+
+def _ci_complete(snap: collect.CiSnapshot, head: str) -> bool:
+    """Whether at least one run exists on ``head`` and the latest attempt of
+    every run on it is complete, with every one of its jobs."""
+    latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == head])
+    return bool(latest) and all(
+        r.get("status") == "completed"
+        and all(j.get("status") == "completed" for j in snap.jobs_by_run.get(r["id"], []))
+        for r in latest)
 
 
 def _series_requirements(api: collect.Api, record: dict, head: str, ci: dict,

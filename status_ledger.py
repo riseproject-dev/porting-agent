@@ -289,6 +289,13 @@ def _observed(event: dict) -> str:
     if kind == "accept_clean_head_ci":
         clean = details.get("clean_head") or details.get("head")
         parts.append(f"Clean head: {_head(clean)}; CI of {_head(details.get('head'))}.")
+    if kind == "require_head_ci":
+        problems = "; ".join(f"`{_quotable(p, 200)}`" for p in (details.get("problems") or [])[:5]
+                             if isinstance(p, str))
+        parts.append(f"CI on {_head(details.get('head'))} is complete and establishes no "
+                     f"verdict: {problems or 'no problem recorded'}. Correct the cause (the "
+                     "recorded contract, the workflow, or the CI run), then post "
+                     "`/upstreaming resume`, or `/upstreaming park`.")
     if kind == "confirm_submission_package":
         link = _link(details.get("package_url"))
         package = f"[submission package]({link})" if link else "submission package"

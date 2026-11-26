@@ -96,7 +96,7 @@ Once the gate accepts a patch, the publish job of the worker's run pushes it. Af
 
 ## Development PR and CI
 
-The first published patch has no development PR yet: the controller opens it once the push is confirmed, and folds the Result of the worker once the PR is recorded. `dev-pr.yml` creates or discovers one marked same-fork pull request, bootstraps inherited Actions safely, and executes the CI reruns the collector records for interrupted CI. The controller observes CI on the exact head. The [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#development) lists the rows, and [CI reruns]({{ '/state-machine/engine/' | relative_url }}#ci-reruns) describes how reruns are requested and read back.
+The first published patch has no development PR yet: the controller opens it once the push is confirmed, and folds the Result of the worker once the PR is recorded. `dev-pr.yml` creates or discovers one marked same-fork pull request, bootstraps inherited Actions safely, and executes the CI reruns the collector records for interrupted CI. The controller observes CI on the exact head: with no job pattern recorded for the project, CI passes when every job of every workflow run on the head executed and passed, whatever the jobs are named, and CI that is complete and still establishes no verdict waits for a human. The [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#development) lists the rows, and [CI reruns]({{ '/state-machine/engine/' | relative_url }}#ci-reruns) describes how reruns are requested and read back.
 
 ## Infrastructure blockers
 

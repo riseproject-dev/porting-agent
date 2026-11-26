@@ -64,16 +64,41 @@ def latest_attempts(runs: Iterable[dict]) -> list[dict]:
     return list(best.values())
 
 
+def _check_every_job(v: CiVerdict, jobs: list[dict]) -> None:
+    """The rule without a required job pattern: every executed job of the
+    latest attempts passed (a failure is already a problem of the caller),
+    a cancelled job or one that lost its runner did not execute, and at
+    least one job executed."""
+    executed = [j for j in jobs if j.get("status") == "completed" and job_executed(j)]
+    for j in jobs:
+        if j.get("status") != "completed" or job_executed(j) or not job_interrupted(j):
+            continue
+        how = "lost its runner" if j.get("runner_lost") else j.get("conclusion")
+        v.problems.append(f"job {j['name']!r} did not execute ({how})")
+        v.interrupted_jobs.append(j)
+    v.executed_jobs.extend(j for j in executed if j.get("conclusion") == SUCCESS)
+    if not executed and not any(j.get("status") != "completed" for j in jobs):
+        v.problems.append("no job executed on this head")
+
+
 def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: str,
              required_job_patterns: list[str], expected_wheels: list[str],
              produced_wheels: list[str], required_runner_label: str | None = None) -> CiVerdict:
     """Decide what the observed CI establishes for ``head_sha``.
 
-    ``required_job_patterns`` are substrings identifying the riscv64 build
-    and test jobs the target contract requires (from the plan), in any
-    language; ``expected_wheels`` applies to a contract that names Python
-    wheels only. A run for another SHA is
-    ignored: evidence is bound to the exact head that ran.
+    ``required_job_patterns`` are substrings identifying the build and test
+    jobs a recorded target contract requires, in any language; each must
+    match a job that executed and passed. When the list is empty (no
+    contract is recorded, or it names no pattern) every job of the latest
+    attempt of every run on the head is required: each executed job must
+    succeed and at least one must have executed. A skipped, neutral or
+    stale job is no job at all, as for any job no pattern names; a
+    cancelled job, or one that lost its runner, did not execute and is
+    interrupted (``not_executed``), because a part-cancelled run never
+    passes. A job of a credential-less kind (publishing) never counts.
+    ``expected_wheels`` applies to a contract that names Python wheels
+    only. A run for another SHA is ignored: evidence is bound to the exact
+    head that ran.
     """
     v = CiVerdict(state="missing")
     relevant = [r for r in latest_attempts(runs) if r.get("head_sha") == head_sha]
@@ -98,6 +123,9 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
     # but it is not a pass either: unclassified, the same CI reads as failed.
     # It is interrupted, whether or not a required pattern names it.
     required = [j for j in all_jobs if any(pat in j["name"] for pat in required_job_patterns)]
+    if not required_job_patterns:
+        required = list(blocking)
+        _check_every_job(v, blocking)
     for j in blocking:
         if j.get("status") == "completed" and j.get("runner_lost") \
                 and not any(j is r for r in required):
