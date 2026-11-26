@@ -1,0 +1,20 @@
+{
+  "collected_at": "2026-11-26T19:12:54.022782+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "base_ref": "main",
+    "head_sha": "a6a69050ee1a762619a0ccb3ff97765a94251876",
+    "merge_sha": "d29f838e5b7fc8c2fc1c1f34c86a6875429bd728",
+    "merged_at": "2026-11-26T19:10:54Z",
+    "pr_number": 1
+  },
+  "digests": {
+    "head": "a6a69050ee1a762619a0ccb3ff97765a94251876"
+  },
+  "evidence_id": "merge-1468806020-1-d29f838e5b7f",
+  "kind": "merge",
+  "limitations": [],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "upstream PR #1 merged into main as d29f838e5b7fc8c2fc1c1f34c86a6875429bd728"
+}
