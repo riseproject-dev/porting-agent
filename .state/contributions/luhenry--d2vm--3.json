@@ -77,7 +77,8 @@
       "review-1468806020-1-4708608309"
     ],
     "last_reason": "push outcome not yet observable",
-    "next_attempt_at": "2026-11-26T14:44:09.979883+00:00",
+    "launched_at": "2026-11-26T15:33:56.846448+00:00",
+    "next_attempt_at": "2026-11-26T16:33:56.846448+00:00",
     "worker_run_id": "45835731120"
   },
   "phase": "upstream_review",
@@ -156,7 +157,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-26T14:29:09.979883+00:00",
+  "updated_at": "2026-11-26T15:33:56.846448+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
