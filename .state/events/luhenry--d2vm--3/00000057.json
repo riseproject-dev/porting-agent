@@ -1,0 +1,31 @@
+{
+  "at": "2026-11-26T11:05:48.680100+00:00",
+  "cause": {
+    "id": "ci-1469259163-45588297911-2",
+    "type": "observation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "development.waiting_ci",
+    "head": "b393cc111205dd693b669458942646c53ed7311a",
+    "revision": 14,
+    "to_state": "handoff.awaiting_submission",
+    "verb": "nominate_for_handoff"
+  },
+  "from": {
+    "activity": "waiting_ci",
+    "phase": "development"
+  },
+  "kind": "nominate_for_handoff",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45807261426
+  },
+  "schema_version": 1,
+  "sequence": 57,
+  "to": {
+    "activity": "awaiting_submission",
+    "phase": "handoff"
+  }
+}

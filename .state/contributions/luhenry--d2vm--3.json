@@ -1,7 +1,7 @@
 {
   "active_operation_id": null,
   "active_task": null,
-  "activity": "waiting_ci",
+  "activity": "awaiting_submission",
   "admission_class": "architecture_correctness",
   "admission_override": null,
   "automatic_refresh_used": false,
@@ -36,8 +36,12 @@
   },
   "generation": 1,
   "handoff_approval": null,
-  "handoff_request": null,
-  "last_ci_evidence_id": null,
+  "handoff_request": {
+    "command_id": "observation-ci-1469259163-45588297911-2",
+    "head": "b393cc111205dd693b669458942646c53ed7311a",
+    "revision": 14
+  },
+  "last_ci_evidence_id": "ci-1469259163-45588297911-2",
   "merge": null,
   "owners": {
     "backup": null,
@@ -52,9 +56,15 @@
   "paused_by": null,
   "paused_reason": null,
   "pending_feedback_evidence_ids": [],
-  "pending_human_action": null,
+  "pending_human_action": {
+    "counter": null,
+    "escalated_at": null,
+    "kind": "submit_upstream",
+    "reminded_at": null,
+    "requested_at": "2026-11-26T11:05:48.680100+00:00"
+  },
   "pending_publication": null,
-  "phase": "development",
+  "phase": "handoff",
   "plan_evidence_id": "plan-luhenry--d2vm--3-r9",
   "prerequisite_ids": [],
   "previous_phase": null,
@@ -127,7 +137,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-25T15:04:28.062369+00:00",
+  "updated_at": "2026-11-26T11:05:48.680100+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
