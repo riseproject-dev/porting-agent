@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-26T12:18:59.289263+00:00",
+  "cause": {
+    "id": "45815879781",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "evidence_id": "submission-rewrite-luhenry--d2vm--3-r14-45815879781",
+    "from_state": "handoff.agent_running",
+    "head": "4876b86e4dd27752e33f067469048fb766c8ad98",
+    "reasons": [],
+    "report_evidence_id": "report-luhenry--d2vm--3-r14-45815879781",
+    "to_state": "handoff.building_upstream_branch",
+    "verb": "accept_submission_rewrite",
+    "verdict": "pass"
+  },
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "accept_submission_rewrite",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45818368119
+  },
+  "schema_version": 1,
+  "sequence": 60,
+  "to": {
+    "activity": "building_upstream_branch"
+  }
+}

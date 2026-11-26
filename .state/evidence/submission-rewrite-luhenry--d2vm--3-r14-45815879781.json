@@ -1,0 +1,46 @@
+{
+  "collected_at": "2026-11-26T12:18:59.289263+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "approved_head": "b393cc111205dd693b669458942646c53ed7311a",
+    "artifact": {
+      "artifact_id": 15116483045,
+      "expires_at": "2026-12-26T12:17:55Z",
+      "run_id": "45815879781"
+    },
+    "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
+    "body": "## Summary\n\nAdd `linux/riscv64` as a d2vm platform, following the arm64 support (linka-cloud/d2vm#44): riscv64 is added to the existing platform switches, templates and release list, with no new file, template or CI job.\n\n## Changes\n\n- **build / convert**: `--platform linux/riscv64` is accepted. As on arm64, the bootloader defaults to `grub-efi` and only `grub-efi` is allowed (the `syslinux`, `grub-bios` and `grub` bootloaders need x86 BIOS boot).\n- **templates**: the Debian and Ubuntu templates pick the `grub-efi-<arch>-bin` package from `dpkg --print-architecture` instead of the `x86_64`-else-`arm64` mapping, and the Debian template picks the kernel package from it instead of a hardcoded `linux-image-amd64`. Package names are unchanged on amd64. On arm64 Debian images the kernel package is now `linux-image-arm64` instead of `linux-image-amd64`, which is an intended fix.\n- **run/qemu**: `d2vm run qemu` supports the riscv64 `virt` machine. On riscv64 the `-bios` slot holds the SBI firmware, so the UEFI firmware given with `--bios` is attached as a read-only pflash drive. The `rv64` CPU model is used when not running on a riscv64 host.\n- **docs**: the flag help lists riscv64 (and now reads `linux/amd64, linux/arm64 and linux/riscv64` instead of `linux/arm64 and linux/arm64`), the README install snippet maps `riscv64` hosts to the riscv64 tarball, and the CLI reference is regenerated with `make cli-docs`.\n- **goreleaser** (separate commit): `riscv64` is added to `goarch`. `windows/riscv64` and `darwin/riscv64` are listed in `ignore`: goreleaser would skip these invalid pairs anyway, the list only makes the excluded combinations explicit.\n- **tests** (separate commit): `debian:11` is dropped from `TestConfig`. bullseye-security has moved to archive.debian.org and the packages its index lists return 404 on deb.debian.org, so every `debian:11` case fails on `main` as well. Earlier end of life releases were dropped the same way in 113541c.\n\n## Testing\n\n- The project CI workflow (`.github/workflows/ci.yaml`) passed on this exact tree.\n- `make check-fmt`, `make docs-up-to-date` and `make build-snapshot` (which now also builds `linux_riscv64`) pass locally.\n- In a `linux/riscv64` container: `go build`, `go vet` of the changed packages, the unit tests that do not need a Docker daemon (`TestImageFlatten` was left out) and a compile of the e2e tests.\n- Under emulation on an amd64 host, with a local riscv64 variant of the e2e test that is not part of this PR: `ubuntu:24.04` and `debian:13` converted with `--platform linux/riscv64` and booted to the login prompt in QEMU with the edk2 riscv64 firmware, for every e2e case that applies to grub-efi (with grub-efi d2vm always uses a separate fat32 boot partition), LUKS included.\n- With the final series, `ubuntu:24.04` converted for riscv64 (with `--boot-size 250`, see Notes) and booted to the login prompt.\n- `TestConfig` for ubuntu and debian passes on amd64 without `debian:11`; the `debian:11` failure reproduces on `main`.\n- No riscv64 job is added to CI, in line with arm64, which has none: everything is built and tested on x86 by default.\n\n## Notes\n\n- With the default `--boot-size 100`, converting `ubuntu:24.04` for riscv64 fails, because the uncompressed riscv64 kernel (about 47 MB) and the initrd (about 51 MB) do not fit in the boot partition. `--boot-size 250` works. The default is unchanged here.\n- Alpine is not supported on riscv64 yet: `linux-virt` is not built for riscv64, and the `linux-lts` kernel did not reach a console in testing.\n- The README install snippet downloads `d2vm_<version>_linux_riscv64.tar.gz`, which exists only from the first release that includes this change.\n",
+    "candidate_tree": "2625e10ac28f3ac0a308c899024aa1cb96570da7",
+    "clean_tree": "2625e10ac28f3ac0a308c899024aa1cb96570da7",
+    "commits": [
+      {
+        "message": "feat: add linux/riscv64 platform support with grub-efi\n\n* build / convert: accept `--platform linux/riscv64`, defaulting to\nand only allowing the grub-efi bootloader as on arm64\n* templates: select the grub-efi package on debian and ubuntu, and\nthe kernel package on debian, from the dpkg architecture; on arm64\ndebian images this now installs linux-image-arm64 instead of\nlinux-image-amd64, amd64 is unchanged\n* run/qemu: support the riscv64 virt machine, loading the UEFI\nfirmware from pflash and using the rv64 cpu model when not running\non a riscv64 host\n* docs: list riscv64 in the flag help, the README and the regenerated\nCLI reference\n\nSigned-off-by: riseproject-upstreaming[bot] <359135081+riseproject-upstreaming[bot]@users.noreply.github.com>",
+        "tree": "bd289bdeb87d7705440e0624795431b5df17daa8"
+      },
+      {
+        "message": "goreleaser: add riscv64 to the release architectures\n\nOnly linux/riscv64 is released: windows/riscv64 and darwin/riscv64 are\nnot Go ports, so they are listed in ignore. goreleaser would skip these\ninvalid pairs anyway, the list only makes the excluded combinations\nexplicit.\n\nSigned-off-by: riseproject-upstreaming[bot] <359135081+riseproject-upstreaming[bot]@users.noreply.github.com>",
+        "tree": "eb0a0a398b3d849b6e41ff7f45c1d79cc6c76f60"
+      },
+      {
+        "message": "tests: drop end of life debian 11 from the templates tests\n\nDebian 11 reached the end of its LTS support: bullseye-security moved\nto archive.debian.org and the packages its index still lists return 404\non deb.debian.org, so every debian:11 case of TestConfig fails, on main\nas well. Earlier end of life releases were dropped the same way in\n113541c (chore: update distro releases).\n\nSigned-off-by: riseproject-upstreaming[bot] <359135081+riseproject-upstreaming[bot]@users.noreply.github.com>",
+        "tree": "2625e10ac28f3ac0a308c899024aa1cb96570da7"
+      }
+    ],
+    "head": "4876b86e4dd27752e33f067469048fb766c8ad98",
+    "reasons": [],
+    "rules_from": [],
+    "series_digest": "2cef55d48ff6e25669ca42a6d2b6c70210d05d148b300673c3081b7e54e9711d",
+    "text_digest": "c0d1fbc6f42bbd208529761b30483c35e5823f5785b8f2ece7d1f71be328498e",
+    "title": "feat: add linux/riscv64 platform support with grub-efi",
+    "verdict": "pass"
+  },
+  "digests": {
+    "series": "2cef55d48ff6e25669ca42a6d2b6c70210d05d148b300673c3081b7e54e9711d"
+  },
+  "evidence_id": "submission-rewrite-luhenry--d2vm--3-r14-45815879781",
+  "kind": "submission_rewrite",
+  "limitations": [],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "The submission rewrite passed the trusted check."
+}

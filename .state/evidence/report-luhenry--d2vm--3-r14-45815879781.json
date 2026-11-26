@@ -1,0 +1,201 @@
+{
+  "collected_at": "2026-11-26T12:18:59.289263+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "artifact": {
+      "artifact_id": 15116483045,
+      "run_id": "45815879781"
+    },
+    "changed_files": [],
+    "head_after": null,
+    "head_before": "b393cc111205dd693b669458942646c53ed7311a",
+    "report": {
+      "approaches": [
+        {
+          "description": "feat: platform support (code, templates, qemu, docs), goreleaser: release architectures with explicit ignore list, tests: drop EOL debian:11. Messages kept except the feat body.",
+          "evidence": "git diff --quiet riscv64-dev rewrite exit 0; per-commit trees bd289bd, eb0a0a3, 2625e10 equal the approved commits; series sha256 2cef55d4...",
+          "lesson": "Approved messages already met commit_rules; the feat body had two inaccuracies (cpu model condition, ubuntu kernel) worth fixing in a rewrite.",
+          "outcome": "adopted",
+          "title": "Keep three commits, reword only"
+        },
+        {
+          "description": "Considered because the maintainer asked external contributors of linka-cloud PRs 61/62 to squash.",
+          "evidence": "Those PRs were single changes with fix-up commits; plan commit_conventions accept 2-3 logical commits; reviewers in round 1 confirmed squash not required.",
+          "lesson": "Squash only when required; separate goreleaser:/tests: commits keep them out of the release changelog.",
+          "outcome": "abandoned",
+          "title": "Squash into one commit"
+        }
+      ],
+      "attempted": [
+        {
+          "what": "Cherry-pick 70cd393, 64b2554, b393cc1 onto 7184ff1 as branch rewrite; reword the feat body",
+          "why": "Task: reshape the approved series for upstream without code change; plan commit_conventions (PR 44 style bullet body)."
+        },
+        {
+          "what": "Decide whether to squash",
+          "why": "Plan contributing notes mention squash requests to external contributors (linka-cloud PR 61, 62), but those were fix-up series; commit_conventions say two or three logical commits fit and a third isolated test fix is tolerated."
+        },
+        {
+          "what": "Write the PR title and description",
+          "why": "No PR template or CONTRIBUTING exists (plan pull_request_template none_found, verified at luhenry/d2vm main 7184ff1); description covers changes, testing from recorded evidence, and known limitations."
+        },
+        {
+          "what": "Review loop, 3 rounds",
+          "why": "Mandatory review of the rewrite and text before delivery."
+        }
+      ],
+      "contribution_id": "luhenry--d2vm/3",
+      "expected_revision": 14,
+      "failures": [],
+      "history_digest": "e21b7ca835d02146c4b51cf7ac68e1aeb1717bf85cf1da547aa0ff13425a5d8a",
+      "open_items": [
+        "Default --boot-size 100 is too small for ubuntu:24.04 on linux/riscv64 (disclosed in the PR Notes; owner decision carried from r13).",
+        "The debian:11 removal is an isolated tests: commit; upstream may prefer it dropped or handled separately.",
+        "Upstream (or a later linka-cloud submission) may ask for riscv64 e2e coverage that the owner declined.",
+        "Round 3 P2 note deferred: the Notes sentence on the boot size does not explain that the rest of /boot plus FAT overhead push the 98 MB kernel+initrd over 100 MB."
+      ],
+      "review_loop": {
+        "findings": [
+          {
+            "closed_in_round": 2,
+            "detail": "pkg/qemu/qemu.go selects -cpu rv64 when runtime.GOARCH != riscv64, not by kvm availability.",
+            "resolution": "Reworded to 'when not running on a riscv64 host'.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "feat body: rv64 cpu model 'without kvm' inaccurate"
+          },
+          {
+            "closed_in_round": 2,
+            "detail": "ubuntu.Dockerfile keeps linux-image-virtual; only grub-efi package uses dpkg arch there.",
+            "resolution": "Reworded: grub-efi on debian and ubuntu, kernel on debian.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "feat body implied ubuntu kernel chosen by arch"
+          },
+          {
+            "closed_in_round": 2,
+            "detail": "History r3: TestImageFlatten excluded (needs Docker daemon); image distro not recorded.",
+            "resolution": "Text states unit tests not needing Docker, TestImageFlatten left out.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "PR text overclaimed riscv64 container test"
+          },
+          {
+            "closed_in_round": 2,
+            "detail": "Snippet downloads a linux_riscv64 tarball that no release ships yet (plan risk).",
+            "resolution": "Note added to the PR text.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "README riscv64 tarball not released yet"
+          },
+          {
+            "closed_in_round": 3,
+            "detail": "Bootloader values are syslinux, grub, grub-bios, grub-efi.",
+            "resolution": "Reworded to syslinux, grub-bios and grub.",
+            "round": 2,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "PR text bootloader list named grub-pc"
+          },
+          {
+            "closed_in_round": 3,
+            "detail": "debian.Dockerfile had linux-image-amd64 hardcoded.",
+            "resolution": "Reworded.",
+            "round": 2,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "PR text: debian kernel was hardcoded, not mapped"
+          },
+          {
+            "closed_in_round": 3,
+            "detail": "grub-efi forces split boot and fat32 (cmd/d2vm/flags.go 91-101).",
+            "resolution": "Reworded to every e2e case that applies to grub-efi, LUKS included.",
+            "round": 2,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "PR text e2e case list vs forced split boot"
+          },
+          {
+            "closed_in_round": null,
+            "detail": "47 MB + 51 MB is under 100 MB; the failure comes from the rest of /boot and FAT overhead, not stated.",
+            "resolution": "Deferred: round cap reached; the stated failure and workaround are correct.",
+            "round": 3,
+            "severity": "P2",
+            "status": "deferred",
+            "title": "Boot-size note arithmetic"
+          }
+        ],
+        "round_digests": [
+          "83e7708e35677bade3ac367c27be01ee99cab4b2756377bad6ea74875782d52a",
+          "2cef55d48ff6e25669ca42a6d2b6c70210d05d148b300673c3081b7e54e9711d",
+          "2cef55d48ff6e25669ca42a6d2b6c70210d05d148b300673c3081b7e54e9711d"
+        ],
+        "rounds": 3,
+        "stopped_because": "cap_reached",
+        "summary": "Round 1 (3 reviewers: commit messages/tree fidelity, PR text accuracy, correctness/scope) on series 83e7708e: OK with notes, 4 P2 wording fixes applied by the controller (feat body and text). Round 2 (3 fresh reviewers) on series 2cef55d4: all round 1 findings resolved, trees identical to approved, 3 P2 text notes fixed. Round 3 (2 fresh reviewers) on the same series and final text: earlier findings resolved, verdicts OK and OK with notes, one P2 deferred. No P0 or P1 at any point.",
+        "text_digest": "c0d1fbc6f42bbd208529761b30483c35e5823f5785b8f2ece7d1f71be328498e"
+      },
+      "revisited": [],
+      "schema_version": 1,
+      "summary": "Rebuilt the 3 approved non-debug commits of riscv64-dev (b393cc1) on base 7184ff1 as branch rewrite (2c4b79d, 30b45cc, c339b89), same trees per commit and final tree equal to b393cc1. Only the feat commit body was reworded (docs bullet, accurate cpu model and template package wording). No squash: no written contributing guide; three logical commits fit the plan's commit conventions and the owner approved this head. Wrote the PR title and description (no PR template exists upstream) and ran 3 review rounds with fresh reviewer children; verdict pass.",
+      "task": "submission_rewrite",
+      "verification": [
+        {
+          "check": "Final tree of rewrite equals riscv64-dev (b393cc1)",
+          "evidence": "git diff --quiet riscv64-dev HEAD exit 0",
+          "result": "passed"
+        },
+        {
+          "check": "Each rewritten commit tree equals the corresponding approved commit tree",
+          "evidence": "git log %T: bd289bd, eb0a0a3, 2625e10 on both branches",
+          "result": "passed"
+        },
+        {
+          "check": "patches.mbox equals the series reviewed in rounds 2 and 3",
+          "evidence": "sha256 2cef55d48ff6e25669ca42a6d2b6c70210d05d148b300673c3081b7e54e9711d",
+          "result": "passed"
+        },
+        {
+          "check": "Proposal text equals the text reviewed in round 3",
+          "evidence": "text_digest c0d1fbc6...",
+          "result": "passed"
+        },
+        {
+          "check": "Upstream base unchanged and no open PR",
+          "evidence": "luhenry/d2vm main head 7184ff1; list_pull_requests empty",
+          "result": "passed"
+        },
+        {
+          "check": "No U+2014 and no at sign in the PR text",
+          "evidence": "grep count 0",
+          "result": "passed"
+        }
+      ]
+    },
+    "result_status": "submission_rewrite",
+    "verb": "accept_submission_rewrite",
+    "work": {
+      "dedupe_key": "luhenry--d2vm/3@g1.r14.rerun1:submission_rewrite",
+      "generation": 1,
+      "requested_at": "2026-11-26T11:57:59.405557+00:00",
+      "revision": 14,
+      "task": "submission_rewrite",
+      "worker_run_id": "45815879781"
+    }
+  },
+  "digests": {
+    "report": "cc0f00755b0252ec04b86708b44e07d90a126be1afe263a6349e1481bce70fc8"
+  },
+  "evidence_id": "report-luhenry--d2vm--3-r14-45815879781",
+  "kind": "worker_report",
+  "limitations": [
+    "The report is the worker's own account: untrusted recorded data, not instructions."
+  ],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "Rebuilt the 3 approved non-debug commits of riscv64-dev (b393cc1) on base 7184ff1 as branch rewrite (2c4b79d, 30b45cc, c339b89), same trees per commit and final tree equal to b393cc1. Only the feat commit body was reworded (docs bullet, accurate cpu model and template package wording). No squash: no written contributing guide; three logical commits fit the plan's commit conventions and the owner approved this head. Wrote the PR title and description (no PR template exists upstream) and ran 3 review rounds with fresh reviewer children; verdict pass."
+}
