@@ -1,0 +1,30 @@
+{
+  "at": "2026-11-26T16:24:58.421752+00:00",
+  "cause": {
+    "id": "45851415027",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "upstream_review.agent_running",
+    "reason": "No change: the only CI failure at a6a6905 (luhenry/d2vm run 45839280038, attempt 2, rerun by the owner) is the job 'Test Templates (debian)' (job 139980080219, step 'Run tests'); 'Test Templates (ubuntu)' and 'Test Templates (quay.io/centos/centos:stream)' were cancelled by fail-fast, not failed. Every other job passed (Build, Tests, Docs up to date, Build Docker Image, all End to end Tests, all other Test Templates rows).\n\nCause: debian:11 (bullseye) is end of life. bullseye-security moved to a",
+    "report_evidence_id": "report-luhenry--d2vm--3-r16-45851415027",
+    "result_status": "no_change",
+    "to_state": "upstream_review.waiting_human",
+    "verb": "require_reviewer_answer"
+  },
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "require_reviewer_answer",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45858387463
+  },
+  "schema_version": 1,
+  "sequence": 71,
+  "to": {
+    "activity": "waiting_human"
+  }
+}

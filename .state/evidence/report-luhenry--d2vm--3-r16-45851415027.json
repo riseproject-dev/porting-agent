@@ -1,0 +1,112 @@
+{
+  "collected_at": "2026-11-26T16:24:58.421752+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "artifact": {
+      "artifact_id": 15137375939,
+      "run_id": "45851415027"
+    },
+    "changed_files": [],
+    "head_after": null,
+    "head_before": "a6a69050ee1a762619a0ccb3ff97765a94251876",
+    "report": {
+      "approaches": [
+        {
+          "description": "Compared CI of 4876b86 (debian:11 dropped, all green) with a6a6905 (debian:11 restored as on main, only Test Templates (debian) fails); reproduced the 404.",
+          "evidence": "runs 45836445169 success, 45839280038 attempt 2 failure job 139980080219; deb11.log sha256 4484fc9179e1af9f130885f1f67646921fe2618259be7b9531ccee64d7e28471",
+          "lesson": "The failure is Debian 11 EOL on main; a rerun fails again until main drops or archives debian:11.",
+          "outcome": "adopted",
+          "title": "Classify Test Templates (debian) as pre-existing"
+        },
+        {
+          "description": "Considered and rejected.",
+          "evidence": "Owner review 4708608309 asked to drop the debian:11 commit as unrelated.",
+          "lesson": "Do not fix the debian:11 test row in this series.",
+          "outcome": "abandoned",
+          "title": "Drop debian:11 again or redirect to archive.debian.org"
+        }
+      ],
+      "attempted": [
+        {
+          "what": "Read job lists of luhenry/d2vm runs 45839280038 and 45836445169",
+          "why": "Identify the failing job and compare with the head before the revert"
+        },
+        {
+          "what": "Reproduce debian:11 apt install of linux-image-amd64 in plain debian:11 on amd64",
+          "why": "Confirm the failure cause independently of d2vm and the series"
+        },
+        {
+          "what": "Build, vet, unit tests and e2e compile in the riscv64 image",
+          "why": "Mandatory riscv64 reproduction of the head"
+        }
+      ],
+      "contribution_id": "luhenry--d2vm/3",
+      "expected_revision": 16,
+      "failures": [
+        {
+          "evidence": "job 139980080219; apt 404 reproduced locally, log 4484fc91...; pre-existing on main",
+          "what": "CI Test Templates (debian) failed at a6a6905 (run 45839280038 attempt 2)"
+        },
+        {
+          "evidence": "log 74197793ee72ec2748dcb846bcbed3ec3523e7a46effac8f0c05739ecf6fe23a; rerun without it passed",
+          "what": "First riscv64 run included TestConfig, which needs a Docker daemon absent in the container"
+        }
+      ],
+      "history_digest": "7f88eabb6bb5190ad1410724c90ee1485ca14a1e012afe709d9e713f22f6084f",
+      "open_items": [
+        "Test Templates (debian) will keep failing while debian:11 stays in TestConfig on main; needs a separate change on main or owner acceptance of the red job.",
+        "Carried: default --boot-size 100 too small for ubuntu:24.04 on linux/riscv64 (owner decision).",
+        "Carried: a later linka-cloud submission may be asked for riscv64 e2e coverage the owner declined."
+      ],
+      "review_loop": {
+        "findings": [],
+        "round_digests": [],
+        "rounds": 0,
+        "stopped_because": "clean",
+        "summary": "No series is delivered (no_change, operation none), so there was nothing to review; head a6a6905 was reviewed in run 45835731120."
+      },
+      "revisited": [],
+      "schema_version": 1,
+      "summary": "CI at a6a6905 fails only in Test Templates (debian) because debian:11 is EOL (bullseye-security 404 on deb.debian.org), identical on main; the same tree without the debian:11 row (4876b86) passed every job. The owner asked to keep that fix out of the series, so no change; riscv64 build, vet and unit tests pass in the exact image.",
+      "task": "upstream_revision",
+      "verification": [
+        {
+          "check": "riscv64 image: go build, vet, unit tests, e2e compile at a6a6905",
+          "evidence": "uname riscv64, go1.25.5, exit 0, log ebe9c68f90d4c6df7c25cebe446104585c5180c198b44a4f3535078973df876a",
+          "result": "passed"
+        },
+        {
+          "check": "debian:11 apt failure independent of d2vm",
+          "evidence": "404 on bullseye-security linux-image-amd64 and udev, log 4484fc91...",
+          "result": "passed"
+        },
+        {
+          "check": "Project CI comparison 4876b86 vs a6a6905",
+          "evidence": "45836445169 all success; 45839280038 only Test Templates (debian) failed, two rows cancelled by fail-fast",
+          "result": "passed"
+        }
+      ]
+    },
+    "result_status": "no_change",
+    "verb": "require_reviewer_answer",
+    "work": {
+      "dedupe_key": "luhenry--d2vm/3@g1.r16:upstream_revision",
+      "generation": 1,
+      "requested_at": "2026-11-26T15:36:40.242920+00:00",
+      "revision": 16,
+      "task": "upstream_revision",
+      "worker_run_id": "45851415027"
+    }
+  },
+  "digests": {
+    "report": "f8c9c34220f0c919776839be654dba58c6a1afeedcab2cfa0351b255eeaff1a9"
+  },
+  "evidence_id": "report-luhenry--d2vm--3-r16-45851415027",
+  "kind": "worker_report",
+  "limitations": [
+    "The report is the worker's own account: untrusted recorded data, not instructions."
+  ],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "CI at a6a6905 fails only in Test Templates (debian) because debian:11 is EOL (bullseye-security 404 on deb.debian.org), identical on main; the same tree without the debian:11 row (4876b86) passed every job. The owner asked to keep that fix out of the series, so no change; riscv64 build, vet and unit tests pass in the exact image."
+}
