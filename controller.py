@@ -16,12 +16,8 @@ submissions, notifications). Nothing is executed here.
 
 from __future__ import annotations
 
-import argparse
-import json
-import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Any
 
 import capacity
@@ -45,8 +41,6 @@ from common import (
     DEV_REF,
     INTAKE_LABEL,
     contribution_file_id,
-    load_policy,
-    repository_root,
     validate_scope_paths,
 )
 
@@ -2460,111 +2454,3 @@ def _restart_launches(out: engine.Applied, operations: dict, res: TickResult, no
         op = recovery.restart_launches(op, now)
         operations[op["operation_id"]] = op
         res.stage("operations", op)
-
-
-def cmd_observe(args: argparse.Namespace) -> int:
-    """Run one read-only observation tick and print its deterministic report."""
-    import reconcile
-    import state
-
-    policy = load_policy()
-    root = Path(args.root) if args.root else repository_root()
-    try:
-        pending_migrations = state.pending_text_migrations(root)
-    except state.StateError as error:
-        print(f"legacy state text migration refused: {error}", file=sys.stderr)
-        return 1
-    if pending_migrations:
-        report = reconcile.state_text_migration_report(
-            [], pending=[migration.path for migration in pending_migrations]
-        )
-        print(json.dumps(report, indent=2))
-        return 0
-    try:
-        pending_records = state.pending_record_migrations(root, policy)
-    except state.StateError as error:
-        print(f"record migration refused: {error}", file=sys.stderr)
-        return 1
-    if pending_records:
-        print(json.dumps(reconcile.migration_report("record_migration", [],
-                                                    pending=pending_records), indent=2))
-        return 0
-    store = state.StateStore(root, policy)
-    contributions = dict(store.load_all("contributions"))
-    operations = {
-        value["operation_id"]: value for value in store.load_all("operations").values()
-    }
-    consumed = {
-        value["comment_id"]: value for value in store.load_all("commands").values()
-    }
-    projects = {value["project_id"]: value for value in store.load_all("projects").values()}
-    evidence = {value["evidence_id"]: value for value in store.load_all("evidence").values()}
-    now = datetime.now(timezone.utc)
-    if args.offline:
-        observed_pressure = capacity.Pressure(ok=False, reason="offline")
-    else:
-        try:
-            usage_snapshot, fetched_at = collect.usage(policy["capacity"]["usage_url"])
-            observed_pressure = capacity.pressure(
-                policy, usage_snapshot, fetched_at=fetched_at, now=now
-            )
-        except Exception as error:
-            observed_pressure = capacity.Pressure(
-                ok=False, reason=f"usage unavailable: {error}"
-            )
-    api = collect.Api()
-    issues = collect.intake_issues(api) if not args.offline else []
-    issue_numbers = sorted(
-        {record["tracking_issue"]["number"] for record in contributions.values()}
-        | {issue["number"] for issue in issues}
-    )
-    comments = (
-        collect.command_comments(api, issue_numbers, None) if not args.offline else []
-    )
-    if args.offline:
-        tracking_issues, upstream_snapshots = {}, {}
-    else:
-        tracking_issues = collect.tracking_issues(api, contributions.values(), issues)
-        upstream_snapshots = collect.upstream_snapshots(
-            api, contributions.values(), issues, policy, comments, consumed
-        )
-    result = tick(
-        contributions=contributions,
-        operations=operations,
-        consumed=consumed,
-        projects=projects,
-        policy=dict(policy, read_only=True),
-        inputs=Inputs(
-            now=now,
-            issues=issues,
-            comments=comments,
-            pressure=observed_pressure,
-            upstream_snapshots=upstream_snapshots,
-            tracking_issues=tracking_issues,
-        ),
-        evidence=evidence,
-    )
-    result.report["would_stage"] = [
-        state.record_path(kind, record)
-        if kind != "events"
-        else f"events/{record['contribution_id']}"
-        for kind, record in result.staged
-    ]
-    result.report["requested_effects"] = result.requested_effects
-    print(json.dumps(result.report, indent=2, default=str))
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m controller")
-    subcommands = parser.add_subparsers(dest="command", required=True)
-    observe_parser = subcommands.add_parser("observe")
-    observe_parser.add_argument("root", nargs="?")
-    observe_parser.add_argument("--offline", action="store_true")
-    observe_parser.set_defaults(handler=cmd_observe)
-    args = parser.parse_args(argv)
-    return args.handler(args)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

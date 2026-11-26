@@ -55,27 +55,6 @@
       "stderr": "",
       "files": []
     },
-    "controller.observe": {
-      "exit": 0,
-      "jsonWithoutAt": {
-        "policy_version": "2026-11-18.1-proposed",
-        "read_only": true,
-        "commands": [],
-        "intake": [],
-        "operations": [],
-        "selected": [],
-        "deferred": [],
-        "alerts": [],
-        "provision_requests": [],
-        "dev_pr_requests": [],
-        "note": "read-only: requested effects are reported, not executed",
-        "would_stage": [],
-        "requested_effects": [],
-        "handoff_requests": []
-      },
-      "stderr": "",
-      "files": []
-    },
     "work.plan": {
       "exit": 0,
       "json": {

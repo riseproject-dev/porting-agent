@@ -3,16 +3,13 @@
 """Section 21: state publisher final-tree checks, hostile publisher inputs."""
 
 import hashlib
-import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import controller
 import publisher
 import reconcile
 import state
@@ -58,14 +55,6 @@ class TestStateDiff(unittest.TestCase):
             migration_id="test-observe-u2014-migration",
         )
         return migration, path, data
-
-    def run_observe(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        args = SimpleNamespace(root=str(self.repo), offline=False)
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            result = controller.cmd_observe(args)
-        return result, stdout.getvalue(), stderr.getvalue()
 
     def test_valid_state_commit(self):
         c = commit_files(self.repo, {self.path: canonical_json(self.rec)})
@@ -257,76 +246,6 @@ class TestStateDiff(unittest.TestCase):
         self.assertEqual(event["kind"], "state_text_normalized")
         self.assertEqual(event["cause"], {"type": "migration", "id": migration.migration_id})
         self.assertEqual(event["run"], {"id": 77, "attempt": 1})
-
-    def test_live_observe_reports_exact_pending_migration_without_loading_state(self):
-        migration, path, original = self.observe_migration()
-        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)), patch.object(
-            state.StateStore,
-            "load_all",
-            side_effect=AssertionError("pending migration must short-circuit state loading"),
-        ):
-            result, stdout, stderr = self.run_observe()
-        self.assertEqual(result, 0)
-        self.assertEqual(stderr, "")
-        report = json.loads(stdout)
-        self.assertEqual(report["state_text_migration"]["pending"], [path])
-        self.assertEqual(report["state_text_migration"]["written"], [])
-        self.assertEqual((self.repo / path).read_bytes(), original)
-        self.assertFalse((self.repo / ".state/events").exists())
-
-    def test_live_observe_rejects_mismatched_pending_blob(self):
-        migration, path, original = self.observe_migration(expected_sha="0" * 64)
-        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)), patch.object(
-            state.StateStore,
-            "load_all",
-            side_effect=AssertionError("a mismatched migration must not load state"),
-        ):
-            result, stdout, stderr = self.run_observe()
-        self.assertEqual(result, 1)
-        self.assertEqual(stdout, "")
-        self.assertIn(f"legacy state text migration refused: {path}", stderr)
-        self.assertIn("expected", stderr)
-        self.assertEqual((self.repo / path).read_bytes(), original)
-
-    def test_live_observe_without_pending_migration_runs_normal_observation(self):
-        migration = state.LegacyTextMigration(
-            path=".state/evidence/absent.json",
-            sha256="0" * 64,
-            contribution_id=self.rec["contribution_id"],
-            migration_id="test-absent-migration",
-        )
-        api = object()
-        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)), \
-             patch.object(controller.collect, "Api", return_value=api), \
-             patch.object(controller.collect, "usage", side_effect=RuntimeError("offline")), \
-             patch.object(controller.collect, "intake_issues", return_value=[]), \
-             patch.object(controller.collect, "command_comments", return_value=[]), \
-             patch.object(controller.collect, "tracking_issues", return_value={}) as loaded, \
-             patch.object(controller.collect, "upstream_snapshots", return_value={}):
-            result, stdout, stderr = self.run_observe()
-        self.assertEqual(result, 0)
-        self.assertEqual(stderr, "")
-        self.assertNotIn("state_text_migration", json.loads(stdout))
-        loaded.assert_called_once()
-
-    def test_live_observe_pending_report_is_workflow_compatible(self):
-        migration, path, _original = self.observe_migration()
-        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)):
-            result, stdout, stderr = self.run_observe()
-        self.assertEqual(result, 0)
-        self.assertEqual(stderr, "")
-        report = json.loads(stdout)
-        self.assertEqual(report["state_text_migration"], {"written": [], "pending": [path]})
-        self.assertEqual(report["written"], [])
-        self.assertEqual(report["controller"], {})
-        for key in (
-            "requested_effects",
-            "dispatch_relaunch",
-            "provision_requests",
-            "publication_retries",
-            "dev_pr_requests",
-        ):
-            self.assertEqual(report[key], [], key)
 
     def test_controller_migration_report_has_no_downstream_effects(self):
         dash = chr(0x2014)

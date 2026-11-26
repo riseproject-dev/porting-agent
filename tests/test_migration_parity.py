@@ -118,7 +118,6 @@ class TestCliContracts(unittest.TestCase):
             ("triggers", "audit", "--help"),
             ("commands", "parse", "--help"),
             ("capacity", "observe", "--help"),
-            ("controller", "observe", "--help"),
             ("tasks", "plan", "--help"),
             ("reconcile", "--help"),
         )
@@ -165,13 +164,6 @@ class TestCliContracts(unittest.TestCase):
             expected = captures["capacity.observe"]
             self.assertEqual(result.returncode, expected["exit"])
             self.assertEqual(json.loads(result.stdout), expected["json"])
-            self.assertEqual(result.stderr, expected["stderr"])
-
-            result = run_module("controller", "observe", str(fixture), "--offline")
-            expected = captures["controller.observe"]
-            self.assertEqual(result.returncode, expected["exit"])
-            self.assertEqual(normalized_without_at(json.loads(result.stdout)),
-                             expected["jsonWithoutAt"])
             self.assertEqual(result.stderr, expected["stderr"])
 
             subprocess.run(["git", "init", "-q", str(fixture)], check=True)

@@ -18,7 +18,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -261,16 +261,6 @@ class TestControllerMigratesByItself(unittest.TestCase):
         self.assertEqual(len(store.load_all("contributions")), 1)
         self.assertEqual(len(store.load_all("events")), 3)
 
-    def test_observe_reports_the_pending_migration_without_writing(self):
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            result = controller.cmd_observe(SimpleNamespace(root=str(self.repo), offline=True))
-        self.assertEqual((result, stderr.getvalue()), (0, ""))
-        report = json.loads(stdout.getvalue())
-        self.assertEqual(report["record_migration"], {"written": [], "pending": [RECORD_PATH]})
-        self.assertEqual(report["requested_effects"], [])
-        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
-
     def test_state_validate_admits_only_the_exact_pending_shape(self):
         store = state.StateStore(self.repo, self.p)
         self.assertEqual(len(store.load_all("contributions")), 1)
@@ -288,10 +278,6 @@ class TestControllerMigratesByItself(unittest.TestCase):
         self.assertIn("no reviewed record migration for this record", stderr)
         self.assertEqual((self.repo / RECORD_PATH).read_text(), text)
         self.assertFalse((self.repo / EVENT_PATH).exists())
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            self.assertEqual(controller.cmd_observe(
-                SimpleNamespace(root=str(self.repo), offline=True)), 1)
 
 
 class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):

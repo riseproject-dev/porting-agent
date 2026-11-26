@@ -594,7 +594,6 @@ class TestWorkflowContracts(unittest.TestCase):
         holders = [s["name"] for s in steps
                    if "PORTING_HTTP_CACHE" in str(s.get("env", {}))]
         self.assertEqual(holders, ["Reconcile deterministic state locally"])
-        self.assertNotIn("PORTING_HTTP_CACHE", str(workflow("controller.yml")["jobs"]["observe"]))
 
     @unittest.skipUnless(shutil.which("unzip") and shutil.which("jq"), "unzip and jq needed")
     def test_collector_drops_a_worker_run_id_from_planner_and_worker_artifacts(self):
@@ -833,14 +832,13 @@ class TestWorkflowContracts(unittest.TestCase):
 
     def test_controller_reconciles_current_main_not_stale_event_sha(self):
         controller = workflow("controller.yml")
-        for job_name in ("observe", "reconcile"):
-            checkout = next(
-                step
-                for step in controller["jobs"][job_name]["steps"]
-                if str(step.get("uses", "")).startswith("actions/checkout@")
-            )
-            self.assertEqual(checkout["with"]["ref"], "main")
-            self.assertFalse(checkout["with"]["persist-credentials"])
+        checkout = next(
+            step
+            for step in controller["jobs"]["reconcile"]["steps"]
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+        self.assertEqual(checkout["with"]["ref"], "main")
+        self.assertFalse(checkout["with"]["persist-credentials"])
 
     def test_command_acknowledgement_is_fast_idempotent_and_not_serialized(self):
         controller = workflow("controller.yml")

@@ -2658,7 +2658,7 @@ class _Stop(Exception):
 
 
 class TestEntryPointsPassCommandsToTheCollector(unittest.TestCase):
-    """`controller observe` and `reconcile` hand the command comments and
+    """`reconcile` hands the command comments and
     the command ledger they read to the upstream snapshot collector, which
     reads a parked upstream for a refresh the controller can still take."""
 
@@ -2707,12 +2707,6 @@ class TestEntryPointsPassCommandsToTheCollector(unittest.TestCase):
         a, k = calls[0]
         self.assertEqual(a[4], self.COMMENTS)
         self.assertEqual(set(a[5]), {50})
-
-    def test_observe(self):
-        from types import SimpleNamespace
-        self.run_entry(controller.cmd_observe,
-                       SimpleNamespace(root=str(self.root), offline=False),
-                       "controller.load_policy")
 
     def test_reconcile(self):
         from types import SimpleNamespace

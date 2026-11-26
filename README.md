@@ -36,7 +36,6 @@ python -m state check-diff BASE CANDIDATE
 python -m triggers audit
 python -m commands parse FILE
 python -m capacity observe
-python -m controller observe --offline
 python -m tasks plan --out PLAN.json --control-repo-id ID
 python -m reconcile --offline
 ```
