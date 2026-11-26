@@ -1,0 +1,33 @@
+{
+  "at": "2026-11-26T14:01:20.774491+00:00",
+  "cause": {
+    "id": "upstream-pr-5510348368",
+    "type": "observation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "author": "luhenry",
+    "from_state": "handoff.waiting_upstream_pr",
+    "head": "4876b86e4dd27752e33f067469048fb766c8ad98",
+    "pr_number": 1,
+    "to_state": "upstream_review.waiting_ci",
+    "url": "https://github.com/luhenry/d2vm/pull/1",
+    "verb": "verify_upstream_pr"
+  },
+  "from": {
+    "activity": "waiting_upstream_pr",
+    "phase": "handoff"
+  },
+  "kind": "verify_upstream_pr",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45834612657
+  },
+  "schema_version": 1,
+  "sequence": 64,
+  "to": {
+    "activity": "waiting_ci",
+    "phase": "upstream_review"
+  }
+}
