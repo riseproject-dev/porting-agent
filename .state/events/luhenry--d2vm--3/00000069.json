@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-26T15:36:40.242920+00:00",
+  "cause": {
+    "id": "ci-1468806020-45839280038-2",
+    "type": "observation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "evidence_id": "ci-1468806020-45839280038-2",
+    "from_state": "upstream_review.waiting_ci",
+    "to_state": "upstream_review.fix_needed",
+    "verb": "record_upstream_ci_failure"
+  },
+  "from": {
+    "activity": "waiting_ci"
+  },
+  "kind": "record_upstream_ci_failure",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45850592433
+  },
+  "schema_version": 1,
+  "sequence": 69,
+  "to": {
+    "activity": "fix_needed"
+  }
+}

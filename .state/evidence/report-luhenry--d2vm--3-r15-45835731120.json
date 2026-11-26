@@ -1,17 +1,16 @@
 {
-  "collected_at": "2026-11-26T14:29:09.979883+00:00",
+  "collected_at": "2026-11-26T15:36:40.242920+00:00",
   "contribution_id": "luhenry--d2vm/3",
   "data": {
     "artifact": {
-      "artifact_id": 15126248187,
+      "artifact_id": 15133092440,
       "run_id": "45835731120"
     },
     "changed_files": [
       "config_test.go"
     ],
-    "head_after": null,
+    "head_after": "a6a69050ee1a762619a0ccb3ff97765a94251876",
     "head_before": "4876b86e4dd27752e33f067469048fb766c8ad98",
-    "head_candidate": "a6a69050ee1a762619a0ccb3ff97765a94251876",
     "report": {
       "approaches": [
         {
@@ -113,8 +112,8 @@
         }
       ]
     },
-    "result_status": "uncertain",
-    "verb": "schedule_publish_retry",
+    "result_status": "published",
+    "verb": "record_revision_publish_success",
     "work": {
       "dedupe_key": "luhenry--d2vm/3@g1.r15:upstream_revision",
       "generation": 1,
