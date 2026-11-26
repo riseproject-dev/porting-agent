@@ -1,0 +1,30 @@
+{
+  "at": "2026-11-26T12:20:12.644999+00:00",
+  "cause": {
+    "id": "ci-1469259163-45588297911-2",
+    "type": "observation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "clean_head": "4876b86e4dd27752e33f067469048fb766c8ad98",
+    "evidence_id": "ci-1469259163-45588297911-2",
+    "from_state": "handoff.waiting_ci",
+    "head": "b393cc111205dd693b669458942646c53ed7311a",
+    "to_state": "handoff.preparing_submission",
+    "verb": "accept_clean_head_ci"
+  },
+  "from": {
+    "activity": "waiting_ci"
+  },
+  "kind": "accept_clean_head_ci",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45818565860
+  },
+  "schema_version": 1,
+  "sequence": 62,
+  "to": {
+    "activity": "preparing_submission"
+  }
+}

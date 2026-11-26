@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-26T12:20:12.644999+00:00",
+  "cause": {
+    "id": "op-292aa344b4f446b63f580ca7",
+    "type": "operation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "attempt": 1,
+    "from_state": "handoff.building_upstream_branch",
+    "head": "4876b86e4dd27752e33f067469048fb766c8ad98",
+    "operation": "op-292aa344b4f446b63f580ca7",
+    "replaced": null,
+    "to_state": "handoff.waiting_ci",
+    "verb": "confirm_clean_head",
+    "written": true
+  },
+  "from": {
+    "activity": "building_upstream_branch"
+  },
+  "kind": "confirm_clean_head",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45818565860
+  },
+  "schema_version": 1,
+  "sequence": 61,
+  "to": {
+    "activity": "waiting_ci"
+  }
+}
