@@ -1,0 +1,30 @@
+{
+  "at": "2026-11-26T14:03:01.659480+00:00",
+  "cause": {
+    "id": "review-1468806020-1-4708608309",
+    "type": "observation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "evidence_id": "review-1468806020-1-4708608309",
+    "from_state": "upstream_review.waiting_ci",
+    "to_state": "upstream_review.fix_needed",
+    "verb": "record_actionable_review"
+  },
+  "from": {
+    "activity": "waiting_ci",
+    "revision": 14
+  },
+  "kind": "record_actionable_review",
+  "revision_bumped": true,
+  "run": {
+    "attempt": 1,
+    "id": 45834909644
+  },
+  "schema_version": 1,
+  "sequence": 65,
+  "to": {
+    "activity": "fix_needed",
+    "revision": 15
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "collected_at": "2026-11-26T14:03:01.659480+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "comment_ids": [
+      4708608309
+    ],
+    "comments": [
+      {
+        "body": "Drop that commit, it’s unrelated to this change.",
+        "commit_id": "4876b86e4dd27752e33f067469048fb766c8ad98",
+        "id": 4708608309,
+        "intent": "repair",
+        "line": 1,
+        "path": "config_test.go",
+        "review_id": 6074440826,
+        "reviewer": "luhenry",
+        "url": "https://github.com/luhenry/d2vm/pull/1#discussion_r4708608309"
+      }
+    ],
+    "conversation_comment_ids": [],
+    "conversation_comments": [],
+    "inquiry_comment_ids": [],
+    "inquiry_comments": [],
+    "inquiry_conversation_comment_ids": [],
+    "inquiry_conversation_comments": [],
+    "review_ids": [],
+    "reviews": []
+  },
+  "digests": {
+    "head": "4876b86e4dd27752e33f067469048fb766c8ad98"
+  },
+  "evidence_id": "review-1468806020-1-4708608309",
+  "kind": "human_relay",
+  "limitations": [],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "Drop that commit, it’s unrelated to this change."
+}
