@@ -1957,7 +1957,10 @@ LIFECYCLE: dict[str, State] = {
         }),
     "release_wait.idle": State(
         "auto_wait", False, False,
-        "The upstream PR is merged; official release coverage is observed.",
+        "The upstream PR is merged; the official release is observed: PyPI coverage of a "
+        "recorded target contract, else the first PyPI release of the distributions or the "
+        "first GitHub release of the upstream repository after the merge that has a linux "
+        "riscv64 wheel or asset.",
         transitions={
             ("record_release_incomplete", SELF): Transition(
                 _O, None,

@@ -9,10 +9,11 @@ import state
 from tests.helpers import policy
 
 ROOT = Path(__file__).resolve().parent.parent
-LIVE = ROOT / ".state/evidence/ci-1467208233-45150934812-1.json"
+# The CI evidence the live store held for closeio--ciso8601/1 at the submission gate,
+# frozen so that the test never reads the live `.state`.
+LIVE = ROOT / "tests/fixtures/live-ciso8601-gate/evidence/ci-1467208233-45150934812-1.json"
 
 
-@unittest.skipUnless(LIVE.is_file(), "live CI evidence not present")
 class EvidenceRestage(unittest.TestCase):
     def store(self, directory):
         store = state.StateStore(Path(directory), policy())

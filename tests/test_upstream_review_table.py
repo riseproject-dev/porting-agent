@@ -78,7 +78,7 @@ def pull(head=SHA_A, state="open", merged=False):
 
 
 def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feedback=None,
-         now=T, evidence=None, operations=None, contracts=(), pypi=None, contains=None,
+         now=T, evidence=None, operations=None, contracts=(), pypi=None, contains=None, github=None,
          audited=None, comments=(), capacity_ok=False, snap=None):
     evidence = dict(evidence or {})
     evidence.update({c["evidence_id"]: c for c in contracts})
@@ -100,6 +100,10 @@ def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feed
                        return_value=snap or ci_snapshot((pr or pull())["head_sha"], verdict)), \
             mock.patch("observe_ci.collect.pypi_project",
                        side_effect=lambda name: copy.deepcopy((pypi or {}).get(name))), \
+            mock.patch("observe_ci.collect.github_releases",
+                       side_effect=lambda _api, _repo: _read(github)), \
+            mock.patch("observe_ci.collect.tag_contains",
+                       side_effect=lambda _api, _repo, tag, _sha: (contains or {}).get(tag)), \
             mock.patch("observe_ci.collect.release_contains",
                        side_effect=lambda _api, _repo, version, _sha: (contains or {}).get(version)), \
             contextlib.redirect_stderr(io.StringIO()):
@@ -110,6 +114,13 @@ def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feed
                              dispatcher_runs=[], queue_works={})
     out.reads = reads
     return out
+
+
+def _read(github):
+    """The GitHub releases a test serves, or the error it raises."""
+    if isinstance(github, BaseException):
+        raise github
+    return copy.deepcopy(github or [])
 
 
 def run_snapshot(*runs, head=SHA_A):
@@ -794,9 +805,11 @@ class TestRelease(unittest.TestCase):
             {"filename": name, "yanked": False, "digests": {"sha256": "0" * 64},
              "upload_time_iso_8601": "2026-11-22T00:00:00Z"} for name in files]}}}
 
-    def test_without_a_contract_an_operator_acts(self):
-        rec = released_wait()
-        out = tick(rec)
+    def test_a_named_contract_without_rows_needs_an_operator(self):
+        bare = {"schema_version": 1, "evidence_id": "contract-2", "kind": "target_contract",
+                "data": {"distributions": ["proj"]}}
+        rec = released_wait(contract="contract-2")
+        out = tick(rec, contracts=[bare])
         self.assertEqual(kinds(out), ["require_release_intervention"])
         after = final(out, rec)
         self.assertEqual((engine.state_key(after), after["pending_human_action"]["kind"]),
@@ -853,6 +866,194 @@ class TestRelease(unittest.TestCase):
         merge = dict(MERGE, merged_at="2026-11-22T12:00:00+00:00")
         decision = release.decide(contract, merge=merge, pypi=pypi, contains=lambda v: True)
         self.assertEqual(decision.verb, "record_release_incomplete")
+
+
+class TestGithubRelease(unittest.TestCase):
+    """A contribution that names no target contract waits for the first GitHub
+    release of its upstream repository that contains the merge."""
+
+    def gh(self, tag, *assets, published="2026-11-24T00:00:00Z", prerelease=False):
+        return {"tag": tag, "url": f"https://github.com/o/r/releases/tag/{tag}",
+                "published_at": published, "prerelease": prerelease, "assets": list(assets)}
+
+    def run_tick(self, releases, contains, **kwargs):
+        rec = released_wait(distributions=[])
+        return rec, tick(rec, github=releases, contains=contains, **kwargs)
+
+    def test_no_release_yet_stays_idle_without_a_human_wait(self):
+        for releases in ([], [self.gh("v1.0.0", "x_linux_riscv64.tgz",
+                                       published="2026-11-19T00:00:00Z")]):
+            rec, out = self.run_tick(releases, {"v1.0.0": True})
+            self.assertEqual(kinds(out), [])
+            self.assertEqual(staged(out, "contributions"), [])
+            self.assertEqual(staged(out, "events"), [])
+            self.assertEqual(engine.state_key(final(out, rec)), "release_wait.idle")
+            self.assertIsNone(final(out, rec)["pending_human_action"])
+
+    def test_a_release_with_a_linux_riscv64_asset_is_verified(self):
+        rec, out = self.run_tick([self.gh("v1.1.0", "d2vm_1.1.0_Linux_RISCV64.tar.gz")],
+                                 {"v1.1.0": True})
+        self.assertEqual(kinds(out), ["verify_release"])
+        after = final(out, rec)
+        self.assertEqual(engine.state_key(after), "released.idle")
+        [ev] = [e for e in staged(out, "evidence") if e["kind"] == "release_acceptance"]
+        self.assertEqual(after["release_acceptance"]["evidence_id"], ev["evidence_id"])
+        self.assertEqual(ev["data"]["channel"], "github_release")
+        self.assertEqual(ev["data"]["releases"], {"example/proj": "v1.1.0"})
+        self.assertEqual(ev["data"]["assets"], ["d2vm_1.1.0_Linux_RISCV64.tar.gz"])
+
+    def test_a_release_without_such_an_asset_is_incomplete_once(self):
+        releases = [self.gh("v1.1.0", "x_linux_amd64.tgz", "x_darwin_riscv64.tgz",
+                            "riscv64.sha256")]
+        rec, out = self.run_tick(releases, {"v1.1.0": True})
+        self.assertEqual(kinds(out), ["record_release_incomplete"])
+        self.assertEqual(engine.state_key(final(out, rec)), "release_wait.idle")
+        key = staged(out, "events")[0]["details"]["observation_key"]
+        again = tick(rec, github=releases, contains={"v1.1.0": True},
+                     audited={rec["contribution_id"]: {key}})
+        self.assertEqual(kinds(again), [])
+
+    def test_a_tag_that_predates_the_merge_is_ignored(self):
+        # Published after the merge, but its tag does not contain it.
+        rec, out = self.run_tick([self.gh("v0.9.1", "x_linux_riscv64.tgz")], {"v0.9.1": False})
+        self.assertEqual(kinds(out), [])
+        # Contains it, but was published before it.
+        rec, out = self.run_tick([self.gh("v1.0.0", "x_linux_riscv64.tgz",
+                                          published="2026-11-19T00:00:00Z")], {"v1.0.0": True})
+        self.assertEqual(kinds(out), [])
+
+    def test_a_release_without_the_asset_does_not_block_a_newer_one(self):
+        lacking = self.gh("v1.1.0", "x_linux_amd64.tgz", published="2026-11-25T00:00:00Z")
+        newer = self.gh("v1.2.0", "x_linux_riscv64.tgz", published="2026-11-26T00:00:00Z")
+        old = self.gh("v1.0.1", "x_linux_riscv64.tgz", published="2026-11-24T00:00:00Z")
+        contains = {"v1.2.0": True, "v1.1.0": True, "v1.0.1": False}
+        # Only the release without the asset exists: incomplete, once.
+        rec, out = self.run_tick([lacking, old], contains)
+        self.assertEqual(kinds(out), ["record_release_incomplete"])
+        self.assertIn("v1.1.0", staged(out, "events")[0]["details"]["incomplete"])
+        key = staged(out, "events")[0]["details"]["observation_key"]
+        self.assertEqual(kinds(tick(rec, github=[lacking, old], contains=contains,
+                                    audited={rec["contribution_id"]: {key}})), [])
+        # A newer release with the asset verifies; the one before it is not a blocker.
+        rec, out = self.run_tick([newer, lacking, old], contains)
+        self.assertEqual(kinds(out), ["verify_release"])
+        [ev] = [e for e in staged(out, "evidence") if e["kind"] == "release_acceptance"]
+        self.assertEqual(ev["data"]["releases"], {"example/proj": "v1.2.0"})
+        # A newer release without the asset is a new observation.
+        also = self.gh("v1.3.0", "x_darwin_arm64.tgz", published="2026-11-27T00:00:00Z")
+        rec, out = self.run_tick([also, lacking], dict(contains, **{"v1.3.0": True}),
+                                 audited={"example--proj/12": {key}})
+        self.assertEqual(kinds(out), ["record_release_incomplete"])
+        self.assertIn("v1.1.0, v1.3.0", staged(out, "events")[0]["details"]["incomplete"])
+
+    def test_prereleases_count_only_when_no_stable_release_exists(self):
+        pre = self.gh("v2.0.0-rc1", "x_linux_riscv64.tgz", prerelease=True)
+        stable = self.gh("v0.1.0", "x_linux_amd64.tgz", published="2026-11-01T00:00:00Z")
+        rec, out = self.run_tick([pre, stable], {"v2.0.0-rc1": True})
+        self.assertEqual(kinds(out), [])
+        rec, out = self.run_tick([pre], {"v2.0.0-rc1": True})
+        self.assertEqual(kinds(out), ["verify_release"])
+
+    def test_the_matching_rule_is_the_lowercase_name(self):
+        for name, ok in (("a_linux_riscv64.tgz", True), ("A-LINUX-RISCV64.zip", True),
+                         ("riscv64-unknown-linux-gnu.tar.xz", True), ("a_linux_riscv.tgz", False),
+                         ("a_windows_riscv64.zip", False), ("linux.tgz", False)):
+            self.assertEqual(release.asset_is_linux_riscv64(name), ok, name)
+
+    def test_a_failed_read_changes_nothing(self):
+        rec = released_wait(distributions=[])
+        out = tick(rec, github=collect.CollectError("GET releases: HTTP 502"))
+        self.assertEqual(kinds(out), [])
+        self.assertEqual(staged(out, "contributions"), [])
+
+    def test_a_named_pypi_contract_never_reads_github(self):
+        rec = released_wait(contract="contract-1", distributions=[])
+        out = tick(rec, github=AssertionError("GitHub read"), contracts=[TestRelease.CONTRACT],
+                   pypi=TestRelease().pypi("proj-1.1.0-cp312-cp312-manylinux_2_39_riscv64.whl"),
+                   contains={"1.1.0": True})
+        self.assertEqual(kinds(out), ["verify_release"])
+
+
+class TestPypiWithoutContract(unittest.TestCase):
+    """The ciso8601 shape: a PyPI project (`distributions`) and no target
+    contract. Each distribution needs a non-yanked linux riscv64 wheel in the
+    oldest release after the merge whose tag contains it."""
+
+    def pypi(self, *releases, name="proj"):
+        """``releases``: ``(version, uploaded, [(filename, yanked)])``."""
+        return {name: {"releases": {v: [
+            {"filename": f, "yanked": y, "digests": {"sha256": "0" * 64},
+             "upload_time_iso_8601": up} for f, y in files] for v, up, files in releases}}}
+
+    def wait(self, **kwargs):
+        rec = released_wait(distributions=["proj"])
+        return rec, tick(rec, **kwargs)
+
+    def test_a_riscv64_wheel_of_a_release_that_contains_the_merge_verifies(self):
+        for wheel in ("proj-1.1.0-cp312-cp312-manylinux_2_39_riscv64.whl",
+                      "proj-1.1.0-cp312-cp312-musllinux_1_2_riscv64.whl",
+                      "proj-1.1.0-py3-none-linux_riscv64.whl"):
+            rec, out = self.wait(pypi=self.pypi(("1.1.0", "2026-11-22T00:00:00Z", [(wheel, False)])),
+                                 contains={"1.1.0": True})
+            self.assertEqual(kinds(out), ["verify_release"], wheel)
+            after = final(out, rec)
+            self.assertEqual(engine.state_key(after), "released.idle")
+            [ev] = [e for e in staged(out, "evidence") if e["kind"] == "release_acceptance"]
+            self.assertEqual(ev["data"]["releases"], {"proj": "1.1.0"})
+            self.assertEqual(ev["data"]["wheels"], {"proj": [wheel]})
+
+    def test_a_release_without_such_a_wheel_is_incomplete(self):
+        for files in ([("proj-1.1.0-cp312-cp312-manylinux_2_39_x86_64.whl", False)],
+                      [("proj-1.1.0-cp312-cp312-manylinux_2_39_riscv64.whl", True)],
+                      [("proj-1.1.0.tar.gz", False)],
+                      [("proj-1.1.0-py3-none-any.whl", False)],
+                      [("proj-1.1.0-cp312-cp312-macosx_11_0_riscv64.whl", False)]):
+            rec, out = self.wait(pypi=self.pypi(("1.1.0", "2026-11-22T00:00:00Z", files)),
+                                 contains={"1.1.0": True})
+            self.assertEqual(kinds(out), ["record_release_incomplete"], files)
+            self.assertEqual(engine.state_key(final(out, rec)), "release_wait.idle")
+
+    def test_it_never_reads_github_and_does_not_wait_for_a_human(self):
+        rec, out = self.wait(github=AssertionError("GitHub read"), pypi=self.pypi())
+        self.assertEqual(kinds(out), ["record_release_incomplete"])
+        self.assertIn("no official release", staged(out, "events")[0]["details"]["incomplete"])
+
+    def test_a_release_without_a_wheel_does_not_block_a_newer_one(self):
+        pypi = self.pypi(
+            ("1.1.0", "2026-11-22T00:00:00Z", [("proj-1.1.0-py3-none-any.whl", False)]),
+            ("1.2.0", "2026-11-23T00:00:00Z",
+             [("proj-1.2.0-cp312-cp312-manylinux_2_39_riscv64.whl", False)]))
+        rec, out = self.wait(pypi=pypi, contains={"1.1.0": True, "1.2.0": True})
+        self.assertEqual(kinds(out), ["verify_release"])
+        self.assertEqual(final(out, rec)["release_acceptance"]["complete"], True)
+
+    def test_a_release_before_the_merge_or_without_it_is_not_a_candidate(self):
+        wheel = "proj-1.1.0-cp312-cp312-manylinux_2_39_riscv64.whl"
+        for upload, contains in (("2026-11-19T00:00:00Z", True), ("2026-11-22T00:00:00Z", False)):
+            rec, out = self.wait(pypi=self.pypi(("1.1.0", upload, [(wheel, False)])),
+                                 contains={"1.1.0": contains})
+            self.assertEqual(kinds(out), ["record_release_incomplete"])
+
+    def test_a_distribution_missing_from_pypi_needs_an_operator(self):
+        rec, out = self.wait(pypi={})
+        self.assertEqual(final(out, rec)["pending_human_action"]["kind"],
+                         release.DISTRIBUTION_MISSING)
+
+    def test_every_distribution_needs_a_wheel(self):
+        rec = released_wait(distributions=["a", "b"])
+        wheel = "{n}-1.0-cp312-cp312-manylinux_2_39_riscv64.whl"
+        pypi = {**self.pypi(("1.0", "2026-11-22T00:00:00Z", [(wheel.format(n="a"), False)]), name="a"),
+                **self.pypi(("1.0", "2026-11-22T00:00:00Z", [("b-1.0-py3-none-any.whl", False)]),
+                            name="b")}
+        out = tick(rec, pypi=pypi, contains={"1.0": True})
+        self.assertEqual(kinds(out), ["record_release_incomplete"])
+        self.assertIn("b:", staged(out, "events")[0]["details"]["incomplete"])
+
+    def test_a_named_contract_keeps_its_rows_whatever_the_distributions(self):
+        rec = released_wait(contract="contract-1", distributions=["other"])
+        pypi = TestRelease().pypi("proj-1.1.0-cp312-cp312-manylinux_2_39_x86_64.whl")
+        out = tick(rec, contracts=[TestRelease.CONTRACT], pypi=pypi, contains={"1.1.0": True})
+        self.assertEqual(kinds(out), ["record_release_incomplete"])
 
 
 class TestLedgerAndResponses(unittest.TestCase):

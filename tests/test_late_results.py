@@ -129,6 +129,7 @@ def tick(record, publications=(), *, observe=False, verdict="pending", head=SHA_
             mock.patch("observe_ci.collect.upstream_review_feedback", return_value=feedback), \
             mock.patch("observe_ci.collect.upstream_pull", return_value=upstream), \
             mock.patch("observe_ci.collect.pypi_project", return_value=None), \
+            mock.patch("observe_ci.collect.github_releases", return_value=[]), \
             mock.patch("observe_ci.collect.ci_snapshot", return_value=ci_snapshot(head, verdict)), \
             contextlib.redirect_stderr(io.StringIO()):
         return reconcile.tick(helpers.NoReadApi() if observe else None, snapshot, policy=policy, now=now,

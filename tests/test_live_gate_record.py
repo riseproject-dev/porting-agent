@@ -29,6 +29,9 @@ from tests.test_live_handoff_migration import CI_EVIDENCE, HEAD, comment
 
 FIXTURES = Path(__file__).parent / "fixtures/live-gate-dev"
 FORK = "riseproject-upstreaming/ciso8601"
+# The live record and its evidence as committed at the submission gate (frozen: the
+# tests never read the live `.state`, which has moved on).
+FROZEN = Path(__file__).parent / "fixtures" / "live-ciso8601-gate"
 RECORD_PATH = ".state/contributions/closeio--ciso8601--1.json"
 
 
@@ -126,9 +129,7 @@ class TestTheLiveRecordAndItsHistory(unittest.TestCase):
     """The committed live record takes the history step without change."""
 
     def live(self) -> dict:
-        path = Path(__file__).parents[1] / RECORD_PATH
-        if not path.is_file():
-            self.skipTest("the live record is not in this checkout")
+        path = FROZEN / "contribution.json"
         value = state.migrate_names("contributions", json.loads(path.read_text()))[0]
         if state.needs_field_migration(value):
             value = state.migrate_record_fields(value, now="2026-11-23T13:00:00+00:00")[0]
@@ -138,7 +139,7 @@ class TestTheLiveRecordAndItsHistory(unittest.TestCase):
         world = World(record=self.live())
         world.gh.branches = {"riscv64-dev": HEAD, "riscv64": None}
         # The committed evidence of the contribution, as the store holds it.
-        for path in (Path(__file__).parents[1] / ".state/evidence").glob("*.json"):
+        for path in (FROZEN / "evidence").glob("*.json"):
             value = json.loads(path.read_text())
             if value.get("contribution_id") == world.record["contribution_id"]:
                 world.evidence[value["evidence_id"]] = value

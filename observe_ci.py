@@ -1230,6 +1230,10 @@ def reads_upstream_pr_state(record: dict) -> bool:
 
 
 # The rows of `release_wait.idle`, one of which ``release.decide`` names.
+RELEASE_SUMMARIES = {
+    release.GITHUB_RELEASE: "the GitHub release has a linux riscv64 asset: ",
+    release.PYPI_WHEELS: "the official PyPI release has a linux riscv64 wheel: ",
+}
 RELEASE_ROWS = ("record_release_incomplete", "require_release_intervention", "verify_release")
 
 
@@ -1239,14 +1243,32 @@ def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict,
     """Observe ``release_wait.idle`` on every run: the official release evidence
     decides ``verify_release``, ``require_release_intervention``, or
     ``record_release_incomplete``, which is recorded once per distinct
-    observation (``release.decide``)."""
-    contract = release.acceptance_contract(contracts.get(rec.get("target_contract_id") or ""))
-    found = {name: pypi(name) for name in (contract.distributions if contract else ())}
+    observation (``release.decide``). A record that names no target contract
+    is decided on the PyPI releases of its `distributions` when it lists any
+    (``release.decide_distributions``), else on the GitHub releases of its
+    upstream repository (``release.decide_github``), which takes no row while
+    no release contains the merge."""
     merge = rec["merge"]
-    decision = release.decide(
-        contract, merge=merge, pypi=found,
-        contains=lambda version: collect.release_contains(
-            api, rec["upstream"]["full_name"], version, merge["merge_sha"]))
+    repository = rec["upstream"]["full_name"]
+    distributions = tuple(n for n in rec.get("distributions") or () if isinstance(n, str) and n)
+    contains = lambda version: collect.release_contains(api, repository, version, merge["merge_sha"])  # noqa: E731
+    if rec.get("target_contract_id"):
+        contract = release.acceptance_contract(contracts.get(rec["target_contract_id"]))
+        found = {name: pypi(name) for name in (contract.distributions if contract else ())}
+        decision = release.decide(contract, merge=merge, pypi=found, contains=contains)
+    elif distributions:
+        decision = release.decide_distributions(
+            distributions, merge=merge, pypi={name: pypi(name) for name in distributions},
+            contains=contains)
+    else:
+        decision = release.decide_github(
+            repository=repository, merge=merge,
+            releases=collect.github_releases(api, repository),
+            contains=lambda tag: collect.tag_contains(api, repository, tag, merge["merge_sha"]))
+        if decision is None:
+            entry["release"] = {"verb": None, "channel": release.GITHUB_RELEASE,
+                                "awaiting": release.awaiting_github(repository)}
+            return
     if decision.verb not in RELEASE_ROWS:
         raise lifecycle.TransitionError(f"{decision.verb} is not a row of release_wait.idle")
     entry["release"] = {"verb": decision.verb, **decision.details}
@@ -1267,9 +1289,14 @@ def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict,
         ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": rec["contribution_id"],
               "kind": "release_acceptance", "policy_version": policy["policy_version"],
               "collected_at": now,
-              "summary": "official release coverage satisfies the acceptance contract: "
+              "summary": RELEASE_SUMMARIES.get(
+                  decision.details.get("channel"),
+                  "official release coverage satisfies the acceptance contract: ")
                          + ", ".join(f"{n} {v}" for n, v in sorted(decision.details["releases"].items())),
-              "limitations": ["Metadata coverage and tag provenance; the wheels are not installed."],
+              "limitations": [
+                  "The release assets are matched by name; they are not downloaded or run."
+                  if decision.details.get("channel") == release.GITHUB_RELEASE else
+                  "Metadata coverage and tag provenance; the wheels are not installed."],
               "data": decision.details, "digests": {"merge": merge["merge_sha"]}}
         schemas.validate("evidence", ev)
         obs.staged.append(("evidence", ev))

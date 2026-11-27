@@ -71,7 +71,7 @@ A requested task is identified by its generation, revision, and task id. A Resul
 | `upstream_review.fix_needed` | `auto_wait` | yes | yes | 8 + 2 | Upstream CI or actionable review needs a revision of the upstream PR head. |
 | `upstream_review.agent_running` | `running` | no | yes | 8 + 1 | A revision task for the upstream PR head is requested or running, or its verified Result is being published. |
 | `upstream_review.waiting_human` | `human_wait` | no | no | 6 + 3 | The upstream PR was closed unmerged, its head changed, a reviewer needs an answer, or recovery or a budget is exhausted; a human triages. |
-| `release_wait.idle` | `auto_wait` | no | no | 3 + 1 | The upstream PR is merged; official release coverage is observed. |
+| `release_wait.idle` | `auto_wait` | no | no | 3 + 1 | The upstream PR is merged; the official release is observed: PyPI coverage of a recorded target contract, else the first PyPI release of the distributions or the first GitHub release of the upstream repository after the merge that has a linux riscv64 wheel or asset. |
 | `release_wait.waiting_human` | `human_wait` | no | no | 1 + 2 | Release evidence needs operator action. |
 | `released.idle` | `terminal` | no | no | 0 + 1 | Verified official release coverage satisfies the acceptance contract. |
 | `parked.idle` | `generation_end` | no | no | 2 + 1 | The generation ended without success; a clean restart is possible. |

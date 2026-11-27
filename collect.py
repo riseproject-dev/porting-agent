@@ -1158,6 +1158,26 @@ def upstream_pull(api: Api, record: dict) -> dict:
             "head_repository_id": (head.get("repo") or {}).get("id")}
 
 
+def _tag_contains(api: Api, full_name: str, tag: str, commit: str) -> bool | None:
+    """Whether the git tag ``tag`` of ``full_name`` contains ``commit``:
+    the tag resolves to a commit that is ``commit`` or ahead of it
+    (``GET /compare/{commit}...{tag}`` answers `ahead` or `identical`).
+    ``None`` when the tag does not exist."""
+    try:
+        data = api.get(f"/repos/{full_name}/commits/{urllib.parse.quote('refs/tags/' + tag, safe='')}")
+    except CollectError as e:
+        if "HTTP 404" in str(e) or "HTTP 422" in str(e):
+            return None
+        raise
+    sha = (data or {}).get("sha") if isinstance(data, dict) else None
+    if not isinstance(sha, str) or not _FULL_SHA.match(sha):
+        raise CollectError(f"tag {tag!r} resolves to no commit")
+    if sha == commit:
+        return True
+    status = compare_commits(api, full_name, commit, sha).get("status")
+    return status in ("ahead", "identical")
+
+
 def release_contains(api: Api, full_name: str, version: str, commit: str) -> bool | None:
     """Whether the release tag of ``version`` in ``full_name`` (``v<version>``
     or ``<version>``) contains ``commit``: ``True`` or ``False`` for the first
@@ -1166,20 +1186,46 @@ def release_contains(api: Api, full_name: str, version: str, commit: str) -> boo
             or not re.fullmatch(r"[A-Za-z0-9._+!-]{1,64}", version):
         raise CollectError("refusing an unexpected release provenance check")
     for tag in (f"v{version}", version):
-        try:
-            data = api.get(f"/repos/{full_name}/commits/{urllib.parse.quote('refs/tags/' + tag, safe='')}")
-        except CollectError as e:
-            if "HTTP 404" in str(e) or "HTTP 422" in str(e):
-                continue
-            raise
-        sha = (data or {}).get("sha") if isinstance(data, dict) else None
-        if not isinstance(sha, str) or not _FULL_SHA.match(sha):
-            raise CollectError(f"tag {tag!r} resolves to no commit")
-        if sha == commit:
-            return True
-        status = compare_commits(api, full_name, commit, sha).get("status")
-        return status in ("ahead", "identical")
+        found = _tag_contains(api, full_name, tag, commit)
+        if found is not None:
+            return found
     return None
+
+
+_TAG_RE = re.compile(r"[A-Za-z0-9._+!/-]{1,200}")
+
+
+def tag_contains(api: Api, full_name: str, tag: str, commit: str) -> bool | None:
+    """``_tag_contains`` for a tag name a GitHub release names."""
+    if not _REPO_RE.match(full_name) or not _FULL_SHA.match(commit) \
+            or not _TAG_RE.fullmatch(tag) or ".." in tag:
+        raise CollectError("refusing an unexpected release provenance check")
+    return _tag_contains(api, full_name, tag, commit)
+
+
+GITHUB_RELEASE_PAGES = 5
+
+
+def github_releases(api: Api, full_name: str) -> list[dict]:
+    """The published (not draft) GitHub releases of ``full_name``, newest
+    first as GitHub lists them, as ``{tag, url, published_at, prerelease,
+    assets}`` where ``assets`` are the names of the uploaded assets. Reads at
+    most ``GITHUB_RELEASE_PAGES`` pages of 100; a failed read is a
+    ``CollectError``."""
+    if not _REPO_RE.match(full_name) or ".." in full_name:
+        raise CollectError("refusing an unexpected release read")
+    out = []
+    for r in api.paginate(f"/repos/{full_name}/releases?per_page=100",
+                          max_pages=GITHUB_RELEASE_PAGES):
+        if not isinstance(r, dict) or r.get("draft") or not r.get("published_at") \
+                or not isinstance(r.get("tag_name"), str):
+            continue
+        out.append({"tag": r["tag_name"], "url": r.get("html_url"),
+                    "published_at": r["published_at"], "prerelease": bool(r.get("prerelease")),
+                    "assets": [a["name"] for a in r.get("assets") or []
+                               if isinstance(a, dict) and isinstance(a.get("name"), str)
+                               and a.get("state", "uploaded") == "uploaded"]})
+    return out
 
 
 def repository(api: Api, full_name: str) -> dict:

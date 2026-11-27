@@ -32,7 +32,7 @@ flowchart LR
 | Development | The worker proposes a bounded patch on a fork, reproduced in the `riscv64` image, and reviews it with fresh reviewers before trusted code publishes it. | [Development]({{ '/pipeline/development/' | relative_url }}) |
 | Reports and History | Each task reports what it tried, and a later task reads that history. | [Reports and History]({{ '/pipeline/history/' | relative_url }}) |
 | Submission | A human requests submission; trusted workflows prepare the upstream branch and a package. | [Submission and Handoff]({{ '/pipeline/submission/' | relative_url }}) |
-| Upstream review and release | The controller observes the upstream PR, its review, and its release. | [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#upstream-review-and-release) |
+| Upstream review and release | The controller observes the upstream PR and its review. Once merged, it waits for the release: PyPI coverage of a recorded contract, else the first PyPI release of the project's distributions, or, for a project with none, the first GitHub release of the upstream repository, that contains the merge and has a linux riscv64 wheel or asset. | [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#upstream-review-and-release) |
 
 ## Branches
 

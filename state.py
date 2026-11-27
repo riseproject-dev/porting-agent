@@ -34,6 +34,7 @@ from typing import Any
 import engine
 import lifecycle
 import recovery
+import release
 import schemas
 from common import (
     STATE_KINDS,
@@ -750,6 +751,54 @@ def migrate_rejection_refund(record: dict, events: list[dict], *, policy: dict, 
     return new, event
 
 
+# --------------------------------------------------------------------------
+# Release observation of a contribution without a PyPI contract
+#
+# A contribution that names no target contract (`target_contract_id` is
+# null) is released by the GitHub release of its upstream repository
+# (``release.decide_github``). Before that, such a contribution took
+# `require_release_intervention` with the pending action
+# `release_contract_missing` the first time it was observed. The record
+# migration returns it to `release_wait.idle` with the action cleared, so the
+# next observation decides without a human. A move rather than the resume
+# command: no human decided it, so the event has no actor, and the revision is
+# kept as for the refund (it only fences commands, approvals, and tasks, and
+# none is invalidated: `release_wait.idle` holds no task). A contribution
+# whose named contract is unusable keeps its wait: the action is still true.
+
+RELEASE_MIGRATION = "github-release-channel"
+RELEASE_MIGRATED = "record_release_observation_resumed"
+
+
+def needs_release_resume(record: Any) -> bool:
+    """Whether a record waits in `release_wait.waiting_human` for a release
+    contract it names none of."""
+    return isinstance(record, dict) and record.get("phase") == "release_wait" \
+        and record.get("activity") == "waiting_human" and not record.get("target_contract_id") \
+        and (record.get("pending_human_action") or {}).get("kind") == release.CONTRACT_MISSING
+
+
+def migrate_release_resume(record: dict, *, now: str) -> tuple[dict, dict]:
+    """The record back in `release_wait.idle` with no pending action, and its
+    event. Raises ``StateError`` when the record does not wait for the missing
+    contract, or when the result violates the schema or the table."""
+    if not needs_release_resume(record):
+        raise StateError("the record needs no release observation migration")
+    new = engine.release_observation_resumed(record)
+    new["updated_at"] = now
+    errors = schemas.errors("contribution", new)
+    if errors:
+        raise StateError("no reviewed release migration for this record: " + "; ".join(errors[:5]))
+    problem = engine.state_problem(new)
+    if problem:
+        raise StateError(f"no reviewed release migration for this record: {problem}")
+    event = lifecycle._event(record, new, RELEASE_MIGRATED, "migration", RELEASE_MIGRATION, now, False)
+    event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
+                        "pending_human_action": record["pending_human_action"]["kind"]}
+    schemas.validate("event", event)
+    return new, event
+
+
 def _awaits_migration(path: str, record: Any) -> bool:
     """Whether a committed state file is in a shape the record migrations
     rewrite."""
@@ -849,6 +898,12 @@ def _pending_record_migrations(root: Path, policy: dict, *, now: str | None = No
                 errors = schemas.errors("contribution", record)
                 if errors:
                     raise StateError("; ".join(errors[:5]))
+            if needs_release_resume(current):
+                current, event = migrate_release_resume(current, now=stamp)
+                pending = [entry for entry in pending
+                           if not (entry[0] == rel and entry[1] == "contributions")]
+                pending.append((rel, "contributions", current))
+                pending.append(("", "events", event))
             if needs_rejection_refund(current):
                 refund = migrate_rejection_refund(
                     current, contribution_events(root, cid), policy=policy, now=stamp)

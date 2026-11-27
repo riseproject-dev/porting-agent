@@ -3,10 +3,12 @@
 """Untrusted proposal-artifact extraction."""
 
 import json
+import shutil
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 import artifact
 from common import repository_root
@@ -45,7 +47,13 @@ class TestExtract(unittest.TestCase):
         self.assertEqual(
             repository_root(), Path(artifact.__file__).resolve().parent
         )
-        self.assertEqual(artifact.main(["artifact", "extract", str(archive), str(out)]), 0)
+        # The control state is a frozen copy of the record, never the live `.state`.
+        control = self.d / "control"
+        (control / ".state/contributions").mkdir(parents=True)
+        shutil.copy(Path(__file__).parent / "fixtures/live-ciso8601-gate/contribution.json",
+                    control / ".state/contributions/closeio--ciso8601--1.json")
+        with mock.patch("artifact.repository_root", return_value=control):
+            self.assertEqual(artifact.main(["artifact", "extract", str(archive), str(out)]), 0)
         record = json.loads((out / "record.json").read_text())
         self.assertEqual(record["contribution_id"], "closeio--ciso8601/1")
 

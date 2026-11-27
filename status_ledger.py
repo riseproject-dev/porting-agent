@@ -74,6 +74,12 @@ RECORDED_KINDS = {
                                    "checks of the changed files, and, when only those charges "
                                    "had parked this contribution, returned it to repair; the automatic "
                                    "refresh those rejections used is returned too."),
+    "record_release_observation_resumed": (
+        "Returned this contribution to the release wait: it names no release contract, so its "
+        "release is observed on its own channel, the PyPI release of its distributions or, with "
+        "none, the GitHub release of the upstream repository, after the merge and containing "
+        "the merge commit, with a linux riscv64 wheel or asset. The pipeline reads the releases "
+        "on every run; no human action is needed."),
     "record_names_migrated": ("Recorded this contribution under the current names (the "
                               "planning phase and its plan, or the requested task). Its state, "
                               "revision, and evidence are unchanged."),

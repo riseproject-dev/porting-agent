@@ -200,7 +200,7 @@ class TestTheProof(unittest.TestCase):
 
 class TestTheLiveRecords(unittest.TestCase):
     def test_the_gate_record_satisfies_its_state(self):
-        rec = json.loads((ROOT / ".state/contributions/closeio--ciso8601--1.json").read_text())
+        rec = json.loads((ROOT / "tests/fixtures/live-ciso8601-gate/contribution.json").read_text())
         self.assertEqual(engine.state_key(rec), "handoff.awaiting_submission")
         self.assertEqual(engine.invariant_problems(rec), [])
 

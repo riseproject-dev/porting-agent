@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Iterable
 
 from packaging.tags import Tag
@@ -161,12 +162,15 @@ def select_release(releases: dict[str, list[dict]], *, minimum: str | None) -> l
 # official release must cover. The observation reads each distribution's
 # official PyPI metadata and decides one row of the table:
 #
-# * `require_release_intervention` when no contract with rows and
-#   distributions is recorded, or PyPI has no such distribution (operator
+# * `require_release_intervention` when the contract the record names has no
+#   distributions or matrix rows, or PyPI has no such distribution (operator
 #   action);
 # * `verify_release` when, for every distribution, the oldest official
 #   release whose tag contains the merge commit covers every row;
 # * `record_release_incomplete` otherwise.
+#
+# A record that names no target contract has no PyPI release contract. Its
+# release is the GitHub release of its upstream repository (`decide_github`).
 
 # The pending actions of `require_release_intervention`.
 CONTRACT_MISSING = "release_contract_missing"
@@ -263,3 +267,158 @@ def decide(contract: Contract | None, *, merge: dict, pypi: dict[str, dict | Non
     key = hashlib.sha256(summary.encode()).hexdigest()[:16]
     return Decision("record_release_incomplete", frozenset({"release_incomplete"}),
                     details={"incomplete": summary[:2000], "observation_key": key}, key=key)
+
+
+# --------------------------------------------------------------------------
+# A contribution that names no target contract
+#
+# `target_contract_id` is null for every record the pipeline writes, so the
+# release of such a record is decided without a frozen matrix, on its own
+# recorded channel:
+#
+# * it lists `distributions` (a PyPI project): `decide_distributions`, the
+#   PyPI release of each distribution (below);
+# * it lists none: `decide_github`, the GitHub release of its upstream
+#   repository.
+#
+# Both take the first release that contains the merge and carries a linux
+# riscv64 artifact. A release that contains the merge and carries none is
+# recorded incomplete (once per distinct observation) and does not block a
+# newer release.
+
+GITHUB_RELEASE = "github_release"
+PYPI_WHEELS = "pypi_riscv64_wheel"
+# The oldest GitHub candidates read for provenance; each costs one tag and
+# one comparison read.
+GITHUB_MAX_CANDIDATES = 20
+
+
+def _incomplete(channel: str, summary: str) -> Decision:
+    key = hashlib.sha256(summary.encode()).hexdigest()[:16]
+    return Decision("record_release_incomplete", frozenset({"release_incomplete"}),
+                    details={"channel": channel, "incomplete": summary[:2000],
+                             "observation_key": key}, key=key)
+
+
+def wheel_is_linux_riscv64(tags: Iterable[Tag]) -> bool:
+    """A wheel is a linux riscv64 wheel when one of its platform tags contains
+    both ``linux`` and ``riscv64`` (``manylinux_2_39_riscv64``,
+    ``musllinux_1_2_riscv64``, ``linux_riscv64``)."""
+    return any("linux" in t.platform and "riscv64" in t.platform for t in tags)
+
+
+def riscv64_wheels(files: list[dict], version: str) -> list[str]:
+    """The filenames of the non-yanked linux riscv64 wheels of ``version``
+    among the PyPI files of a release."""
+    want = Version(version)
+    out = []
+    for f in files:
+        name = f.get("filename", "")
+        if not name.endswith(".whl") or f.get("yanked"):
+            continue
+        try:
+            _n, v, _b, tags = parse_wheel_filename(name)
+        except InvalidWheelFilename:
+            continue
+        if v == want and wheel_is_linux_riscv64(tags):
+            out.append(name)
+    return sorted(out)
+
+
+def decide_distributions(names: tuple[str, ...], *, merge: dict, pypi: dict[str, dict | None],
+                         contains) -> Decision:
+    """The row of `release_wait.idle` for a record that lists PyPI
+    distributions and names no target contract.
+
+    For each distribution, the official releases (non-yanked, not
+    prerelease) uploaded after the merge whose tag contains the merge commit
+    are examined oldest first; the first that carries a non-yanked linux
+    riscv64 wheel is its release. ``verify_release`` when every distribution
+    has one, ``require_release_intervention`` when PyPI has no such
+    distribution, ``record_release_incomplete`` otherwise."""
+    missing = [n for n in names if pypi.get(n) is None]
+    if missing:
+        return Decision("require_release_intervention", frozenset({"release_needs_operator"}),
+                        {"pending_human_action": DISTRIBUTION_MISSING},
+                        {"why": f"PyPI has no distribution {', '.join(missing)}"})
+    merged_at = merge["merged_at"].replace("Z", "+00:00")
+    found: dict[str, tuple[str, list[str]]] = {}
+    incomplete: dict[str, str] = {}
+    for name in names:
+        releases = (pypi[name] or {}).get("releases") or {}
+        lacking = []
+        for version in select_release(releases, minimum=None):
+            if not _uploaded_after(releases.get(version) or [], merged_at) \
+                    or not contains(version):
+                continue
+            wheels = riscv64_wheels(releases[version], version)
+            if wheels:
+                found[name] = (version, wheels)
+                break
+            lacking.append(version)
+        if name in found:
+            continue
+        incomplete[name] = (
+            f"{', '.join(lacking[:10])} contain the merge commit but carry no non-yanked linux "
+            "riscv64 wheel" if lacking else
+            "no official release after the merge whose tag contains the merge commit")
+    if not incomplete:
+        return Decision("verify_release", frozenset({"release_verified"}),
+                        details={"channel": PYPI_WHEELS,
+                                 "releases": {n: v for n, (v, _w) in found.items()},
+                                 "wheels": {n: w[:8] for n, (_v, w) in found.items()}})
+    return _incomplete(PYPI_WHEELS, "; ".join(f"{n}: {why}" for n, why in sorted(incomplete.items())))
+
+
+def asset_is_linux_riscv64(name: str) -> bool:
+    """The matching rule of a GitHub release asset: its name, lowercased,
+    contains both ``linux`` and ``riscv64`` (``tool_linux_riscv64.tar.gz``,
+    ``Tool-Linux-RISCV64.zip``). Nothing else about the asset is read."""
+    lower = name.lower()
+    return "linux" in lower and "riscv64" in lower
+
+
+def _instant(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def decide_github(*, repository: str, merge: dict, releases: list[dict], contains) -> Decision | None:
+    """The row of `release_wait.idle` for the GitHub releases of
+    ``repository``, or ``None`` when no release that contains the merge exists
+    yet (no row: the release is read again on the next run).
+
+    ``releases`` are the published, non-draft releases (``collect.github_releases``);
+    ``contains(tag)`` says whether the tag contains the merge commit
+    (``None`` when the tag does not exist). Releases flagged prerelease are
+    ignored, unless the repository has no stable release at all. Candidates
+    are those published at or after the merge, oldest first (at most
+    ``GITHUB_MAX_CANDIDATES``); the first whose tag contains the merge and
+    that has a linux riscv64 asset is the release. Releases that contain the
+    merge and have none are incomplete and do not block the newer ones."""
+    merged_at = _instant(merge["merged_at"])
+    stable = [r for r in releases if not r["prerelease"]]
+    pool = stable or releases
+    candidates = sorted((r for r in pool if _instant(r["published_at"]) >= merged_at),
+                        key=lambda r: (_instant(r["published_at"]), r["tag"]))
+    lacking = []
+    for r in candidates[:GITHUB_MAX_CANDIDATES]:
+        if not contains(r["tag"]):
+            continue
+        assets = sorted(a for a in r["assets"] if asset_is_linux_riscv64(a))
+        if assets:
+            return Decision("verify_release", frozenset({"release_verified"}), details={
+                "channel": GITHUB_RELEASE, "repository": repository,
+                "releases": {repository: r["tag"]}, "release_url": r.get("url"),
+                "published_at": r["published_at"], "assets": assets[:16]})
+        lacking.append(r["tag"])
+    if not lacking:
+        return None
+    return _incomplete(GITHUB_RELEASE,
+                       f"{repository} releases {', '.join(lacking[:10])} contain the merge commit "
+                       "but have no asset whose name says linux and riscv64")
+
+
+def awaiting_github(repository: str) -> str:
+    """What a record without distributions waits for."""
+    return (f"the first GitHub release of {repository} published after the merge whose tag "
+            "contains the merge commit, with an asset whose name says linux and riscv64")

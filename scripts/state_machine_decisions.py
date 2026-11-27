@@ -3011,6 +3011,33 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         edges=(('handoff.waiting_upstream_pr', 'record_audit_observation'), ('handoff.waiting_upstream_pr', 'verify_upstream_pr')),
         highlighted=(('handoff.waiting_upstream_pr', 'record_audit_observation'), ('handoff.waiting_upstream_pr', 'verify_upstream_pr')),
     ),
+    Item(
+        "The release of a contribution without a PyPI contract",
+        "How is a merged contribution released when no PyPI target contract is recorded?",
+        "No record names a target contract, so a record without one is released on its own "
+        "channel. One that lists `distributions` (a PyPI project) takes the first PyPI release "
+        "after the merge whose tag contains the merge commit and that has a non-yanked wheel "
+        "with `linux` and `riscv64` in a platform tag; one that lists none takes the first "
+        "GitHub release of its upstream repository (`upstream.full_name`, not a URL of the plan) "
+        "after the merge whose tag contains the merge commit (`compare/{merge}...{tag}` is "
+        "`ahead` or `identical`) and that has an asset whose lowercased name contains `linux` "
+        "and `riscv64`. `verify_release` is taken for it; a release that contains the merge "
+        "and has none is recorded by `record_release_incomplete` once and does not block a "
+        "newer one; with no GitHub release that contains the merge there is no row and no "
+        "human wait, so `release_wait.idle` reads again on every run. A named contract keeps "
+        "the PyPI matrix rows, and `release_contract_missing` remains for a named contract "
+        "with no distribution or row. No row, state, or pending action is added. A record that "
+        "waited for `release_contract_missing` with no target contract returns to "
+        "`release_wait.idle` by a record migration with its own event, rather than by "
+        "`resume_release_observation`: no human decides it, and a command would need every "
+        "such record resumed by hand.",
+        ("release_wait.idle", "release_wait.waiting_human", "released.idle"),
+        edges=(("release_wait.idle", "record_release_incomplete"),
+               ("release_wait.idle", "verify_release"),
+               ("release_wait.waiting_human", "resume_release_observation")),
+        highlighted=(("release_wait.idle", "record_release_incomplete"),
+                     ("release_wait.idle", "verify_release")),
+    ),
 )
 
 OPEN_ITEMS: tuple[Item, ...] = ()

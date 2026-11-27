@@ -277,9 +277,7 @@ class TestRerunFenceMigration(unittest.TestCase):
                 self.assertFalse(state.needs_field_migration(new))
 
     def test_the_live_record_needs_no_field_beyond_the_retired_ones(self):
-        path = ROOT / ".state/contributions/closeio--ciso8601--1.json"
-        if not path.exists():
-            self.skipTest("no live record in this checkout")
+        path = ROOT / "tests/fixtures/live-ciso8601-gate/contribution.json"
         import schemas
         rec = state.migrate_names("contributions", json.loads(path.read_text()))[0]
         # The retired fields (`next_poll_at`, the held patch, the review

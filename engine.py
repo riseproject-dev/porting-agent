@@ -2413,6 +2413,16 @@ def refund_contradicted(record: dict, events: list[dict], refunded_before: set[i
     return new, facts
 
 
+def release_observation_resumed(record: dict) -> dict:
+    """``record`` back in `release_wait.idle` with no pending action: the
+    record migration of a contribution that waits for a release contract it
+    names none of (`state.migrate_release_resume`). Nothing else changes; the
+    caller checks the invariants of the result."""
+    new = copy.deepcopy(record)
+    new.update(activity="idle", pending_human_action=None)
+    return new
+
+
 # --------------------------------------------------------------------------
 # Writes beside a row
 #

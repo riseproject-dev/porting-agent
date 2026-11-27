@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-26T19:14:15.105845+00:00",
+  "cause": {
+    "id": "release-d29f838e5b7f",
+    "type": "observation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "release_wait.idle",
+    "to_state": "release_wait.waiting_human",
+    "verb": "require_release_intervention",
+    "why": "no release acceptance contract (distributions and matrix rows) is recorded for this contribution"
+  },
+  "from": {
+    "activity": "idle"
+  },
+  "kind": "require_release_intervention",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45882006863
+  },
+  "schema_version": 1,
+  "sequence": 74,
+  "to": {
+    "activity": "waiting_human"
+  }
+}

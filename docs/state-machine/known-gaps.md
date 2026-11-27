@@ -23,12 +23,12 @@ The [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `require_renamed_upstream` leads to the human wait with `upstream_unavailable` and no counter, and `resume_upstream_read` leaves it only once the repository is read under its recorded name again; a resume before then waits again at once.
 - **Required:** a table decision to follow a repository rename while the upstream PR is open, verified by `upstream.repository_id` equality (for example rebind `upstream.full_name` and the PR URL, keeping the contribution id and project under the old name).
 
-## Release acceptance has no recorded contract
+## Release acceptance has no recorded PyPI contract
 
 - **Where:** `release_wait.idle`; `release.acceptance_contract` and the release observation in `observe_ci.py`.
-- **Today:** the acceptance contract is read from the target contract the record names (`target_contract_id`, its `distributions` and `release_rows`), but nothing records a target contract, so every contribution that reaches `release_wait.idle` takes `require_release_intervention` with the pending action `release_contract_missing`. Its resume (`resume_release_observation`) returns to `release_wait.idle`, which asks again at the next observation. The wait has reminders; `park` does not apply in `release_wait.*`, so the contribution stays there until a contract exists.
+- **Today:** the PyPI acceptance contract (frozen matrix rows) is read from the target contract the record names (`target_contract_id`), but nothing records a target contract. A record without one is decided on its own channel: the PyPI release of its `distributions` (a linux riscv64 wheel of the first release that contains the merge), else the GitHub release of its upstream repository. The matrix of interpreters, ABIs, and libc floors is therefore never checked for a live contribution. A named contract with no distribution or row takes `require_release_intervention` with `release_contract_missing`, whose resume returns to `release_wait.idle` and asks again.
 - **Table:** `verify_release` requires verified release coverage that satisfies the acceptance contract; `release_wait.*` has no other exit.
-- **Required:** a producer of the frozen release matrix (the target contract's distributions and rows) before a contribution reaches `release_wait`, and a table decision on how a contribution leaves `release_wait` when the release can never be verified.
+- **Required:** a producer of the frozen release matrix (the target contract's distributions and rows) for a project that releases to PyPI, and a table decision on how a contribution leaves `release_wait` when the release can never be verified (today only `/upstreaming` commands close it).
 
 ## Release verification does not run the install probe
 
@@ -37,12 +37,12 @@ The [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `verify_release` requires "verified release coverage satisfies the acceptance contract".
 - **Required:** a decision on whether release acceptance requires the install-and-import probe in a clean target environment, then a trusted probe run before `verify_release`.
 
-## Release coverage is read from PyPI only
+## Release coverage is read from PyPI and GitHub releases only
 
 - **Where:** `release_wait.idle` (`verify_release`, `require_release_intervention`, `record_release_incomplete`); `release.py`.
-- **Today:** planning and development serve projects of any language, but the release observation reads release coverage from PyPI only. A contribution whose project releases through another channel (crates.io, npm, Go modules, Maven, container images, GitHub releases, distribution packages) can never have its release verified from that channel, so it waits in `release_wait.waiting_human` for an operator, like a contribution without a recorded contract.
+- **Today:** the release observation reads PyPI for a record that names a target contract or lists distributions, and the GitHub releases of the upstream repository for one that does neither. A project that releases only through another channel (crates.io, npm, Go modules, Maven, container images, distribution packages) is never verified from that channel, and a GitHub release is accepted on the name of an asset (`linux` and `riscv64`), and a PyPI release without a contract on the platform tag of a wheel, not on its content.
 - **Table:** `verify_release` requires verified release coverage that satisfies the acceptance contract, whatever channel the project releases through.
-- **Required:** a trusted reader of the release channels the plan records in `project.release_channels`, and the acceptance contract for them.
+- **Required:** a trusted reader of the other release channels the plan records in `project.release_channels`, and a check of the artifact itself (download and run, or its checksum).
 
 ## Provisioning and development PR operations validate the checked-out state only
 

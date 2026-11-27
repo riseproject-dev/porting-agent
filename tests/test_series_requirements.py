@@ -275,9 +275,8 @@ class TestLiveRecord(unittest.TestCase):
     none), and records no series requirement."""
 
     def test_the_live_record_is_unchanged(self):
-        path = ROOT / ".state/contributions/closeio--ciso8601--1.json"
-        if not path.exists():
-            self.skipTest("no live record in this checkout")
+        frozen = ROOT / "tests/fixtures/live-ciso8601-gate"
+        path = frozen / "contribution.json"
         rec = engine.with_current_names(json.loads(path.read_text()))[0]
         if "next_poll_at" in rec:
             self.assertEqual(engine.with_defaults(copy.deepcopy(rec))[2], ["next_poll_at"])
@@ -287,7 +286,7 @@ class TestLiveRecord(unittest.TestCase):
         self.assertLessEqual(set(removed), {"held_patch", "review_comments",
                                             "budget.review_rejections", "submission_review_id"})
         self.assertEqual(engine.state_key(rec), "handoff.awaiting_submission")
-        plan = json.loads((ROOT / ".state/evidence" / f"{rec['plan_evidence_id']}.json").read_text())
+        plan = json.loads((frozen / "evidence" / f"{rec['plan_evidence_id']}.json").read_text())
         self.assertEqual(commit_rules.series_requirements_from_plan(plan["data"]), [])
 
 
