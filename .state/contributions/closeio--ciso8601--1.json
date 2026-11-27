@@ -1,7 +1,7 @@
 {
   "active_operation_id": null,
   "active_task": null,
-  "activity": "waiting_upstream_pr",
+  "activity": "waiting_ci",
   "admission_class": "configuration_integration",
   "admission_override": null,
   "automatic_refresh_used": false,
@@ -69,15 +69,9 @@
   "paused_by": null,
   "paused_reason": null,
   "pending_feedback_evidence_ids": [],
-  "pending_human_action": {
-    "counter": null,
-    "escalated_at": null,
-    "kind": "open_upstream_pr",
-    "reminded_at": null,
-    "requested_at": "2026-11-27T06:45:24.526991+00:00"
-  },
+  "pending_human_action": null,
   "pending_publication": null,
-  "phase": "handoff",
+  "phase": "upstream_review",
   "plan_evidence_id": "dossier-closeio--ciso8601--1-r2",
   "prerequisite_ids": [],
   "previous_phase": null,
@@ -134,12 +128,24 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-27T06:45:24.526991+00:00",
+  "updated_at": "2026-11-27T08:31:16.169926+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
     "full_name": "closeio/ciso8601",
     "repository_id": 20633992
   },
-  "upstream_pr": null
+  "upstream_pr": {
+    "base_ref": "master",
+    "head_ref": "riscv64",
+    "head_repository_id": 1467208233,
+    "head_sha": "29cd6c17be660a9c935bd9c787c5a9d32a5e2476",
+    "id": 5522805841,
+    "number": 198,
+    "registered_by": {
+      "id": 660779,
+      "login": "luhenry"
+    },
+    "url": "https://github.com/closeio/ciso8601/pull/198"
+  }
 }
