@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-27T06:43:58.735588+00:00",
+  "cause": {
+    "id": "op-786a61fc48a351bcf5e7c10b",
+    "type": "operation"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "attempt": 1,
+    "from_state": "handoff.building_upstream_branch",
+    "head": "29cd6c17be660a9c935bd9c787c5a9d32a5e2476",
+    "operation": "op-786a61fc48a351bcf5e7c10b",
+    "replaced": null,
+    "to_state": "handoff.waiting_ci",
+    "verb": "confirm_clean_head",
+    "written": true
+  },
+  "from": {
+    "activity": "building_upstream_branch"
+  },
+  "kind": "confirm_clean_head",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45953655332
+  },
+  "schema_version": 1,
+  "sequence": 37,
+  "to": {
+    "activity": "waiting_ci"
+  }
+}

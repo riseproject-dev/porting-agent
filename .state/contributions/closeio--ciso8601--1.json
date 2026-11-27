@@ -1,7 +1,7 @@
 {
-  "active_operation_id": "op-786a61fc48a351bcf5e7c10b",
+  "active_operation_id": "op-020bafef652385afa2495733",
   "active_task": null,
-  "activity": "building_upstream_branch",
+  "activity": "preparing_submission",
   "admission_class": "configuration_integration",
   "admission_override": null,
   "automatic_refresh_used": false,
@@ -20,8 +20,8 @@
     },
     "spent_estimate_usd_cents": 0
   },
-  "clean_head_ci_since": null,
-  "clean_head_sha": null,
+  "clean_head_ci_since": "2026-11-27T06:43:58.735588+00:00",
+  "clean_head_sha": "29cd6c17be660a9c935bd9c787c5a9d32a5e2476",
   "contribution_id": "closeio--ciso8601/1",
   "created_at": "2026-11-22T01:09:36.980391+00:00",
   "debug_commits": [],
@@ -128,7 +128,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-27T06:42:55.191731+00:00",
+  "updated_at": "2026-11-27T06:43:58.735588+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
