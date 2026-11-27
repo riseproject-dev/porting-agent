@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-27T06:24:02.635419+00:00",
+  "cause": {
+    "id": "closeio--ciso8601/1@g0.r6:submission_rewrite",
+    "type": "tick"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "charged": [
+      "task_total"
+    ],
+    "from_state": "handoff.review_due",
+    "task": "submission_rewrite",
+    "to_state": "handoff.agent_running",
+    "verb": "request_submission_rewrite",
+    "work": "closeio--ciso8601/1@g0.r6:submission_rewrite"
+  },
+  "from": {
+    "activity": "review_due"
+  },
+  "kind": "request_submission_rewrite",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45951507223
+  },
+  "schema_version": 1,
+  "sequence": 35,
+  "to": {
+    "activity": "agent_running"
+  }
+}

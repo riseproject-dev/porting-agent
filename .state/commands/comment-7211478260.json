@@ -1,0 +1,22 @@
+{
+  "actor": {
+    "id": 660779,
+    "login": "luhenry"
+  },
+  "args": {
+    "head": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "revision": "6"
+  },
+  "command_id": "comment-7211478260",
+  "command_version": 1,
+  "comment_id": 7211478260,
+  "content_digest": "071cac0d3ecd6c9024788f63ef062a0128919f1f656131f1175bff414adce476",
+  "contribution_id": "closeio--ciso8601/1",
+  "issue_number": 1,
+  "reason": null,
+  "received_at": "2026-11-27T06:24:02.635419+00:00",
+  "result": "accepted",
+  "revision": 6,
+  "schema_version": 1,
+  "verb": "submit-upstream"
+}
