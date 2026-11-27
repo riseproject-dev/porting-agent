@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-27T06:42:55.191731+00:00",
+  "cause": {
+    "id": "45951988715",
+    "type": "result"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "evidence_id": "submission-rewrite-closeio--ciso8601--1-r6-45951988715",
+    "from_state": "handoff.agent_running",
+    "head": "29cd6c17be660a9c935bd9c787c5a9d32a5e2476",
+    "reasons": [],
+    "report_evidence_id": "report-closeio--ciso8601--1-r6-45951988715",
+    "to_state": "handoff.building_upstream_branch",
+    "verb": "accept_submission_rewrite",
+    "verdict": "pass"
+  },
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "accept_submission_rewrite",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45953539424
+  },
+  "schema_version": 1,
+  "sequence": 36,
+  "to": {
+    "activity": "building_upstream_branch"
+  }
+}

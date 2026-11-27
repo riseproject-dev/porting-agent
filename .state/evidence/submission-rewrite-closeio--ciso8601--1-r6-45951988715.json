@@ -1,0 +1,41 @@
+{
+  "collected_at": "2026-11-27T06:42:55.191731+00:00",
+  "contribution_id": "closeio--ciso8601/1",
+  "data": {
+    "approved_head": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "artifact": {
+      "artifact_id": 15178170466,
+      "expires_at": "2026-12-27T06:41:56Z",
+      "run_id": "45951988715"
+    },
+    "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "body": "### What are you trying to accomplish?\n\nPublish Linux riscv64 wheels of ciso8601, as requested in #181. No release of ciso8601 on PyPI ships a riscv64 wheel today, so every `pip install ciso8601` from PyPI on riscv64 builds the C extension from the sdist.\n\n### What approach did you choose and why?\n\nThe wheel build already uses one native runner per architecture (`ubuntu-24.04-arm` for aarch64, `windows-11-arm` for ARM64), so this adds one more matrix row in the same style: `os: ubuntu-24.04-riscv`, `cibw_archs: \"riscv64\"`. `ubuntu-24.04-riscv` is a native riscv64 runner label provided by RISC-V GitHub Runners (https://ci.riseproject.dev/).\n\nThe legacy `closeio/cibuildwheel@v3.4.1` step is skipped on that row (`if: matrix.cibw_archs != 'riscv64'`). That action always runs `actions/setup-python`, which has no riscv64 interpreters, and the step only builds CPython and PyPy 3.8 wheels. The `closeio/cibuildwheel@v4.3.5` step only uses `actions/setup-python` on X64 and ARM64 runners and otherwise runs with the runner's `python3`, so it works unchanged and builds and tests the CPython 3.9+ wheels for riscv64.\n\n`riscv64` is also added to `[tool.cibuildwheel.linux] archs` in `pyproject.toml`, next to `x86_64` and `aarch64`, so local cibuildwheel runs match CI. In CI the `CIBW_ARCHS` of each row still selects the architecture.\n\nThe C sources need no change: they contain no architecture-specific code.\n\n### What should reviewers focus on?\n\n- The `ubuntu-24.04-riscv` runner is only available to repositories whose organization has installed the RISC-V GitHub Runners app (https://ci.riseproject.dev/). Until it is installed for this organization, the riscv64 job waits in the queue (GitHub fails it after 24 hours), so Build Wheels and Release runs do not complete successfully, while the other jobs still run (and, in a Release run, upload their artifacts).\n- No CPython 3.8 or PyPy wheels are built for riscv64: cibuildwheel 4.x has no Python 3.8 support, and cibuildwheel has no PyPy riscv64 build identifiers.\n- This PR does not touch `CHANGELOG.md`: the Windows ARM64 PR (#178) did not either, and its changelog line was added with the 2.4.0 release (in #151 the aarch64 line came from a maintainer commit). I am happy to add an `Unreleased` entry if you prefer.\n\n### The impact of these changes\n\n- One additional job in the Build Wheels workflow on pull requests and in the release workflow; the release artifact of that row is named `ubuntu-24.04-riscv-riscv64-wheels`, like the other rows.\n- Future releases can include Linux riscv64 wheels for the CPython versions from 3.9 on that the other Linux rows build.\n- No change to the existing rows, to the library code or to its behaviour on other architectures. For that reason no benchmark results are included and `README.rst` is unchanged: the C sources, `setup.py` and the compiler flags are untouched, and the README has no platform or wheel list.\n\n### Testing\n\nThe Build Wheels workflow passed on the same change in a fork, including the new job `Build - ubuntu-24.04-riscv (riscv64)` on the native riscv64 runner: https://github.com/riseproject-upstreaming/ciso8601/actions/runs/45150934812. In that job the legacy step was skipped and the cibuildwheel 4.x step built every riscv64 wheel and ran the test suite (`python -m unittest` with `pytz`) against each wheel. All existing build and test jobs also passed in that run.\n\nTo try it locally on Linux with Docker (and QEMU binfmt support on a non-riscv64 host): `pipx run cibuildwheel --platform linux --archs riscv64`.\n\nCloses #181\n",
+    "candidate_tree": "30c2620ffc9c0470760a467d19454a124abb6727",
+    "clean_tree": "30c2620ffc9c0470760a467d19454a124abb6727",
+    "commits": [
+      {
+        "message": "Build riscv64 wheels on Linux\n\nAdd a native riscv64 row to the wheel build matrix, following the\nexisting native ubuntu-24.04-arm (aarch64) and windows-11-arm (ARM64)\nrows. The job runs on the ubuntu-24.04-riscv runner provided by\nRISC-V GitHub Runners [1].\n\nSkip the legacy cibuildwheel 3.x step on riscv64: that action always\nuses actions/setup-python, which has no riscv64 interpreters, and the\nstep only builds CPython and PyPy 3.8 wheels, which cibuildwheel 4.x\ndoes not support. cibuildwheel 4.x falls back to the runner's python3\non riscv64 and builds and tests the CPython 3.9+ wheels.\n\nAlso add riscv64 to the default Linux archs in pyproject.toml so local\ncibuildwheel runs match CI.\n\n[1]: https://ci.riseproject.dev/",
+        "tree": "30c2620ffc9c0470760a467d19454a124abb6727"
+      }
+    ],
+    "head": "29cd6c17be660a9c935bd9c787c5a9d32a5e2476",
+    "reasons": [],
+    "rules_from": [
+      "the commit rules the rewrite found (the plan records none)",
+      "the template sections the rewrite found (the plan records none)"
+    ],
+    "series_digest": "f3b755a5652189178dff0afce0b72945844766468bda9304dd48c6fb96f92de6",
+    "text_digest": "dfc4647af747e6cc8f9fb9344c94778e981e9c6237201a8f492eff677913a669",
+    "title": "Build riscv64 wheels on Linux",
+    "verdict": "pass"
+  },
+  "digests": {
+    "series": "f3b755a5652189178dff0afce0b72945844766468bda9304dd48c6fb96f92de6"
+  },
+  "evidence_id": "submission-rewrite-closeio--ciso8601--1-r6-45951988715",
+  "kind": "submission_rewrite",
+  "limitations": [],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "The submission rewrite passed the trusted check."
+}

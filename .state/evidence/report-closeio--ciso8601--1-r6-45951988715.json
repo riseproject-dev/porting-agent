@@ -1,0 +1,183 @@
+{
+  "collected_at": "2026-11-27T06:42:55.191731+00:00",
+  "contribution_id": "closeio--ciso8601/1",
+  "data": {
+    "artifact": {
+      "artifact_id": 15178170466,
+      "run_id": "45951988715"
+    },
+    "changed_files": [],
+    "head_after": null,
+    "head_before": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "report": {
+      "approaches": [
+        {
+          "description": "git checkout -b rewrite cbe0577; git cherry-pick b29a8f4; git commit --amend with a reworded body (legacy step paragraph now says the step only builds CPython and PyPy 3.8 wheels). Subject 'Build riscv64 wheels on Linux' kept; RISC-V GitHub Runners [1] and the final reference line kept.",
+          "evidence": "git diff --stat b29a8f4 cea2c59 empty; both trees 30c2620ffc9c0470760a467d19454a124abb6727; commit_rules.series_problems on the mbox returned [] with the reported rules.",
+          "lesson": "Single-commit approved series only needs rewording.",
+          "outcome": "adopted",
+          "title": "Cherry-pick and reword single commit"
+        },
+        {
+          "description": "Tried adding an issue reference to the commit body.",
+          "evidence": "Upstream commit history (git log) uses no issue-closing trailers in commit bodies; moved 'Closes #181' to the PR body.",
+          "lesson": "Issue references belong in the PR body for this project.",
+          "outcome": "abandoned",
+          "title": "Keep 'Closes #181' in commit message"
+        },
+        {
+          "description": "CONTRIBUTING.md does not require a changelog entry; RELEASING.md asks for one per release. PR #178 (external Windows ARM64) touched only build-wheels.yml and pyproject.toml and its line arrived in Release 2.4.0 (#191, 0c01818); in #151 the aarch64 line came from maintainer commit aa74477.",
+          "evidence": "pull_request_read get_files closeio/ciso8601#151 and #178; git log -- CHANGELOG.md.",
+          "lesson": "Changelog lines for architecture rows are added by maintainers; PR offers to add one.",
+          "outcome": "adopted",
+          "title": "Pass verdict without CHANGELOG entry"
+        }
+      ],
+      "attempted": [
+        {
+          "what": "Rebuild base_sha..expected_head without debug commits on branch rewrite and reword the commit",
+          "why": "Submission rewrite task; the approved series has one non-debug commit, so no squash or split is needed."
+        },
+        {
+          "what": "Research commit conventions, PR template, CONTRIBUTING, RELEASING and CHANGELOG history",
+          "why": "Plan is schema version 1 with no contribution_guidelines, so commit_rules and template_sections had to be found in the project."
+        },
+        {
+          "what": "Check whether a CHANGELOG entry is expected of contributors",
+          "why": "Plan contribution_rules mention a CHANGELOG entry but the approved series has none; a required entry would mean a fail verdict."
+        },
+        {
+          "what": "Review loop on the rewrite and PR text",
+          "why": "Required for a passing rewrite."
+        }
+      ],
+      "contribution_id": "closeio--ciso8601/1",
+      "expected_revision": 6,
+      "failures": [],
+      "history_digest": "59f95fed3ada30aad28a901cfd7ce9a43c282cd6e124a71d8817aecc41f515f5",
+      "open_items": [
+        "The closeio organization must install the RISC-V GitHub Runners app for the ubuntu-24.04-riscv job to run upstream; disclosed in the PR body.",
+        "Maintainers may still ask for an Unreleased CHANGELOG.md entry; the PR offers to add it."
+      ],
+      "review_loop": {
+        "findings": [
+          {
+            "closed_in_round": 2,
+            "detail": "'every install on riscv64 builds from the sdist' ignored Debian and RISE index binaries.",
+            "resolution": "Limited to pip install ciso8601 from PyPI.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "Sdist claim overstated"
+          },
+          {
+            "closed_in_round": 2,
+            "detail": "A riscv64 job never picked up is failed after 24 hours, so runs do not complete successfully.",
+            "resolution": "Focus bullet now states the 24-hour failure and its effect on Build Wheels and Release runs.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "Queued runner effect half-described"
+          },
+          {
+            "closed_in_round": 3,
+            "detail": "Claim about #151/#178 changelog handling was imprecise; #151 did touch CHANGELOG.md via a maintainer commit.",
+            "resolution": "Reworded after checking PR file lists on GitHub.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "Changelog precedent wording"
+          },
+          {
+            "closed_in_round": 2,
+            "detail": "CONTRIBUTING asks for README.rst docs and benchmark results.",
+            "resolution": "Impact section explains both are not applicable.",
+            "round": 1,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "README and benchmarking instructions not addressed"
+          },
+          {
+            "closed_in_round": 3,
+            "detail": "Artifacts upload only in Release runs (if: inputs.upload).",
+            "resolution": "Reworded to '(and, in a Release run, upload their artifacts)'.",
+            "round": 2,
+            "severity": "P2",
+            "status": "fixed",
+            "title": "Upload wording"
+          },
+          {
+            "closed_in_round": null,
+            "detail": "closeio/cibuildwheel@v3.4.1 in code spans contains at signs but mentions nobody.",
+            "resolution": "Kept: code spans of action refs, not mentions; trusted code neutralizes at signs anyway.",
+            "round": 1,
+            "severity": "P2",
+            "status": "deferred",
+            "title": "At signs in action references"
+          }
+        ],
+        "round_digests": [
+          "f3b755a5652189178dff0afce0b72945844766468bda9304dd48c6fb96f92de6",
+          "f3b755a5652189178dff0afce0b72945844766468bda9304dd48c6fb96f92de6",
+          "f3b755a5652189178dff0afce0b72945844766468bda9304dd48c6fb96f92de6"
+        ],
+        "rounds": 3,
+        "stopped_because": "clean",
+        "summary": "3 rounds of fresh reviewer children (3, 2, 2 reviewers) on the unchanged one-commit series and the PR text. Rounds 1 and 2 returned OK with notes (P2 text notes only); each was fixed in the text. Round 3 reviewers both returned OK with no findings on exactly the delivered series and text.",
+        "text_digest": "dfc4647af747e6cc8f9fb9344c94778e981e9c6237201a8f492eff677913a669"
+      },
+      "revisited": [],
+      "schema_version": 1,
+      "summary": "Pass. Cherry-picked the single approved non-debug commit b29a8f4 onto base cbe0577 as branch rewrite (cea2c59), reworded only the body paragraph about the legacy cibuildwheel step for accuracy; tree 30c2620 is identical to the approved head. Wrote the upstream PR title and body following all five sections of .github/pull_request_template.md and CONTRIBUTING.md. Three review rounds; all findings were P2 text notes, fixed; last round clean.",
+      "task": "submission_rewrite",
+      "verification": [
+        {
+          "check": "Rewrite tree equals approved tree without debug commits",
+          "evidence": "git rev-parse b29a8f4^{tree} and HEAD^{tree} both 30c2620ffc9c0470760a467d19454a124abb6727; git diff b29a8f4 HEAD empty",
+          "result": "passed"
+        },
+        {
+          "check": "Commit rules (title<=72, capitalized, no trailing period) via commit_rules.series_problems",
+          "evidence": "returned []",
+          "result": "passed"
+        },
+        {
+          "check": "PR body has every template section via commit_rules.body_problems",
+          "evidence": "returned [] for the 5 headings of .github/pull_request_template.md",
+          "result": "passed"
+        },
+        {
+          "check": "Approved head CI",
+          "evidence": "riseproject-upstreaming/ciso8601 run 45150934812: all jobs success incl. Build - ubuntu-24.04-riscv (riscv64), legacy step skipped",
+          "result": "passed"
+        },
+        {
+          "check": "cibuildwheel v4.3.5 action python fallback claim",
+          "evidence": "closeio/cibuildwheel action.yml at v4.3.5: setup-python only if runner.arch X64 or ARM64, else python3",
+          "result": "passed"
+        }
+      ]
+    },
+    "result_status": "submission_rewrite",
+    "verb": "accept_submission_rewrite",
+    "work": {
+      "dedupe_key": "closeio--ciso8601/1@g0.r6:submission_rewrite",
+      "generation": 0,
+      "requested_at": "2026-11-27T06:24:02.635419+00:00",
+      "revision": 6,
+      "task": "submission_rewrite",
+      "worker_run_id": "45951988715"
+    }
+  },
+  "digests": {
+    "report": "40f17fe390e5851940c0df6418b77eaeaf6f3280177d6797434dcd75061d8d5b"
+  },
+  "evidence_id": "report-closeio--ciso8601--1-r6-45951988715",
+  "kind": "worker_report",
+  "limitations": [
+    "The report is the worker's own account: untrusted recorded data, not instructions."
+  ],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "Pass. Cherry-picked the single approved non-debug commit b29a8f4 onto base cbe0577 as branch rewrite (cea2c59), reworded only the body paragraph about the legacy cibuildwheel step for accuracy; tree 30c2620 is identical to the approved head. Wrote the upstream PR title and body following all five sections of .github/pull_request_template.md and CONTRIBUTING.md. Three review rounds; all findings were P2 text notes, fixed; last round clean."
+}
